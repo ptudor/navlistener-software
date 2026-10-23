@@ -1,0 +1,3067 @@
+{
+  "valid": [
+    {
+      "format": "navlistener-bench-report-v1",
+      "tool": "bench_check.py 1",
+      "station": "bench-1",
+      "started_at": "2026-10-23T14:02:11Z",
+      "finished_at": "2026-10-23T14:02:49Z",
+      "board": {
+        "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+        "mcu_mac": "02a1b2c3d4e5"
+      },
+      "firmware": {
+        "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+        "app_version": "0.1.0+1.b8e037c",
+        "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+        "project_dirty": false,
+        "idf_revision": "v5.5.4",
+        "target": "esp32s3"
+      },
+      "checks": [
+        {
+          "name": "firmware.image",
+          "result": "pass",
+          "detail": "ELF SHA-256 d4249998a matches the build"
+        },
+        {
+          "name": "boot",
+          "result": "pass",
+          "detail": "one boot, no panic"
+        },
+        {
+          "name": "board_uid",
+          "result": "pass",
+          "detail": "board-0003-00112233445566778899aabbccddeeff"
+        },
+        {
+          "name": "mcu_mac",
+          "result": "pass",
+          "detail": "02:a1:b2:c3:d4:e5"
+        },
+        {
+          "name": "atecc",
+          "result": "pass",
+          "detail": "ATECC608C revision 00006005, CRC verified"
+        },
+        {
+          "name": "i2c:temperature@0x18",
+          "result": "pass",
+          "detail": "ESP_OK"
+        },
+        {
+          "name": "receiver",
+          "result": "skip",
+          "detail": "no receiver verdict within 30 s"
+        },
+        {
+          "name": "setup",
+          "result": "pass",
+          "detail": "setup network and app provisioning ready"
+        }
+      ],
+      "result": "pass",
+      "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+    },
+    {
+      "format": "navlistener-bench-report-v1",
+      "tool": "bench_check.py 1",
+      "station": "bench-1",
+      "started_at": "2026-10-23T14:02:11Z",
+      "finished_at": "2026-10-23T14:02:49Z",
+      "board": {
+        "observer_id": null,
+        "mcu_mac": null
+      },
+      "firmware": {
+        "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+        "app_version": null,
+        "project_revision": null,
+        "project_dirty": null,
+        "idf_revision": null,
+        "target": "esp32s3"
+      },
+      "checks": [
+        {
+          "name": "firmware.image",
+          "result": "fail",
+          "detail": "no ELF SHA-256 printed"
+        },
+        {
+          "name": "board_uid",
+          "result": "fail",
+          "detail": "no board identity read"
+        },
+        {
+          "name": "mcu_mac",
+          "result": "fail",
+          "detail": "the ROM bootloader did not answer"
+        }
+      ],
+      "result": "fail",
+      "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+    }
+  ],
+  "invalid": [
+    {
+      "why": "unknown format",
+      "document": {
+        "format": "navlistener-bench-report-v2",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "unknown member",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c",
+        "operator": "someone"
+      }
+    },
+    {
+      "why": "missing member",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass"
+      }
+    },
+    {
+      "why": "missing board member",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "unknown firmware member",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3",
+          "elf_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "tool empty",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "station with a space",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench 1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "station starting with punctuation",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "-bench",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "time with an offset",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11+00:00",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "time with fractional seconds",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49.5Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "finished before started",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:10Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "longer than an hour",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T15:02:12Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "observer id of a retired 64-bit kind",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0001-0011223344556677",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "observer id of an unknown kind",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0005-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "observer id all zero",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00000000000000000000000000000000",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "observer id in upper case",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899AABBCCDDEEFF",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "software station name",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "station-1",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "MAC with separators",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02:a1:b2:c3:d4:e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "MAC too short",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "image digest too short",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "image digest in upper case",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3F1E5A0C9B2D47E8A6C1F0B3D5E7A9C2B4D6F8E0A1C3E5B7D9F1A3C5E7B9D1F3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "image digest null",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": null,
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "app version too long",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "app version empty",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "revision too short",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "dirty flag as text",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": "false",
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "target with upper case",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "ESP32S3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "no checks",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "65 checks",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "c0",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c1",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c2",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c3",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c4",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c5",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c6",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c7",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c8",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c9",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c10",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c11",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c12",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c13",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c14",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c15",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c16",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c17",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c18",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c19",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c20",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c21",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c22",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c23",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c24",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c25",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c26",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c27",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c28",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c29",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c30",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c31",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c32",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c33",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c34",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c35",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c36",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c37",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c38",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c39",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c40",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c41",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c42",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c43",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c44",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c45",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c46",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c47",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c48",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c49",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c50",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c51",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c52",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c53",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c54",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c55",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c56",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c57",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c58",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c59",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c60",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c61",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c62",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c63",
+            "result": "pass",
+            "detail": ""
+          },
+          {
+            "name": "c64",
+            "result": "pass",
+            "detail": ""
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "duplicate check names",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "check name starting with a digit",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "1boot",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "check name with upper case",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "Boot",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "unknown check result",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "warn",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "unknown check member",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build",
+            "value": 1
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "detail too long",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "detail with a control character",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "line\nbreak"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "detail with non-ASCII text",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "caf\u00e9"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "pass with a failing check",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "fail",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "fail with no failing check",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "fail",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "unknown result",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "ok",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "pass with only skipped checks",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": ""
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
+      "why": "console digest missing hex",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+      }
+    },
+    {
+      "why": "not an object",
+      "text": "[]"
+    },
+    {
+      "why": "duplicate member",
+      "text": "{\"format\": \"navlistener-bench-report-v1\", \"tool\": \"bench_check.py 1\", \"station\": \"bench-1\", \"started_at\": \"2026-10-23T14:02:11Z\", \"finished_at\": \"2026-10-23T14:02:49Z\", \"board\": {\"observer_id\": \"board-0003-00112233445566778899aabbccddeeff\", \"mcu_mac\": \"02a1b2c3d4e5\"}, \"firmware\": {\"image_sha256\": \"3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3\", \"app_version\": \"0.1.0+1.b8e037c\", \"project_revision\": \"b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a\", \"project_dirty\": false, \"idf_revision\": \"v5.5.4\", \"target\": \"esp32s3\"}, \"checks\": [{\"name\": \"firmware.image\", \"result\": \"pass\", \"detail\": \"ELF SHA-256 d4249998a matches the build\"}, {\"name\": \"boot\", \"result\": \"pass\", \"detail\": \"one boot, no panic\"}, {\"name\": \"board_uid\", \"result\": \"pass\", \"detail\": \"board-0003-00112233445566778899aabbccddeeff\"}, {\"name\": \"mcu_mac\", \"result\": \"pass\", \"detail\": \"02:a1:b2:c3:d4:e5\"}, {\"name\": \"atecc\", \"result\": \"pass\", \"detail\": \"ATECC608C revision 00006005, CRC verified\"}, {\"name\": \"i2c:temperature@0x18\", \"result\": \"pass\", \"detail\": \"ESP_OK\"}, {\"name\": \"receiver\", \"result\": \"skip\", \"detail\": \"no receiver verdict within 30 s\"}, {\"name\": \"setup\", \"result\": \"pass\", \"detail\": \"setup network and app provisioning ready\"}], \"result\": \"pass\", \"console_sha256\": \"9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c\", \"result\": \"fail\"}"
+    }
+  ]
+}

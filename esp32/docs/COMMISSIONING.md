@@ -270,6 +270,28 @@ board supplies only the collector and its enrollment token
 ([provisioning](PROVISIONING.md#browser-setup)). A station provisioned before
 commissioning is ignored, with a warning at boot naming the observer ID in use.
 
+## Bench test
+
+`tools/bench_check.py` tests an assembled board and writes its
+[bench report](../../docs/FLEET-REPORTS.md#bench-report-v1). Run it in the
+ESP-IDF Python environment, from `esp32/`:
+
+```sh
+python tools/bench_check.py --port /dev/cu.usbmodem… --build-dir build/s3-layout3 \
+    --station bench-1 --flash
+```
+
+`--flash` writes the build's bootloader, partition table and application first; it
+never erases, so the setup credential and configuration survive. The tool prints
+each check, exits 0 when the board passed and 1 when it failed, and writes
+`report.json` and the console capture, both mode 0600, into a new directory under
+the build directory. The capture can hold the setup password and stays on the
+bench; keep the report with the unit's manufacturing record.
+
+Until the hardware manifest names the board, the firmware runs no board-specific
+code: `manifest` fails and the secure element and parts go unchecked. Test again
+after initializing the manifest.
+
 ## Bench sequence
 
 Trusted board, after the attested secure element is fitted and the board has

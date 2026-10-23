@@ -1,0 +1,1454 @@
+{
+  "valid": [
+    {
+      "format": "navlistener-field-report-v1",
+      "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+      "manufacturer_authority_id": "example-manufacturing",
+      "collector_instance_id": "collector-1",
+      "generated_at": "2026-10-23T14:00:05Z",
+      "boards": [
+        {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "hardware_trust": "trusted",
+          "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+          "last_seen": "2026-10-23T13:00:00Z",
+          "firmware": "0.1.0+1.b8e037c",
+          "update": {
+            "channel": "stable",
+            "mode": "install",
+            "state": "idle",
+            "trust_profile": "trusted",
+            "running_release": "17",
+            "failed_release": "0",
+            "error": "OK"
+          }
+        },
+        {
+          "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+          "hardware_trust": "none",
+          "commissioning_fingerprint": null,
+          "last_seen": "2026-10-20T08:00:00Z",
+          "firmware": null,
+          "update": null
+        }
+      ]
+    },
+    {
+      "format": "navlistener-field-report-v1",
+      "report_id": "00000000-0000-4000-8000-000000000000",
+      "manufacturer_authority_id": "example-manufacturing",
+      "collector_instance_id": null,
+      "generated_at": "2026-10-23T14:00:05Z",
+      "boards": []
+    },
+    {
+      "format": "navlistener-field-report-v1",
+      "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f71",
+      "manufacturer_authority_id": "example-manufacturing",
+      "collector_instance_id": "collector-1",
+      "generated_at": "2026-10-23T14:00:05Z",
+      "boards": [
+        {
+          "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+          "hardware_trust": "open",
+          "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+          "last_seen": "2026-10-23T13:00:00Z",
+          "firmware": "0.1.0+1.b8e037c",
+          "update": {
+            "channel": "lab",
+            "mode": "manual",
+            "state": "rolled-back",
+            "trust_profile": "open",
+            "running_release": "18446744073709551615",
+            "failed_release": "18",
+            "error": "TRIAL_ROLLED_BACK"
+          }
+        }
+      ]
+    }
+  ],
+  "invalid": [
+    {
+      "why": "unknown format",
+      "document": {
+        "format": "navlistener-field-report-v2",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "unknown member",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ],
+        "window": 24
+      }
+    },
+    {
+      "why": "missing member",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "report id in upper case",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6C5B1F0E-8D1A-4C4E-9F7A-2B3C4D5E6F70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "report id without dashes",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e8d1a4c4e9f7a2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "authority empty",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "authority with a slash",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example/manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "authority too long",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "instance with a space",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector 1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "generated time with an offset",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05-07:00",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "boards not a list",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": {}
+      }
+    },
+    {
+      "why": "duplicate observer",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "why": "unknown board member",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            },
+            "position": [
+              52.0,
+              4.0
+            ]
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "missing board member",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c"
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "software station",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "station-1",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "retired 64-bit kind",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0001-0011223344556677",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "all-zero board identity",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00000000000000000000000000000000",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "unknown hardware trust",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "genuine",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "trusted without a fingerprint",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "no trust but a fingerprint",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "fingerprint too short",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee0",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "last seen not on the hour",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:05:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "last seen with seconds",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:07Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "firmware too long",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "firmware empty",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "firmware with a control character",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "v1\t2",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "update not an object",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": "idle"
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "unknown update member",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK",
+              "bytes_received": 0
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "missing update member",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "unknown channel",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "beta",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "unknown mode",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "auto",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "unknown state",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "done",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "unknown track",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "production",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "release as a number",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": 17,
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "release with a leading zero",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "017",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "release above 64 bits",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "18446744073709551616",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "negative release",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "-1",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "error in lower case",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "ok"
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "error empty",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
+            "observer_id": "board-0003-00112233445566778899aabbccddeeff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": ""
+            }
+          },
+          {
+            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "not an object",
+      "text": "null"
+    },
+    {
+      "why": "duplicate member",
+      "text": "{\"format\": \"navlistener-field-report-v1\", \"report_id\": \"00000000-0000-4000-8000-000000000000\", \"manufacturer_authority_id\": \"example-manufacturing\", \"collector_instance_id\": null, \"generated_at\": \"2026-10-23T14:00:05Z\", \"boards\": [], \"boards\": []}"
+    }
+  ]
+}
