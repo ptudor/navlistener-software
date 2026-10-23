@@ -65,6 +65,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 | `[[serve.principal]]` | no DB auth | standalone/bootstrap read token and explicit private audience grants |
 | `[push]` | `addr` set | the authenticated GNF1 fleet listener; TLS mandatory |
 | `[[manufacturer_authority]]` | `manufacturer_keys` set | explicit manufacturer authority, pinned device-evidence keys, optional signed registry and its keys |
+| `[fleet_report]` | `url` set | opt-in field report to the boards' manufacturer: HTTPS URL, token file, authority, interval |
 | `[[federation.export_grant]]` | no transport | explicit directed export authorization, validated before peer transport exists |
 | `[[push.observer]]` | — | credential/feed grant plus server-owned organization and publication context |
 | `[[ingest]]` | per entry | dial connector plus the same server-owned organization/publication context |
@@ -292,6 +293,17 @@ tables beside `authority_file` are an error rather than a merge. An empty operat
 the token-only `local` default, as it does inline. `LoadAuthorities` requires an operational
 authority, skips the collector's push requirement and ignores `registry_state`: that file is the
 collector's private rollback record, and the control plane keeps its own floor in PostgreSQL.
+
+### `[fleet_report]` — the opt-in field report to the manufacturer
+
+Off unless `url` is set; the other keys without `url` are an error rather than a quiet no-op.
+`url` must be `https://` with a host and no credentials. `manufacturer_authority_id` must name a
+configured `[[manufacturer_authority]]`, and only boards enrolled under it are reported.
+`token_file` holds the manufacturer's token on one line and must not be group- or
+world-accessible; it is read at load, so `-check-config` catches a bad one, and again for every
+attempt, so it can be replaced without a restart. `interval` defaults to 24 hours and must be at
+least one. `internal/fleetreport` builds and sends the report; the format, what it carries and
+how each response is treated are in [docs/FLEET-REPORTS.md](../../../docs/FLEET-REPORTS.md).
 
 ### `[[federation.export_grant]]` — directed egress authorization
 

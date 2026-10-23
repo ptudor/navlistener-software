@@ -1,5 +1,12 @@
 # Unreleased
 
+- A collector can send its boards' manufacturer a daily field report: each board
+  enrolled under that manufacturer, with the collector's hardware-trust verdict,
+  the firmware and update status the board reported, and the hour it was last
+  seen. It is off unless the operator sets `[fleet_report]`; boards never report
+  to their manufacturer themselves. The format is in docs/FLEET-REPORTS.md.
+- `esp32/tools/bench_check.py` tests an assembled S3 board from its console and
+  writes a bench report the manufacturer can record against the unit.
 - The S3 observer sets up over its WPA2 setup network; Bluetooth is off. BLE
   provisioning beside the setup network exhausted internal RAM, so an
   unprovisioned board reset in a loop. The setup label is now a Wi-Fi network QR

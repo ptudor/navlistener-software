@@ -45,7 +45,9 @@ on the signal and input format, and planned extensions are marked in the docs.
 
 See the [GNSS library](gnss/README.md), [signal coverage](docs/CONSTELLATIONS.md),
 [observer hardware contract](docs/HARDWARE-OBSERVER.md), and
-[commissioning and hardware trust](docs/COMMISSIONING.md) for details. Federation
+[commissioning and hardware trust](docs/COMMISSIONING.md) for details. A collector's
+operator can opt in to sending the boards' manufacturer a [field report](docs/FLEET-REPORTS.md)
+of their firmware and update status. Federation
 transport and cryptographic OSNMA verification remain planned work. The
 [station monitor](docs/DEFENSE-PNT.md) reports jamming and receiver anomalies, and
 checks each station's own position, clock and time against physics and independent

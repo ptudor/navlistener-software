@@ -484,4 +484,16 @@ var (
 		Name: "navlistener_hardware_registry_reload_failures_total",
 		Help: "Hardware registry loads refused (the registry already in force was kept), or adopted without their sequence being recorded.",
 	}, []string{"manufacturer_authority_id"})
+	// FleetReportsTotal counts attempts to deliver the opt-in field report to
+	// the manufacturer ([fleet_report], docs/FLEET-REPORTS.md). A steady run of
+	// refused means the manufacturer stopped accepting this collector's token;
+	// failed is retried with the same report and is normal in short bursts.
+	FleetReportsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_fleet_reports_total",
+		Help: "Field report delivery attempts, by result: accepted, duplicate, refused (not retried) or failed (retried).",
+	}, []string{"result"})
+	FleetReportBoards = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "navlistener_fleet_report_boards",
+		Help: "Boards in the latest field report built.",
+	})
 )

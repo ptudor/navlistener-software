@@ -330,3 +330,49 @@ func TestHardwareTrustRegistryStateParity(t *testing.T) {
 		t.Fatalf("world-writable state: err = %v, want a registry_state error", err)
 	}
 }
+
+// TestFleetReportTOML: [fleet_report] decodes, defaults its interval, and must
+// name a configured manufacturer authority; without url nothing is sent.
+func TestFleetReportTOML(t *testing.T) {
+	dir := t.TempDir()
+	manufacturer, _ := trustKey(t, dir, "manufacturer.pem")
+	cert, key := testKeypair(t)
+	token := filepath.Join(dir, "fleet-report.token")
+	if err := os.WriteFile(token, []byte("nfr_0123456789abcdefghijklmnop\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := `
+[push]
+addr = "127.0.0.1:5580"
+tls_cert = "` + cert + `"
+tls_key = "` + key + `"
+
+[[manufacturer_authority]]
+enabled = true
+product_policy = [{product = 1, revision = 258}]
+manufacturer_authority_id = "` + testManufacturerAuthority + `"
+manufacturer_keys = ["` + manufacturer + `"]
+`
+	report := func(authority string) string {
+		return base + `
+[fleet_report]
+url = "https://records.example.invalid/intake/field-reports/"
+token_file = "` + token + `"
+manufacturer_authority_id = "` + authority + `"
+`
+	}
+	c, err := loadBody(t, report(testManufacturerAuthority))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.FleetReport.Enabled() || c.FleetReport.Interval != 24*time.Hour || c.FleetReport.ManufacturerAuthorityID != testManufacturerAuthority {
+		t.Fatalf("decoded fleet_report = %+v", c.FleetReport)
+	}
+	if _, err := loadBody(t, report("someone-else")); err == nil || !strings.Contains(err.Error(), "fleet_report.manufacturer_authority_id") {
+		t.Fatalf("an unconfigured authority was accepted: %v", err)
+	}
+	off, err := loadBody(t, base)
+	if err != nil || off.FleetReport.Enabled() {
+		t.Fatalf("without [fleet_report]: %v, enabled %v", err, off.FleetReport.Enabled())
+	}
+}

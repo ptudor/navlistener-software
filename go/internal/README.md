@@ -23,6 +23,7 @@ which direction the dependencies point. Each has its own README with the detail.
 | [`store/`](store/) | **PERSIST** | The TimescaleDB historian: raw frames, events, feed snapshots. |
 | [`serve/`](serve/) | **SERVE** | The native `/gnss/api/v2/*` feeds, the events query API, and the SSE stream. |
 | [`server/`](server/) | — | The observability listener: `/metrics`, `/healthz`, `/debug/state`. |
+| [`fleetreport/`](fleetreport/) | — | The opt-in field report to the boards' manufacturer: built from `state`, sent over HTTPS ([docs](../../docs/FLEET-REPORTS.md)). |
 | [`metrics/`](metrics/) | — | Prometheus collector definitions. |
 | [`version/`](version/) | — | Build identity, injected at link time. |
 

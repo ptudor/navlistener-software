@@ -4,6 +4,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/ptudor/navlistener/internal/boardid"
+	"github.com/ptudor/navlistener/internal/fleetreport"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/reception"
@@ -49,6 +51,10 @@ type StationBoard struct {
 	Snapshot             *BoardSample       `json:"snapshot,omitempty"`
 }
 type boardStation struct {
+	// enrolled is the authenticated context of the latest accepted frame: the
+	// manufacturer authority the board was enrolled under and the commissioning
+	// record the collector verified for its session. Never served.
+	enrolled             boardEnrollment
 	latest               *BoardSample
 	last                 BoardSample // ordering across independently paced board/timing records
 	update               *BoardSample
@@ -60,6 +66,14 @@ type boardStation struct {
 	receptionEvents      []BoardSample
 	receptionPowerEvents []BoardSample
 	snapshot             *BoardSample
+}
+
+type boardEnrollment struct {
+	manufacturerAuthorityID  string
+	commissioningFingerprint string
+	// firmware is the latest version the board reported in this session; a
+	// report without the tag does not erase it, a new session does.
+	firmware string
 }
 
 func (s *Store) applyBoard(f *ingest.RawFrame) {
@@ -105,7 +119,15 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 		old.receptionPower = nil
 		old.snapshot = nil
 	}
+	firmware := ""
+	if old.last.Session == f.Session {
+		firmware = old.enrolled.firmware
+	}
+	if f.Details.Firmware != "" {
+		firmware = f.Details.Firmware
+	}
 	old.last = sample
+	old.enrolled = boardEnrollment{f.Observer.ManufacturerAuthorityID, f.Observer.CommissioningFingerprint, firmware}
 	if f.Details.Network != nil {
 		copy := sample
 		old.network = &copy
@@ -209,6 +231,31 @@ func (s *Store) FeedStationBoards(now time.Time) map[string]StationBoard {
 			ReceptionPower: st.receptionPower, ReceptionPowerStale: stale(st.receptionPower, 15*time.Second),
 			ReceptionPowerEvents: append([]BoardSample(nil), st.receptionPowerEvents...),
 			Update:               st.update, UpdateStale: stale(st.update, 5*time.Second), Timing: st.timing, TimingStale: stale(st.timing, 5*time.Second)}
+	}
+	return out
+}
+
+// FleetBoards is what an opt-in field report may carry (docs/FLEET-REPORTS.md):
+// each board enrolled under manufacturerAuthorityID that this collector has
+// received from since it started, with its latest session's verified evidence,
+// the firmware and update status it reported in that session, and its latest
+// receipt. Software stations and other manufacturers' boards are never listed.
+func (s *Store) FleetBoards(manufacturerAuthorityID string) []fleetreport.Board {
+	s.rfMu.Lock()
+	defer s.rfMu.Unlock()
+	out := make([]fleetreport.Board, 0, len(s.boards))
+	for id, st := range s.boards {
+		if st.enrolled.manufacturerAuthorityID != manufacturerAuthorityID || !boardid.ReservedObserverID(id) {
+			continue
+		}
+		b := fleetreport.Board{ObserverID: id, HardwareTrust: st.last.HardwareTrust,
+			CommissioningFingerprint: st.enrolled.commissioningFingerprint, LastReceived: st.last.ReceivedAt,
+			Firmware: st.enrolled.firmware}
+		if st.update != nil && st.update.Details.Update != nil {
+			update := *st.update.Details.Update
+			b.Update = &update
+		}
+		out = append(out, b)
 	}
 	return out
 }

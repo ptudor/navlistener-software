@@ -30,6 +30,7 @@ import (
 	"github.com/ptudor/navlistener/internal/boardid"
 	"github.com/ptudor/navlistener/internal/commissioning"
 	"github.com/ptudor/navlistener/internal/federation"
+	"github.com/ptudor/navlistener/internal/fleetreport"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/integrity"
 	"github.com/ptudor/navlistener/internal/reception"
@@ -104,6 +105,9 @@ type Config struct {
 	Authorities             *authority.Set          `toml:"-"`
 	Federation              Federation              `toml:"federation"`
 	Ingest                  []Source                `toml:"ingest"`
+	// FleetReport is the opt-in field report to the boards' manufacturer
+	// (docs/FLEET-REPORTS.md); off unless url is set.
+	FleetReport fleetreport.Config `toml:"fleet_report"`
 
 	// AuthorityFile names a separate, credential-free file holding the
 	// [[operational_authority]] and [[manufacturer_authority]] tables. The
@@ -939,6 +943,13 @@ func (c *Config) finalize() error {
 		return err
 	}
 	if err := c.finalizeHardwareTrust(); err != nil {
+		return err
+	}
+	authorities := make([]string, 0, len(c.ManufacturerAuthorities))
+	for _, h := range c.ManufacturerAuthorities {
+		authorities = append(authorities, h.ManufacturerAuthorityID)
+	}
+	if err := c.FleetReport.Validate(authorities); err != nil {
 		return err
 	}
 	if err := c.finalizeFederation(); err != nil {

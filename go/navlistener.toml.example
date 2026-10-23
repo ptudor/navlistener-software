@@ -140,6 +140,16 @@ ack_interval = "1s"
 # admit customer-issued credentials on existing hardware without relabeling it.
 # Hardware enrollments use navcontrol and [authorization], not bootstrap rows.
 
+# Opt-in field report to the boards' manufacturer (docs/FLEET-REPORTS.md): each
+# board enrolled under that authority, with this collector's hardware-trust verdict
+# and the firmware and update status the board reported, and the hour it was last
+# seen. Nothing else, and nothing at all unless url is set.
+# [fleet_report]
+# url = "https://records.example-manufacturer.invalid/intake/field-reports/"
+# token_file = "/usr/local/etc/navlistener/fleet-report.token"  # one line, 0600
+# manufacturer_authority_id = "example-manufacturing"          # a configured [[manufacturer_authority]]
+# interval = "24h"                                               # default; at least 1h
+
 # Outbound federation authorization is configured and validated before any peer
 # transport exists. A source's receipt/current policy must ALSO permit this exact
 # destination and data class; neither side is sufficient alone.

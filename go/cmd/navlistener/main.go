@@ -34,6 +34,7 @@ import (
 	"github.com/ptudor/navlistener/internal/authorization"
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/detect"
+	"github.com/ptudor/navlistener/internal/fleetreport"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/integrity"
@@ -449,6 +450,14 @@ func run() int {
 		}
 		wg.Add(1)
 		go func() { defer wg.Done(); updateManager.WatchLifetimes(ctx.Done(), log) }()
+	}
+	// The opt-in field report to the boards' manufacturer (docs/FLEET-REPORTS.md):
+	// nothing is sent unless [fleet_report] url is set. It reads the operator
+	// store, which every authenticated board frame reaches.
+	if cfg.FleetReport.Enabled() {
+		reporter := fleetreport.New(cfg.FleetReport, live, cfg.Collector.InstanceID, log)
+		wg.Add(1)
+		go func() { defer wg.Done(); reporter.Run(ctx) }()
 	}
 	// The native v2 read API (docs/OUTPUT.md) is optional (enabled by [serve].addr).
 	// It serves the live feeds from RAM on a loopback listener behind a TLS front,

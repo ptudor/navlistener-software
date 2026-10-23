@@ -162,10 +162,12 @@ time finer than an hour. It lists only boards with a board identity that are
 enrolled under the named manufacturer authority; software stations and other
 manufacturers' boards are never listed.
 
-The collector reports from what it holds in memory: each board it has received
-from since it started, with that board's latest report. A board that stops
-reporting stays listed, with its old `last_seen`, until the collector restarts.
-A first-seen time is the manufacturer's to derive from the reports it keeps.
+The collector keeps its own record for the report, sampled every ten minutes from
+the boards it holds: each board it has received from since it started, with that
+board's latest session. A board that stops reporting stays listed, with its old
+`last_seen`, until the collector restarts. At 10,000 boards the one silent longest
+makes room for a new one. A first-seen time is the manufacturer's to derive from
+the reports it keeps.
 
 ### Sending
 
@@ -198,8 +200,13 @@ interval = "24h"  # the default; at least 1h
 ```
 
 `manufacturer_authority_id` must name a configured `[[manufacturer_authority]]`.
+The token file is read for every attempt, so it can be replaced without a restart.
 Removing `url` stops reporting at the next restart. The manufacturer can refuse a
 token at any time; the collector then logs each refusal.
+
+`navlistener_fleet_reports_total{result}` counts attempts by `accepted`,
+`duplicate`, `refused` and `failed`; `navlistener_fleet_report_boards` is the size
+of the latest report.
 
 ### One board, several collectors
 
