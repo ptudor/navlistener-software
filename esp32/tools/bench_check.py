@@ -7,6 +7,11 @@ flash_args lists (bootloader, partition table, application and initial OTA data)
 erasing NVS. Run it
 in the ESP-IDF Python environment, which provides esptool and pyserial.
 
+With --expect BOARD it is the pre-enrollment QA test: the board must be that board's
+revision A, and every part its manifest lists that the firmware reports at boot must
+answer as that part. It needs no Factory CA, signature, enrollment or network
+(esp32/docs/COMMISSIONING.md, "Pre-enrollment QA").
+
 Before a board is provisioned its console prints the setup label, which holds the setup
 network password. The capture therefore stays on the bench: it and the report are
 written mode 0600 into a new private directory, and only the capture's SHA-256 is in the
@@ -28,7 +33,7 @@ import sys
 import time
 
 FORMAT = "navlistener-bench-report-v1"
-TOOL = "bench_check.py 1"
+TOOL = "bench_check.py 2"
 DEFAULT_SECONDS = 30.0
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -46,6 +51,13 @@ _PART = re.compile(r"([A-Za-z][A-Za-z0-9 _/-]{0,30}) at 0x([0-9a-f]{2}): (\S+)")
 # manifest_board_name() values that name no supported board.
 _NO_BOARD = {"no board", "an unsupported board or revision", "more than one board"}
 _ATECC = re.compile(r"ATECC Info revision=([0-9a-f]{1,16}); (\S{1,32}) \(CRC verified\)")
+# The identity reads board.c makes after a part answers: (part, the firmware's verdict).
+_IDENTITY = re.compile(r"(temperature|humidity|rail monitor) IDs=[0-9a-f]{4}/[0-9a-f]{4}; (.+)")
+_PRESSURE_ID = re.compile(r"pressure chip ID=0x[0-9a-f]{2}(?: revision=0x[0-9a-f]{2})?; (.+)")
+_MON_VER = re.compile(r"MON-VER: software=.*; (\S{1,32})=(yes|unconfirmed)")
+_SBF_IDENTITY = re.compile(r"receiver: (.{1,40}?) \(engine .*")
+_NOT_MOSAIC = "; not a mosaic-G5, the receiver the manifest lists"
+_CHAIN = re.compile(r"panel chain: (24|16|unknown) bits")
 _MAC = re.compile(r"MAC:\s+((?:[0-9a-f]{2}:){5}[0-9a-f]{2})")
 
 OBSERVER_ID = re.compile(r"board-000[34]-([0-9a-f]{32})")
@@ -59,6 +71,62 @@ _TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 _PRINTABLE = re.compile(r"[\x20-\x7e]*")
 
 
+@dataclass(frozen=True)
+class BoardProfile:
+    """What one board revision must show on the bench: its manifest template in
+    esp32-hardware-discovery (src/intsat_boards.c), as far as the firmware reports it at
+    boot. A template change is a new revision there and a new profile here."""
+
+    manifest: str  # manifest_board_name()
+    parts: tuple[tuple[str, str], ...]  # (check name, address) of each I2C part board.c probes
+    identities: tuple[str, ...]  # the parts whose identity registers board.c reads
+    receiver: str  # the model MON-VER must confirm, or "sbf" for the mosaic-G5
+    ethernet: bool = False  # COMM_W5500 listed
+    panel_chain: bool = False  # IO_MCP23008 listed: the panel chain is read back
+
+
+# Keyed as NVF_BOARD and NVF_MANIFEST_INIT name the boards. Not reported at boot, so not
+# checked: the HDC2080/HDC2022 variant (identical ID registers; the manifest names it),
+# the P3's second MCP9808 at 0x1F, the MAX's SPI thermocouple converter.
+PROFILES = {
+    "neo": BoardProfile(
+        manifest="NEO revision A",
+        parts=(("temperature", "18"), ("humidity", "40"), ("pressure", "76"), ("rtc", "6f")),
+        identities=("temperature", "humidity", "pressure"),
+        receiver="NEO-M9N",
+    ),
+    "zed-x20": BoardProfile(
+        manifest="X20 revision A",
+        parts=(
+            ("temperature", "18"), ("humidity", "40"), ("pressure", "46"), ("rail_monitor", "41"),
+            ("rtc", "68"), ("i_o_expander", "24"),
+        ),
+        identities=("temperature", "humidity", "pressure", "rail_monitor"),
+        receiver="ZED-X20P",
+        ethernet=True,
+        panel_chain=True,
+    ),
+    "max": BoardProfile(
+        manifest="MAX revision A",
+        parts=(
+            ("temperature", "18"), ("humidity", "40"), ("pressure", "77"), ("rtc", "6f"), ("imu", "69"),
+            ("magnetometer", "30"),
+        ),
+        identities=("temperature", "humidity"),
+        receiver="MAX-M10S",
+    ),
+    "mosaic-p3": BoardProfile(
+        manifest="P3 revision A",
+        parts=(
+            ("temperature", "18"), ("humidity", "40"), ("sht35_humidity", "44"), ("hih8121_humidity", "27"),
+            ("pressure", "77"), ("rail_monitor", "41"), ("rtc", "6f"),
+        ),
+        identities=("temperature", "humidity", "rail_monitor"),
+        receiver="sbf",
+    ),
+}  # fmt: skip
+
+
 @dataclass
 class ConsoleFacts:
     """What the firmware printed, read from one capture."""
@@ -69,10 +137,17 @@ class ConsoleFacts:
     elf_prefix: str | None = None
     observer_id: str | None = None
     manifest: tuple[str, str] | None = None  # (boot action, board)
+    manifest_programmed: bool = False  # a factory-init image wrote the manifest this boot
     atecc: tuple[str, str] | None = None  # (revision, model)
     parts: dict[tuple[str, str], list[str]] = field(default_factory=dict)  # (name, address) → results
+    identities: dict[str, list[str]] = field(default_factory=dict)  # part name → the firmware's verdicts
     receiver_baud: str | None = None
+    receiver_sbf: bool = False  # the mosaic-G5's COM2 was configured
     receiver_silent: bool = False
+    receiver_model: tuple[str, bool] | None = None  # MON-VER: (listed model, confirmed); "" when none listed
+    sbf_product: tuple[str, bool] | None = None  # ReceiverSetup: (product, a mosaic-G5)
+    ethernet: str | None = None  # "up", or the error the firmware logged
+    panel_chain: str | None = None  # "24", "16", "unknown" or "not detected"
     unprovisioned: bool = False
     setup_network: bool = False
     app_setup: bool = False
@@ -105,20 +180,47 @@ def parse_console(text: str) -> ConsoleFacts:
         elif tag == "hw_manifest" and message.startswith("manifest boot action: ") and facts.manifest is None:
             action, _, board = message.removeprefix("manifest boot action: ").partition("; board: ")
             facts.manifest = (action, board)
+        elif tag == "hw_manifest" and message.startswith("factory-init enabled: programming blank "):
+            facts.manifest_programmed = True
         elif tag == "observer_board":
             atecc = _ATECC.fullmatch(message)
             part = _PART.fullmatch(message)
+            identity = _IDENTITY.fullmatch(message)
+            pressure = _PRESSURE_ID.fullmatch(message)
             if atecc and facts.atecc is None:
                 facts.atecc = (atecc.group(1), atecc.group(2))
             elif part:
-                name = re.sub(r"[^a-z0-9]+", "_", part.group(1).lower())
-                facts.parts.setdefault((name, part.group(2)), []).append(part.group(3))
+                facts.parts.setdefault((_check_part(part.group(1)), part.group(2)), []).append(part.group(3))
+            elif identity:
+                facts.identities.setdefault(_check_part(identity.group(1)), []).append(identity.group(2))
+            elif pressure:
+                facts.identities.setdefault("pressure", []).append(pressure.group(1))
         elif tag == "receiver":
             baud = re.match(r"valid receiver traffic at (\d+) baud", message)
+            mon_ver = _MON_VER.fullmatch(message)
+            sbf = _SBF_IDENTITY.fullmatch(message)
             if baud:
                 facts.receiver_baud = baud.group(1)
+            elif message.startswith("receiver COM2 configured ("):
+                facts.receiver_sbf = True
             elif message.startswith("no UART bytes observed"):
                 facts.receiver_silent = True
+            elif mon_ver and facts.receiver_model is None:
+                facts.receiver_model = (mon_ver.group(1), mon_ver.group(2) == "yes")
+            elif message.startswith("MON-VER: ") and message.endswith("; no receiver listed, none configured"):
+                facts.receiver_model = facts.receiver_model or ("", False)
+            elif sbf and facts.sbf_product is None:
+                facts.sbf_product = (sbf.group(1), not message.endswith(_NOT_MOSAIC))
+        elif tag == "ethernet" and message.startswith("W5500 up at "):
+            facts.ethernet = "up"
+        elif tag == "navfeeder" and message.startswith("ethernet unavailable (") and facts.ethernet is None:
+            facts.ethernet = message
+        elif tag == "io_expander" and facts.panel_chain in (None, "unknown"):
+            chain = _CHAIN.fullmatch(message)
+            if chain:
+                facts.panel_chain = chain.group(1)
+            elif message.startswith("panel chain not detected"):
+                facts.panel_chain = "not detected"
         elif tag == "navfeeder" and message.startswith("unprovisioned ("):
             facts.unprovisioned = True
         elif tag == "netcfg" and message.startswith("browser provisioning ready:"):
@@ -128,6 +230,11 @@ def parse_console(text: str) -> ConsoleFacts:
         ):
             facts.app_setup = True
     return facts
+
+
+def _check_part(name: str) -> str:
+    """A part's check name: the firmware's name in lower case, other characters `_`."""
+    return re.sub(r"[^a-z0-9]+", "_", name.lower())
 
 
 def valid_observer_id(value: object) -> bool:
@@ -147,9 +254,11 @@ def _check(name: str, result: str, detail: str) -> dict:
     return {"name": name, "result": result, "detail": _detail(detail)}
 
 
-def evaluate(facts: ConsoleFacts, *, elf_sha256: str, mac: str | None, seconds: float) -> list[dict]:
+def evaluate(
+    facts: ConsoleFacts, *, elf_sha256: str, mac: str | None, seconds: float, expect: BoardProfile | None = None
+) -> list[dict]:
     """Judge each check from what the firmware printed, the build's ELF digest and the
-    MAC the ROM bootloader gave."""
+    MAC the ROM bootloader gave. With `expect`, also hold the board to that profile."""
     checks = []
     if facts.elf_prefix is None:
         checks.append(_check("firmware.image", "fail", "no ELF SHA-256 printed"))
@@ -181,10 +290,13 @@ def evaluate(facts: ConsoleFacts, *, elf_sha256: str, mac: str | None, seconds: 
     # The firmware runs board-specific code, the secure element and part probes among it,
     # only once the manifest names a supported board.
     named = facts.manifest is not None and facts.manifest[0] == "use manifest" and facts.manifest[1] not in _NO_BOARD
+    programmed = "; programmed this boot" if facts.manifest_programmed else ""
     if facts.manifest is None:
         checks.append(_check("manifest", "fail", "no manifest boot action printed"))
+    elif expect is not None and named and facts.manifest[1] != expect.manifest:
+        checks.append(_check("manifest", "fail", f"{facts.manifest[1]}, expected {expect.manifest}"))
     elif named:
-        checks.append(_check("manifest", "pass", facts.manifest[1]))
+        checks.append(_check("manifest", "pass", facts.manifest[1] + (", as expected" if expect else "") + programmed))
     else:
         checks.append(_check("manifest", "fail", f"{facts.manifest[0]}; board: {facts.manifest[1]}"))
 
@@ -196,16 +308,54 @@ def evaluate(facts: ConsoleFacts, *, elf_sha256: str, mac: str | None, seconds: 
     else:
         checks.append(_check("atecc", "fail", "no CRC-verified info read"))
 
-    for (name, address), results in sorted(facts.parts.items()):
-        result = "pass" if all(r == "ESP_OK" for r in results) else "fail"
-        checks.append(_check(f"i2c:{name}@0x{address}", result, ", then ".join(results)))
+    listed = dict(expect.parts) if expect is not None else {}
+    expected_parts = set(expect.parts) if expect is not None else set()
+    for name, address in sorted(set(facts.parts) | expected_parts):
+        results = facts.parts.get((name, address))
+        if results is None:
+            checks.append(_check(f"i2c:{name}@0x{address}", "fail", f"not probed; {expect.manifest} lists it"))
+        elif expect is not None and (name, address) not in expected_parts:
+            checks.append(_check(f"i2c:{name}@0x{address}", "fail", f"probed, but {expect.manifest} does not list it"))
+        else:
+            result = "pass" if all(r == "ESP_OK" for r in results) else "fail"
+            checks.append(_check(f"i2c:{name}@0x{address}", result, ", then ".join(results)))
+
+    if expect is not None:
+        for name in expect.identities:
+            verdicts = facts.identities.get(name)
+            if not verdicts:
+                result, detail = "fail", "no identity read"
+            elif any(v.startswith("unexpected identity") for v in verdicts):
+                result, detail = "fail", "unexpected identity"
+            else:
+                result, detail = "pass", verdicts[0]
+            checks.append(_check(f"identity:{name}@0x{listed[name]}", result, detail))
 
     if facts.receiver_baud is not None:
         checks.append(_check("receiver", "pass", f"valid traffic at {facts.receiver_baud} baud"))
+    elif facts.receiver_sbf:
+        checks.append(_check("receiver", "pass", "COM2 configured for SBF"))
     elif facts.receiver_silent:
         checks.append(_check("receiver", "fail", "no UART bytes from the receiver"))
     else:
-        checks.append(_check("receiver", "skip", f"no receiver verdict within {seconds:g} s"))
+        # A QA test needs the verdict: a longer --seconds gives a slow receiver time.
+        result = "fail" if expect is not None else "skip"
+        checks.append(_check("receiver", result, f"no receiver verdict within {seconds:g} s"))
+
+    if expect is not None:
+        checks.append(_receiver_model(facts, expect, seconds))
+        if expect.ethernet:
+            if facts.ethernet == "up":
+                checks.append(_check("ethernet", "pass", "W5500 started"))
+            else:
+                checks.append(_check("ethernet", "fail", facts.ethernet or "no W5500 start reported"))
+        if expect.panel_chain:
+            if facts.panel_chain in ("24", "16"):
+                checks.append(_check("panel_chain", "pass", f"{facts.panel_chain}-bit chain read back"))
+            elif facts.panel_chain is None:
+                checks.append(_check("panel_chain", "fail", f"no panel chain verdict within {seconds:g} s"))
+            else:
+                checks.append(_check("panel_chain", "fail", f"panel chain {facts.panel_chain}; is the panel fitted?"))
 
     if not facts.unprovisioned:
         checks.append(_check("setup", "skip", "the board did not report itself unprovisioned"))
@@ -215,6 +365,25 @@ def evaluate(facts: ConsoleFacts, *, elf_sha256: str, mac: str | None, seconds: 
         missing = [what for what, ok in (("setup network", facts.setup_network), ("app provisioning", facts.app_setup)) if not ok]
         checks.append(_check("setup", "fail", " and ".join(missing) + " not ready"))
     return checks
+
+
+def _receiver_model(facts: ConsoleFacts, expect: BoardProfile, seconds: float) -> dict:
+    """Whether the receiver says it is the model the board's manifest lists."""
+    if expect.receiver == "sbf":
+        if facts.sbf_product is None:
+            return _check("receiver.model", "fail", f"no ReceiverSetup within {seconds:g} s")
+        product, mosaic = facts.sbf_product
+        return _check("receiver.model", "pass" if mosaic else "fail", f"ReceiverSetup names {product}")
+    if facts.receiver_model is None:
+        return _check("receiver.model", "fail", f"no MON-VER within {seconds:g} s")
+    model, confirmed = facts.receiver_model
+    if not model:
+        return _check("receiver.model", "fail", "the manifest lists no receiver this firmware configures")
+    if model != expect.receiver:
+        return _check("receiver.model", "fail", f"the firmware looked for {model}, expected {expect.receiver}")
+    if not confirmed:
+        return _check("receiver.model", "fail", f"MON-VER does not confirm {model}")
+    return _check("receiver.model", "pass", f"MON-VER confirms {model}")
 
 
 def overall(checks: list[dict]) -> str:
@@ -465,7 +634,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--flash", action="store_true", help="write the build's images first (never erases NVS)")
     parser.add_argument("--seconds", type=float, default=DEFAULT_SECONDS, help="console window (default 30)")
     parser.add_argument("--out", type=Path, help="new directory for the report and capture")
+    parser.add_argument(
+        "--expect", choices=sorted(PROFILES),
+        help="pre-enrollment QA: require this board's revision A and every part its manifest lists",
+    )  # fmt: skip
     args = parser.parse_args(argv)
+    expect = PROFILES[args.expect] if args.expect else None
     if not _STATION.fullmatch(args.station):
         parser.error("--station must be 1-64 of A-Z a-z 0-9 . _ - starting with a letter or digit")
     if not 5 <= args.seconds <= 600:
@@ -490,7 +664,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     finished = datetime.now(timezone.utc)
     facts = parse_console(console.decode("utf-8", "replace"))
-    checks = evaluate(facts, elf_sha256=build.elf_sha256, mac=mac, seconds=args.seconds)
+    checks = evaluate(facts, elf_sha256=build.elf_sha256, mac=mac, seconds=args.seconds, expect=expect)
     report = build_report(
         station=args.station, started=started, finished=finished, facts=facts, mac=mac, build=build,
         checks=checks, console=console,

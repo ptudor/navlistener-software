@@ -34,7 +34,7 @@ document and refuses every invalid one.
 ```json
 {
   "format": "navlistener-bench-report-v1",
-  "tool": "bench_check.py 1",
+  "tool": "bench_check.py 2",
   "station": "bench-1",
   "started_at": "2026-10-23T14:02:11Z",
   "finished_at": "2026-10-23T14:02:49Z",
@@ -96,8 +96,11 @@ capture window and judges only lines the firmware printed:
 | `manifest` | The hardware manifest names a supported board | It names none, or no boot action was printed | — |
 | `atecc` | The secure element answered with a CRC-verified info read | It did not, on a named board | The manifest names no board |
 | `i2c:<part>@0x<addr>` | The firmware probed the part and it answered | It probed the part and it did not | — |
-| `receiver` | Valid receiver traffic | No UART bytes from the receiver | No verdict within the window |
+| `receiver` | Valid receiver traffic, or the mosaic-G5's COM2 configured for SBF | No UART bytes from the receiver | No verdict within the window |
 | `setup` | An unprovisioned board raised its setup network and the app's provisioning | It did not | The board is provisioned |
+
+A board whose manifest a factory-initialization image wrote during the capture
+has `; programmed this boot` after the board's name in `manifest`.
 
 The firmware runs board-specific code, including the secure element read and the
 part probes, only once the manifest names a supported board, and probes only the
@@ -105,6 +108,26 @@ parts the manifest lists. A part it never probes is not tested by this tool. A
 part's check name is the firmware's name for it in lower case, with each run of
 other characters made `_`: `I/O expander at 0x20` becomes `i2c:i_o_expander@0x20`.
 The window defaults to 30 seconds.
+
+### Pre-enrollment QA (`--expect`)
+
+`--expect neo|zed-x20|max|mosaic-p3` holds the board to that board's revision A,
+as its manifest template in esp32-hardware-discovery lists it, before the board is
+signed or enrolled ([the sequence](../esp32/docs/COMMISSIONING.md#pre-enrollment-qa)).
+It changes these checks and adds the rest:
+
+| Check | Pass | Fail |
+|---|---|---|
+| `manifest` | The manifest names the expected board revision; the detail ends `, as expected` | Another board, or none |
+| `i2c:<part>@0x<addr>` | Each part the revision lists and the firmware probes at boot answered | A listed part was not probed or did not answer, or a part the revision does not list was probed |
+| `identity:<part>@0x<addr>` | The part's identity registers read as that part: the MCP9808, the HDC2080/HDC2022 family, the BMP388 or BMP58x family and the INA3221 | An unexpected identity, or no identity read |
+| `receiver` | As above | As above, and also when there is no verdict within the window |
+| `receiver.model` | MON-VER confirms the model the revision lists, or the mosaic-G5's ReceiverSetup names a mosaic-G5 | Another model, an unconfirmed one, or no answer within the window |
+| `ethernet` | ZED/X20 only: the W5500 started | It did not, or no start was reported |
+| `panel_chain` | ZED/X20 only: the I/O expander read a 24- or 16-bit LED chain back | The chain was not detected, or no verdict within the window |
+
+The other checks are unchanged. A report made with `--expect` is an ordinary v1
+bench report; its check names show the profile was applied.
 
 ## Field report v1
 

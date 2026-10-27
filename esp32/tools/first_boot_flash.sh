@@ -12,6 +12,12 @@ case "$board" in
     neo|zed-x20|max|mosaic-p3) board_defaults=";sdkconfig.defaults.$board"; default_dir="build/s3-$board-layout3" ;;
     *) echo "NVF_BOARD must be universal, neo, zed-x20, max or mosaic-p3" >&2; exit 2 ;;
 esac
+# This target builds only the ordinary images. The manifest-initialization image is
+# flashed by bench_check.py in the pre-enrollment sequence (docs/COMMISSIONING.md).
+if [[ -n ${NVF_MANIFEST_INIT:-} ]]; then
+    echo "first-boot-flash: NVF_MANIFEST_INIT is not supported here; build it with build-navfeeder-esp.sh" >&2
+    exit 2
+fi
 build_dir=${S3_BUILD_DIR:-$default_dir}
 
 cat <<EOF

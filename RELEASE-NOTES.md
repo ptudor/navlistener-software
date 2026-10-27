@@ -7,6 +7,13 @@
   to their manufacturer themselves. The format is in docs/FLEET-REPORTS.md.
 - `esp32/tools/bench_check.py` tests an assembled S3 board from its console and
   writes a bench report the manufacturer can record against the unit.
+- Pre-enrollment QA: `bench_check.py --expect BOARD` holds a board to its
+  revision A before it is signed or enrolled, with no Factory CA or network. Every
+  part its manifest lists must answer as that part, the receiver must confirm its
+  model, and the ZED/X20 must start its W5500 and read its panel chain back.
+  `NVF_MANIFEST_INIT` and `NVF_MANIFEST_HDC` build the image that writes a blank
+  manifest EEPROM for that sequence (esp32/docs/COMMISSIONING.md). The tool is
+  version 2; its reports remain bench report v1.
 - The S3 observer sets up over its WPA2 setup network; Bluetooth is off. BLE
   provisioning beside the setup network exhausted internal RAM, so an
   unprovisioned board reset in a loop. The setup label is now a Wi-Fi network QR

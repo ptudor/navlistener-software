@@ -11,6 +11,7 @@ all: $(TEST) build/checks_test build/identity_test build/manifest_board_test
 	./build/checks_test
 	./build/identity_test
 	./build/manifest_board_test
+	python3 ../../../tools/test_bench_check.py
 
 # The discovery library's header, compiled against stubs of the two ESP-IDF headers it includes.
 DISCOVERY := ../../../managed_components/esp_hardware_discovery/include

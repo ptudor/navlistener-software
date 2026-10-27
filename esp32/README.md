@@ -78,6 +78,14 @@ another build directory. It does not erase flash; migration from an older layout
 uses the separate erase/reflash procedure below. The development flash command
 refuses builds that enable chip locking.
 
+`NVF_MANIFEST_INIT=neo|zed-x20|max|mosaic-p3 NVF_MANIFEST_HDC=hdc2080|hdc2022
+./build-navfeeder-esp.sh` builds the manufacturing image that writes a blank
+manifest EEPROM: the universal image with `NVF_MANIFEST_FACTORY_INIT`, that board's
+revision-A list and the lot's humidity sensor, in
+`build/s3-manifest-init-<board>-<hdc>-layout3`. Both settings are required. It is
+the first image of the [pre-enrollment QA](docs/COMMISSIONING.md#pre-enrollment-qa)
+sequence, after which the board runs the ordinary image.
+
 For direct ESP-IDF use, load the shared settings and S3 board profile:
 
 ```sh

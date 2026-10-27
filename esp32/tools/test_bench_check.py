@@ -52,11 +52,57 @@ def console(lines=BOOT) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
-def judge(text: str, mac="02a1b2c3d4e5") -> dict:
+def judge(text: str, mac="02a1b2c3d4e5", expect=None) -> dict:
+    profile = bench_check.PROFILES[expect] if expect else None
+    facts = bench_check.parse_console(text)
     return {
         c["name"]: (c["result"], c["detail"])
-        for c in bench_check.evaluate(bench_check.parse_console(text), elf_sha256=ELF_SHA256, mac=mac, seconds=30)
+        for c in bench_check.evaluate(facts, elf_sha256=ELF_SHA256, mac=mac, seconds=30, expect=profile)
     }
+
+
+# A 162mm ZED-X20P board with its panel, as the universal image prints it.
+X20 = [
+    *BOOT[:8],
+    log("I", "hw_manifest", f"manifest EEPROM factory serial: {OBSERVER}"),
+    log("I", "hw_manifest", "manifest boot action: use manifest; board: X20 revision A"),
+    log("I", "observer_board", "temperature at 0x18: ESP_OK"),
+    log("I", "observer_board", "temperature IDs=0054/0400; MCP9808 verified"),
+    log("I", "observer_board", "humidity at 0x40: ESP_OK"),
+    log("I", "observer_board", "humidity IDs=4954/07d0; HDC2080/HDC2022 family verified (the manifest names the variant)"),
+    log("I", "observer_board", "pressure at 0x46: ESP_OK"),
+    log("I", "observer_board", "pressure chip ID=0x50 revision=0x32; BMP580/BMP581 family (ID cannot distinguish them)"),
+    log("I", "observer_board", "rail monitor at 0x41: ESP_OK"),
+    log("I", "observer_board", "rail monitor IDs=5449/3220; INA3221 verified"),
+    log("I", "observer_board", "RTC at 0x68: ESP_OK"),
+    log("I", "observer_board", "DS3231-family RTC control=0x1c status=0x88: oscillator-stop flag set; clock not adopted"),
+    log("I", "observer_board", "I/O expander at 0x24: ESP_OK"),
+    log("I", "observer_board", "ATECC Info revision=00006005; ATECC608C (CRC verified)"),
+    log("I", "io_expander", "MCP23008 at 0x24 configured: GPIO=0x3f, interrupt-on-change on GP1-GP5 to GPIO3"),
+    log("I", "io_expander", "panel chain: 24 bits"),
+    log("I", "ethernet", "W5500 up at 20 MHz, polled every 10 ms, MAC 02:a1:b2:c3:d4:e8"),
+    log("I", "receiver", "valid receiver traffic at 460800 baud"),
+    log("I", "receiver", "MON-VER: software=HPG 2.10                     hardware=000A0000  ; ZED-X20P=yes"),
+    *BOOT[-4:],
+]
+
+# A mosaic-G5 P3 board: the receiver speaks SBF on COM2.
+P3 = [
+    *BOOT[:8],
+    log("I", "hw_manifest", f"manifest EEPROM factory serial: {OBSERVER}"),
+    log("I", "hw_manifest", "manifest boot action: use manifest; board: P3 revision A"),
+    *(log("I", "observer_board", f"{name} at 0x{address}: ESP_OK") for name, address in (
+        ("temperature", "18"), ("humidity", "40"), ("SHT35 humidity", "44"), ("HIH8121 humidity", "27"),
+        ("pressure", "77"), ("rail monitor", "41"), ("RTC", "6f"),
+    )),  # fmt: skip
+    log("I", "observer_board", "temperature IDs=0054/0400; MCP9808 verified"),
+    log("I", "observer_board", "humidity IDs=4954/07d0; HDC2080/HDC2022 family verified (the manifest names the variant)"),
+    log("I", "observer_board", "rail monitor IDs=5449/3220; INA3221 verified"),
+    log("I", "observer_board", "ATECC Info revision=00006005; ATECC608C (CRC verified)"),
+    log("I", "receiver", "receiver: mosaic-G5 P3 (engine mosaic-G5), firmware 4.15.0, serial 3912345"),
+    log("I", "receiver", "receiver COM2 configured (1 time this boot, 0 command errors): SBF at 1 Hz"),
+    *BOOT[-4:],
+]
 
 
 class ConsoleTests(unittest.TestCase):
@@ -140,6 +186,142 @@ class ConsoleTests(unittest.TestCase):
     def test_an_all_zero_identity_is_not_a_board(self):
         text = console().replace(OBSERVER, "board-0003-" + "0" * 32)
         self.assertEqual(judge(text)["board_uid"][0], "fail")
+
+    def test_a_manifest_written_this_boot_says_so(self):
+        text = console(
+            [*BOOT[:9], log("W", "hw_manifest", "factory-init enabled: programming blank NEO first-spin revision A manifest"), *BOOT[9:]]
+        )
+        self.assertEqual(judge(text)["manifest"], ("pass", "NEO revision A; programmed this boot"))
+
+    def test_a_p3_receiver_counts_as_traffic_without_expect(self):
+        self.assertEqual(judge(console(P3))["receiver"], ("pass", "COM2 configured for SBF"))
+
+
+class PreEnrollmentTests(unittest.TestCase):
+    """--expect: the board must be the named board's revision A, with every part it lists."""
+
+    def test_a_good_x20_passes_every_check(self):
+        checks = judge(console(X20), expect="zed-x20")
+        self.assertEqual(
+            checks,
+            {
+                "firmware.image": ("pass", "ELF SHA-256 d4249998a matches the build"),
+                "boot": ("pass", "one boot, no panic"),
+                "board_uid": ("pass", OBSERVER),
+                "mcu_mac": ("pass", "02:a1:b2:c3:d4:e5"),
+                "manifest": ("pass", "X20 revision A, as expected"),
+                "atecc": ("pass", "ATECC608C revision 00006005, CRC verified"),
+                "i2c:humidity@0x40": ("pass", "ESP_OK"),
+                "i2c:i_o_expander@0x24": ("pass", "ESP_OK"),
+                "i2c:pressure@0x46": ("pass", "ESP_OK"),
+                "i2c:rail_monitor@0x41": ("pass", "ESP_OK"),
+                "i2c:rtc@0x68": ("pass", "ESP_OK"),
+                "i2c:temperature@0x18": ("pass", "ESP_OK"),
+                "identity:temperature@0x18": ("pass", "MCP9808 verified"),
+                "identity:humidity@0x40": ("pass", "HDC2080/HDC2022 family verified (the manifest names the variant)"),
+                "identity:pressure@0x46": ("pass", "BMP580/BMP581 family (ID cannot distinguish them)"),
+                "identity:rail_monitor@0x41": ("pass", "INA3221 verified"),
+                "receiver": ("pass", "valid traffic at 460800 baud"),
+                "receiver.model": ("pass", "MON-VER confirms ZED-X20P"),
+                "ethernet": ("pass", "W5500 started"),
+                "panel_chain": ("pass", "24-bit chain read back"),
+                "setup": ("pass", "setup network and app provisioning ready"),
+            },
+        )
+
+    def test_a_good_p3_passes(self):
+        checks = judge(console(P3), expect="mosaic-p3")
+        self.assertEqual(checks["receiver.model"], ("pass", "ReceiverSetup names mosaic-G5 P3"))
+        self.assertNotIn("ethernet", checks)
+        self.assertNotIn("panel_chain", checks)
+        self.assertEqual({result for result, _ in checks.values()}, {"pass"})
+
+    def test_another_board_fails_the_manifest(self):
+        checks = judge(console(), expect="zed-x20")
+        self.assertEqual(checks["manifest"], ("fail", "NEO revision A, expected X20 revision A"))
+        # The NEO's RTC is not the X20's, and the X20's parts were never probed.
+        self.assertEqual(checks["i2c:rtc@0x6f"], ("fail", "probed, but X20 revision A does not list it"))
+        self.assertEqual(checks["i2c:rail_monitor@0x41"], ("fail", "not probed; X20 revision A lists it"))
+        self.assertEqual(checks["identity:pressure@0x46"], ("fail", "no identity read"))
+
+    def test_an_unprogrammed_board_fails_every_board_check(self):
+        text = console(
+            [line for line in X20 if "observer_board" not in line and "io_expander" not in line and "ethernet" not in line]
+        ).replace("use manifest; board: X20 revision A", "first-boot initialization required; board: no board")
+        checks = judge(text, expect="zed-x20")
+        self.assertEqual(checks["manifest"], ("fail", "first-boot initialization required; board: no board"))
+        self.assertEqual(checks["i2c:temperature@0x18"], ("fail", "not probed; X20 revision A lists it"))
+        self.assertEqual(checks["ethernet"], ("fail", "no W5500 start reported"))
+        self.assertEqual(checks["panel_chain"], ("fail", "no panel chain verdict within 30 s"))
+
+    def test_a_wrong_part_that_answers_fails_its_identity(self):
+        text = console(X20).replace("INA3221 verified", "unexpected identity")
+        checks = judge(text, expect="zed-x20")
+        self.assertEqual(checks["i2c:rail_monitor@0x41"], ("pass", "ESP_OK"))
+        self.assertEqual(checks["identity:rail_monitor@0x41"], ("fail", "unexpected identity"))
+        # Without --expect the identity is not judged.
+        self.assertNotIn("identity:rail_monitor@0x41", judge(text))
+
+    def test_a_missing_receiver_verdict_fails(self):
+        text = console([line for line in X20 if "receiver traffic" not in line and "MON-VER" not in line])
+        checks = judge(text, expect="zed-x20")
+        self.assertEqual(checks["receiver"], ("fail", "no receiver verdict within 30 s"))
+        self.assertEqual(checks["receiver.model"], ("fail", "no MON-VER within 30 s"))
+        self.assertEqual(judge(text)["receiver"][0], "skip")
+
+    def test_the_receiver_must_be_the_listed_model(self):
+        unconfirmed = judge(console(X20).replace("ZED-X20P=yes", "ZED-X20P=unconfirmed"), expect="zed-x20")
+        self.assertEqual(unconfirmed["receiver.model"], ("fail", "MON-VER does not confirm ZED-X20P"))
+        other = judge(console(X20).replace("ZED-X20P=yes", "NEO-M9N=yes"), expect="zed-x20")
+        self.assertEqual(other["receiver.model"], ("fail", "the firmware looked for NEO-M9N, expected ZED-X20P"))
+        unlisted = judge(console(X20).replace("ZED-X20P=yes", "no receiver listed, none configured"), expect="zed-x20")
+        self.assertEqual(unlisted["receiver.model"], ("fail", "the manifest lists no receiver this firmware configures"))
+        not_mosaic = console(P3).replace("serial 3912345", "serial 3912345" + bench_check._NOT_MOSAIC)
+        self.assertEqual(judge(not_mosaic, expect="mosaic-p3")["receiver.model"][0], "fail")
+
+    def test_ethernet_and_panel_failures(self):
+        text = console(
+            [line for line in X20 if "W5500 up" not in line]
+            + [log("E", "navfeeder", "ethernet unavailable (ESP_ERR_TIMEOUT); no uplink until it is repaired")]
+        ).replace(
+            "panel chain: 24 bits",
+            "panel chain not detected or wrong length: 3 readbacks matched neither 24 nor 16 bits "
+            "(last read 0x000000 for frame 0xa5a5a5)",
+        )
+        checks = judge(text, expect="zed-x20")
+        self.assertEqual(checks["ethernet"], ("fail", "ethernet unavailable (ESP_ERR_TIMEOUT); no uplink until it is repaired"))
+        self.assertEqual(checks["panel_chain"], ("fail", "panel chain not detected; is the panel fitted?"))
+
+    def test_a_late_detection_does_not_clear_a_failed_chain(self):
+        text = console(X20).replace(
+            "panel chain: 24 bits", "panel chain not detected or wrong length: 3 readbacks matched neither 24 nor 16 bits"
+        )
+        text += console([log("I", "io_expander", "panel chain: 24 bits")])
+        self.assertEqual(judge(text, expect="zed-x20")["panel_chain"][0], "fail")
+
+    def test_every_profile_checks_identities_of_parts_it_lists(self):
+        for key, profile in bench_check.PROFILES.items():
+            with self.subTest(board=key):
+                names = [name for name, _ in profile.parts]
+                self.assertEqual(len(names), len(set(names)))
+                self.assertTrue(set(profile.identities) <= set(names))
+
+    def test_a_strict_report_is_a_valid_v1_report(self):
+        text = console(X20)
+        facts = bench_check.parse_console(text)
+        checks = bench_check.evaluate(
+            facts, elf_sha256=ELF_SHA256, mac="02a1b2c3d4e5", seconds=30, expect=bench_check.PROFILES["zed-x20"]
+        )
+        build = bench_check.Build(
+            path=Path("build"), image_sha256="3f" * 32, elf_sha256=ELF_SHA256, project_revision="b8e037c4" * 5,
+            project_dirty=False, idf_revision="v5.5.4", target="esp32s3",
+        )  # fmt: skip
+        started = datetime(2026, 10, 27, 18, 0, 0, tzinfo=timezone.utc)
+        report = bench_check.build_report(
+            station="bench-1", started=started, finished=started + timedelta(seconds=40), facts=facts,
+            mac="02a1b2c3d4e5", build=build, checks=checks, console=text.encode(),
+        )  # fmt: skip
+        self.assertEqual((report["tool"], report["result"]), ("bench_check.py 2", "pass"))
 
 
 class ReportTests(unittest.TestCase):

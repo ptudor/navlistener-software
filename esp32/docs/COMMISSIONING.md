@@ -294,6 +294,71 @@ Until the hardware manifest names the board, the firmware runs no board-specific
 code: `manifest` fails and the secure element and parts go unchecked. Test again
 after initializing the manifest.
 
+### Pre-enrollment QA
+
+A board can be proven before it is registered, signed or enrolled. This sequence
+needs no Factory CA, signature, enrollment, collector or network, so it serves a
+newly assembled lot, a repaired board and a returned one alike. The board is known
+throughout by its manifest EEPROM's 128-bit serial, `board-0003-…` or
+`board-0004-…`, which every bench report records; registration later assigns the
+unit to that same identity.
+
+1. Power the board as it is powered in service (on the 162mm boards the console
+   port does not power the board) and connect the console USB.
+2. Build the ordinary image, and the manifest-initialization image for the board
+   model and the humidity sensor the lot's BOM fits (`hdc2080` or `hdc2022`):
+
+   ```sh
+   ./build-navfeeder-esp.sh
+   NVF_MANIFEST_INIT=zed-x20 NVF_MANIFEST_HDC=hdc2080 ./build-navfeeder-esp.sh
+   ```
+
+   The second is the universal image with `NVF_MANIFEST_FACTORY_INIT`, built in
+   `build/s3-manifest-init-zed-x20-hdc2080-layout3`. The wrapper refuses to build
+   it without both settings and fails it if the generated configuration differs.
+3. A board whose manifest EEPROM is blank: flash the initialization image. Its
+   first boot writes the board's revision-A list, reads it back and adopts the
+   identity; `manifest` then reports the board, "programmed this boot". Keep this
+   report as the record of programming. Skip this step on a board already
+   programmed: the image never writes to a programmed EEPROM or one the board has
+   adopted before.
+
+   ```sh
+   python tools/bench_check.py --port /dev/cu.usbmodem… --station bench-1 --flash \
+       --build-dir build/s3-manifest-init-zed-x20-hdc2080-layout3
+   ```
+
+4. Flash the ordinary image and run the QA test. Keep this report with the unit:
+   it is the evidence that the assembly works.
+
+   ```sh
+   python tools/bench_check.py --port /dev/cu.usbmodem… --station bench-1 --flash \
+       --build-dir build/s3-layout3 --expect zed-x20
+   ```
+
+`--expect` takes `neo`, `zed-x20`, `max` or `mosaic-p3` and holds the board to that
+board's revision A: the manifest must name it, every part its list carries that the
+firmware reports at boot must answer and, where the firmware reads one, show the
+right identity. The receiver must stream and confirm its model, and a missing verdict
+fails rather than skips; the ZED/X20 must also start its W5500 and read the panel
+chain back, so fit the panel. The checks are listed in
+[FLEET-REPORTS.md](../../docs/FLEET-REPORTS.md#pre-enrollment-qa---expect). Raise
+`--seconds` if a cold receiver has not answered within the 30 s window.
+
+What the test does not prove:
+
+- which HDC variant is fitted: the HDC2080 and HDC2022 share their ID registers,
+  so the manifest's entry is what the build in step 2 wrote;
+- the P3's second MCP9808 at `0x1F` and the MAX's thermocouple converter, which
+  the firmware does not report at boot;
+- an Ethernet link, Wi-Fi range, RTC accuracy, backup batteries, power rails or
+  the antenna supply: the hand bring-up checks of each board's review stay;
+- anything a collector would see.
+
+When the Factory CA's registration later names the same board, revision and
+humidity sensor, it finds exactly the manifest it would write and leaves it alone,
+reporting it `unchanged`.
+
 ## Bench sequence
 
 Trusted board, after the attested secure element is fitted and the board has
