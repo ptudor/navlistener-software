@@ -14,6 +14,11 @@
   `NVF_MANIFEST_INIT` and `NVF_MANIFEST_HDC` build the image that writes a blank
   manifest EEPROM for that sequence (esp32/docs/COMMISSIONING.md). The tool is
   version 2; its reports remain bench report v1.
+- The S3 panel plays a boot sequence before it shows reception. Every boot sweeps the
+  last 32 bits of the board's EEPROM serial across the columns, green for 1 and amber
+  for 0, so a board shows the same sweep at every boot and none when its identity was
+  not read. The first ten boots, and every tenth after, start with a slow lamp test of
+  every LED. The count is kept in NVS (esp32/README.md, Custom-board status LEDs).
 - The S3 observer sets up over its WPA2 setup network; Bluetooth is off. BLE
   provisioning beside the setup network exhausted internal RAM, so an
   unprovisioned board reset in a loop. The setup label is now a Wi-Fi network QR

@@ -336,6 +336,15 @@ unit to that same identity.
        --build-dir build/s3-layout3 --expect zed-x20
    ```
 
+5. Watch the panel during these boots. A board's first ten boots start with the
+   lamp test ([Custom-board status LEDs](../README.md#custom-board-status-leds)):
+   each green lamp alone left to right, each amber lamp, RTK and ATTENTION on the
+   162mm panel, then the rows. A dark, misplaced or wrong-colour lamp is a panel or
+   driver fault the console cannot show. The identity sweep that follows shows the
+   serial's last eight hex digits, which the console names (`panel boot 2: lamp
+   test, identity sweep of serial ...89abcdef`), so it confirms the serial was read
+   over I2C.
+
 `--expect` takes `neo`, `zed-x20`, `max` or `mosaic-p3` and holds the board to that
 board's revision A: the manifest must name it, every part its list carries that the
 firmware reports at boot must answer and, where the firmware reads one, show the
@@ -353,6 +362,8 @@ What the test does not prove:
   the firmware does not report at boot;
 - an Ethernet link, Wi-Fi range, RTC accuracy, backup batteries, power rails or
   the antenna supply: the hand bring-up checks of each board's review stay;
+- the LEDs themselves: the report reads only the console, so the lamp test in
+  step 5 is checked by eye;
 - anything a collector would see.
 
 When the Factory CA's registration later names the same board, revision and

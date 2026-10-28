@@ -15,6 +15,7 @@
 #include "spool.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "panel_boot.h"
 #include "panel_control.h"
 #include "panel_settings.h"
 #include "driver/i2c_master.h"
@@ -77,6 +78,9 @@ static unsigned reports_queued; // ObserverDetails records spooled so far (stack
 static unsigned applied_brightness = PANEL_DEFAULT_BRIGHTNESS, saved_reference;
 static atomic_uint panel_frame;
 static bool pwm_ready;
+// The panel's boot sequence (panel_boot.h): the identity from observer_board_manifest, the
+// rest from observer_board_start, before the refresh task that shows it starts.
+static panel_boot_t boot_sequence;
 // One wake/command/sleep session with the ATECC at a time: the boot diagnostic and the
 // bench identity read must not interleave their commands.
 static SemaphoreHandle_t crypto_lock;
@@ -191,6 +195,9 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
 {
     report_now_ns = now_ns;
     report.manifest.action = manifest->action;
+    boot_sequence.identity_valid = manifest->identity.board_valid;
+    if (manifest->identity.board_valid)
+        boot_sequence.identity = panel_boot_identity(manifest->identity.board_uid + 3, manifest->identity.board_uid[2]);
     report.manifest.uid_valid = manifest->identity.eeprom_valid;
     if (manifest->identity.eeprom_valid)
         memcpy(report.manifest.board_uid, manifest->identity.eeprom_uid, NVF_BOARD_UID_SIZE);
@@ -300,8 +307,8 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
 // The chain's clock, latch and output enables are common to every board; its data pins
 // are the board row's led_sdi (on-board chain) and led_panel_sdi (front panel).
 enum { LED_CLOCK = 11, LED_LATCH = 12, LED_GREEN_OE = 47, LED_YELLOW_OE = 48 };
-// The status byte of a 24-bit panel chain (the 162mm panel's U14): OUT0 RTK, OUT1 ATTENTION.
-enum { PANEL_STATUS_RTK = 1, PANEL_STATUS_ATTENTION = 2 };
+// The status byte of a 24-bit panel chain (the 162mm panel's U14) is PANEL_STATUS_RTK on OUT0
+// and PANEL_STATUS_ATTENTION on OUT1 (panel_boot.h).
 // The panel pins are part of the allocation record, not a private choice here.
 _Static_assert((NVF_PIN(LED_CLOCK) | NVF_PIN(LED_LATCH) | NVF_PIN(LED_GREEN_OE) | NVF_PIN(LED_YELLOW_OE)) ==
                ((NVF_PIN(LED_CLOCK) | NVF_PIN(LED_LATCH) | NVF_PIN(LED_GREEN_OE) | NVF_PIN(LED_YELLOW_OE)) & NVF_PINS_COMMON),
@@ -633,6 +640,8 @@ static void panel_refresh_task(void *arg)
     // chain already holds, once the first frame is in and every 60 s after.
     const bool readback=expander_listed&&board->panel_status_byte;
     int64_t next_readback=0;
+    // The boot sequence holds the panel until it ends; reception follows.
+    const int64_t boot_ms=esp_timer_get_time()/1000;bool booting=true;
     TickType_t wake=xTaskGetTickCount();
     for(;;) {
         unsigned value=atomic_load(&panel_frame);uint8_t green=value,yellow=value>>8,alarm=value>>16;
@@ -643,6 +652,9 @@ static void panel_refresh_task(void *arg)
         // is lit while an alarm pattern is active.
         if(board&&board->rtk_stat>=0&&tick++%10==0)rtk=gpio_get_level(board->rtk_stat)==0;
         uint8_t status=board&&board->panel_status_byte?(rtk?PANEL_STATUS_RTK:0)|(alarm?PANEL_STATUS_ATTENTION:0):0;
+        panel_lamps_t lamps;
+        if(booting&&(booting=panel_boot_lamps(&boot_sequence,(uint32_t)(esp_timer_get_time()/1000-boot_ms),&lamps))){
+            status=lamps.status;green=lamps.green;yellow=lamps.yellow;}
         unsigned frame=(value&0xff000000u)|((unsigned)status<<16)|((unsigned)yellow<<8)|green;
         if(frame!=previous){panel_write(status,green,yellow,value>>24,false);previous=frame;}
         else if(readback&&esp_timer_get_time()/1000>=next_readback&&io_expander_ready()){
@@ -1276,6 +1288,22 @@ static esp_err_t board_inputs(void)
     }
     return ESP_OK;
 }
+// Counts the boot and chooses the boot sequence: the lamp test on the first boots and every
+// tenth after, an unknown count included, then the identity sweep where the identity was read.
+static void panel_boot_start(void)
+{
+    uint32_t boot = 0;
+    esp_err_t err = panel_boot_count(&boot);
+    if (err != ESP_OK) ESP_LOGW(TAG, "could not count panel boots: %s", esp_err_to_name(err));
+    boot_sequence.lamp_test = panel_boot_lamp_test(boot);
+    boot_sequence.status_byte = board->panel_status_byte;
+    char count[12] = "unknown", sweep[48] = "no identity sweep (board identity not read)";
+    if (boot) snprintf(count, sizeof count, "%lu", (unsigned long)boot);
+    if (boot_sequence.identity_valid)
+        snprintf(sweep, sizeof sweep, "identity sweep of serial ...%08lx", (unsigned long)boot_sequence.identity);
+    ESP_LOGI(TAG, "panel boot %s: %s, %s; %lu ms", count, boot_sequence.lamp_test ? "lamp test" : "no lamp test",
+             sweep, (unsigned long)panel_boot_ms(&boot_sequence));
+}
 esp_err_t observer_board_start(void)
 {
     // Restore before PWM starts, including in provisioning mode.
@@ -1320,6 +1348,8 @@ esp_err_t observer_board_start(void)
     }
     pwm_ready = true;
     atomic_store(&panel_frame,(applied_brightness<<24)|0xbf00u);
+    // Without a board there are no panel pins to show it on.
+    if (board) panel_boot_start(); else boot_sequence = (panel_boot_t){0};
     // 3 KiB: the chain readback adds the I2C driver's frames to the 2 KiB the writes needed;
     // board_stack_report logs its minimum free stack where the readback runs.
     if(xTaskCreate(panel_refresh_task,"panel_refresh",3072,NULL,4,&panel_task)!=pdPASS)return ESP_ERR_NO_MEM;

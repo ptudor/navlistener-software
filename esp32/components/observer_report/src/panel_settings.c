@@ -44,3 +44,22 @@ esp_err_t panel_brightness_save(unsigned percent, unsigned trimmer)
     nvs_close(handle);
     return err;
 }
+
+esp_err_t panel_boot_count(uint32_t *boot)
+{
+    if (!boot) return ESP_ERR_INVALID_ARG;
+    *boot = 0;
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("nvf_panel", NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+    uint32_t stored = 0;
+    err = nvs_get_u32(handle, "boots", &stored);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    if (err == ESP_OK) {
+        *boot = stored == UINT32_MAX ? stored : stored + 1;
+        if (*boot != stored) err = nvs_set_u32(handle, "boots", *boot);
+        if (err == ESP_OK && *boot != stored) err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
+}

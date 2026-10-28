@@ -218,6 +218,21 @@ nonzero C/N0 and no unhealthy flag. Yellow means supported and expected, but
 not tracked. Data older than 15 seconds cannot leave an indicator green.
 Uplink is green while the collector connection is up, otherwise yellow.
 
+Before it shows reception, the panel plays a boot sequence (`panel_boot.h`). Every
+boot sweeps the board identity: one column per 100 ms, left to right, four passes,
+green for each 1 bit and amber for each 0 bit of the manifest EEPROM serial's last 32
+bits, its final eight hex digits, most significant first. For `…89abcdef` that is
+`10001001 10101011 11001101 11101111`. The same board shows the same sweep at every
+boot and a board whose identity was not read shows none, so the sweep is the panel's
+sign that the I2C bus and the EEPROM answered. The first ten boots, and every tenth
+boot after, start with a slow lamp test: each green lamp alone left to right for
+250 ms, then each amber lamp, then RTK and ATTENTION on a 24-bit panel; every green,
+every amber and every lamp together for 750 ms each; then 250 ms dark. The boot count
+is kept in the `nvf_panel` NVS namespace, one commit per boot, and a count that cannot
+be read runs the lamp test. The console names each boot's choice, for example
+`panel boot 3: lamp test, identity sweep of serial ...89abcdef; 10200 ms`. A board
+without a usable manifest drives no panel and shows neither.
+
 Without a valid, recent position, all supported constellations remain expected.
 After NAV-PVT supplies a valid position, broad regional envelopes suppress
 missing-signal warnings outside the usual QZSS, NavIC and SBAS service regions.

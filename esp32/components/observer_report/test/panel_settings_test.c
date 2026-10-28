@@ -11,6 +11,7 @@ static int open_mode;
 static struct { const char *key; bool exists; uint8_t stored; } values[] = {{"brightness", false, 0}, {"trimmer", false, 0}};
 static unsigned writes, commits;
 static esp_err_t open_error, read_error, write_error, commit_error;
+static struct { bool exists; uint32_t stored; } boots;
 
 static unsigned slot(const char *key)
 {
@@ -46,6 +47,23 @@ esp_err_t nvs_set_u8(nvs_handle_t handle, const char *key, uint8_t value)
     // NVS can persist a successful set even if a later commit reports failure.
     values[i].stored = value;
     values[i].exists = true;
+    return ESP_OK;
+}
+esp_err_t nvs_get_u32(nvs_handle_t handle, const char *key, uint32_t *value)
+{
+    assert(opened && handle == 1 && !strcmp(key, "boots"));
+    if (read_error) return read_error;
+    if (!boots.exists) return ESP_ERR_NVS_NOT_FOUND;
+    *value = boots.stored;
+    return ESP_OK;
+}
+esp_err_t nvs_set_u32(nvs_handle_t handle, const char *key, uint32_t value)
+{
+    assert(opened && handle == 1 && open_mode == NVS_READWRITE && !strcmp(key, "boots"));
+    writes++;
+    if (write_error) return write_error;
+    boots.stored = value;
+    boots.exists = true;
     return ESP_OK;
 }
 esp_err_t nvs_commit(nvs_handle_t handle)
@@ -100,4 +118,37 @@ int main(void)
     assert(panel_brightness_load(NULL, &trimmer) == ESP_ERR_INVALID_ARG && !opened);
     assert(panel_brightness_load(&percent, NULL) == ESP_ERR_INVALID_ARG && !opened);
     puts("panel brightness persistence tests passed");
+
+    // The boot count: 1 on a board that never counted, then one commit per boot.
+    namespace_exists = false; writes = commits = 0;
+    uint32_t boot = 99;
+    assert(panel_boot_count(&boot) == ESP_OK && boot == 1 && boots.stored == 1 && namespace_exists);
+    assert(writes == 1 && commits == 1 && !opened);
+    for (uint32_t expected = 2; expected <= 12; expected++) {
+        assert(panel_boot_count(&boot) == ESP_OK && boot == expected && boots.stored == expected);
+        assert(commits == expected && !opened);
+    }
+    // An unreadable count is unknown (0) and is not overwritten.
+    read_error = ESP_ERR_NVS_TYPE_MISMATCH;
+    assert(panel_boot_count(&boot) == read_error && boot == 0 && boots.stored == 12 && writes == 12 && !opened);
+    read_error = ESP_OK;
+    open_error = ESP_FAIL;
+    assert(panel_boot_count(&boot) == ESP_FAIL && boot == 0);
+    open_error = ESP_OK;
+    // A failed save still reports this boot's number; the next boot counts from what was saved.
+    write_error = ESP_FAIL;
+    assert(panel_boot_count(&boot) == ESP_FAIL && boot == 13 && boots.stored == 12 && commits == 12 && !opened);
+    write_error = ESP_OK;
+    commit_error = ESP_FAIL;
+    assert(panel_boot_count(&boot) == ESP_FAIL && boot == 13 && !opened);
+    commit_error = ESP_OK;
+    assert(panel_boot_count(&boot) == ESP_OK && boot == 14);
+    // The count stops at UINT32_MAX without writing again.
+    boots.stored = UINT32_MAX - 1;
+    assert(panel_boot_count(&boot) == ESP_OK && boot == UINT32_MAX && boots.stored == UINT32_MAX);
+    unsigned saturated_writes = writes, saturated_commits = commits;
+    assert(panel_boot_count(&boot) == ESP_OK && boot == UINT32_MAX);
+    assert(writes == saturated_writes && commits == saturated_commits && !opened);
+    assert(panel_boot_count(NULL) == ESP_ERR_INVALID_ARG && !opened);
+    puts("panel boot count tests passed");
 }
