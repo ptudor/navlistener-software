@@ -3,7 +3,47 @@
 #include <string.h>
 static uint32_t le32(const uint8_t *p)
 { return p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
+static uint16_t le16(const uint8_t *p) { return p[0] | (uint16_t)(p[1] << 8); }
 static bool fresh(int64_t then, int64_t now) { return now >= then && now - then <= 15000; }
+const char *const gnss_band_names[GNSS_BANDS] = {"L1", "L2", "L5", "E5b", "E6"};
+const gnss_signal_kind_t gnss_signal_kinds[GNSS_SIGNAL_KINDS] = {
+    {0, GNSS_BAND_L1, "L1C/A"}, {0, GNSS_BAND_L2, "L2C"}, {0, GNSS_BAND_L5, "L5"},
+    {1, GNSS_BAND_L1, "L1C/A"},
+    {2, GNSS_BAND_L1, "E1"}, {2, GNSS_BAND_L5, "E5a"}, {2, GNSS_BAND_E5B, "E5b"}, {2, GNSS_BAND_E6, "E6"},
+    {3, GNSS_BAND_L1, "B1I"}, {3, GNSS_BAND_E5B, "B2I"}, {3, GNSS_BAND_E6, "B3I"}, {3, GNSS_BAND_L1, "B1C"},
+    {3, GNSS_BAND_L5, "B2a"},
+    {5, GNSS_BAND_L1, "L1C/A"}, {5, GNSS_BAND_L1, "L1S"}, {5, GNSS_BAND_L2, "L2C"}, {5, GNSS_BAND_L5, "L5"},
+    {5, GNSS_BAND_L1, "L1C/B"},
+    {6, GNSS_BAND_L1, "L1OF"}, {6, GNSS_BAND_L2, "L2OF"},
+    {7, GNSS_BAND_L5, "L5"},
+};
+int gnss_signal_kind(uint8_t g, uint8_t sig)
+{
+    // Rows in gnss_signal_kinds order; each pair of halves (I/Q, data/pilot, B/C/A) is one kind.
+    static const struct { uint8_t gnss, sig, kind; } ids[] = {
+        {0,0,0}, {0,3,1}, {0,4,1}, {0,6,2}, {0,7,2},
+        {1,0,3},
+        {2,0,4}, {2,1,4}, {2,3,5}, {2,4,5}, {2,5,6}, {2,6,6}, {2,8,7}, {2,9,7}, {2,10,7},
+        {3,0,8}, {3,1,8}, {3,2,9}, {3,3,9}, {3,4,10}, {3,10,10}, {3,5,11}, {3,6,11}, {3,7,12}, {3,8,12},
+        {5,0,13}, {5,1,14}, {5,4,15}, {5,5,15}, {5,8,16}, {5,9,16}, {5,12,17},
+        {6,0,18}, {6,2,19},
+        {7,0,20},
+    };
+    for (size_t i = 0; i < sizeof ids / sizeof ids[0]; i++)
+        if (ids[i].gnss == g && ids[i].sig == sig) return ids[i].kind;
+    return -1;
+}
+// A NAV-SIG row for a code-locked signal (qualityInd 4-7) with C/N0, health aside.
+static bool locked_row(const uint8_t *r) { return r[0] < 8 && r[0] != 4 && r[1] && r[6] && r[7] >= 4 && r[7] <= 7; }
+// One jamming reading. The first makes the baseline, which is an event only as an alarm.
+static void jam_reading(gnss_status_t *s, uint8_t jam, bool first, int64_t now)
+{
+    if (first ? jam >= 2 : jam != s->jam) {
+        s->event_count++; s->event_ms = now; s->event_flags = 1;
+        s->event_states = jam | (s->spoof << 2);
+    }
+    s->rf_valid = true; s->rf_ms = now; s->jam = jam;
+}
 bool gnss_status_position_fresh(const gnss_status_t *s, int64_t now)
 { return s->fix_valid && fresh(s->fix_ms, now); }
 void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
@@ -14,12 +54,22 @@ void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
         s->tp_valid=true; s->tp_flags=p[14]; s->tp_ref=p[15]; s->tp_ms=now;
     } else if (cls == 0x0a && id == 0x38 && len >= 4 && p[0] == 0 && p[1] && len == 4u + 24u*p[1]) {
         uint8_t jam = 0;
-        for (size_t i = 4; i < len; i += 24) if ((p[i+1] & 3) > jam) jam = p[i+1] & 3;
-        if ((s->rf_valid && jam != s->jam) || (!s->rf_valid && jam >= 2)) {
-            s->event_count++; s->event_ms = now; s->event_flags = 1;
-            s->event_states = jam | (s->spoof << 2);
+        s->rf_blocks = 0;
+        for (size_t i = 4; i < len; i += 24) {
+            if ((p[i+1] & 3) > jam) jam = p[i+1] & 3;
+            if (s->rf_blocks < GNSS_RF_BLOCKS_MAX)
+                s->rf_block[s->rf_blocks++] = (gnss_rf_block_t){.id = p[i], .ant_status = p[i+2], .ant_power = p[i+3],
+                    .cw_suppression = p[i+16], .noise_per_ms = le16(p+i+12), .agc = le16(p+i+14)};
         }
-        s->rf_valid = true; s->rf_ms = now; s->jam = jam;
+        s->rf_blocks_valid = true; s->rf_blocks_ms = now;
+        if (!s->sec_sig) jam_reading(s, jam, !s->rf_valid, now);
+    } else if (cls == 0x27 && id == 9 && len >= 4 && (p[0] == 2 || p[0] == 3) && len == 4u + 4u*p[3]) {
+        // SEC-SIG jamState (0 unknown, 1 none, 2 warning) while jamDetEnabled is set.
+        const uint8_t jam = (p[1] & 1) ? (p[1] >> 1) & 3 : 0;
+        const bool first = !s->sec_sig_known;
+        s->sec_sig = true;
+        if (jam) s->sec_sig_known = true;
+        jam_reading(s, jam, first, now);
     } else if (cls == 1 && id == 3 && len == 16) {
         uint8_t spoof = (p[7] >> 3) & 3;
         if ((s->status_valid && spoof != s->spoof) || (!s->status_valid && spoof >= 2)) {
@@ -59,7 +109,20 @@ void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
         s->satellites_ms = now; s->satellites_valid = true;
     } else if(cls==1 && id==0x43 && len>=8 && p[4]==0 && len==8u+16u*p[5]) {
         s->signal_count=0;
+        memset(s->signal_locked,0,sizeof s->signal_locked);memset(s->signal_unhealthy,0,sizeof s->signal_unhealthy);
+        s->signal_other=0;
         if(p[5]>GNSS_OBS_MAX) {s->signals_valid=false;return;}
+        for(size_t i=8;i<len;i+=16) {
+            if(!locked_row(p+i)) continue;
+            const int kind=gnss_signal_kind(p[i],p[i+2]);
+            bool repeat=false; // the other half of a pair, from the same satellite
+            for(size_t j=8;j<i && !repeat;j+=16)
+                repeat=locked_row(p+j) && p[j]==p[i] && p[j+1]==p[i+1] && gnss_signal_kind(p[j],p[j+2])==kind && kind>=0;
+            if(repeat) continue;
+            if(kind<0) {if(s->signal_other<255)s->signal_other++;continue;}
+            if(s->signal_locked[kind]<255)s->signal_locked[kind]++;
+            if((p[i+10]&3)==2 && s->signal_unhealthy[kind]<255)s->signal_unhealthy[kind]++;
+        }
         for(size_t i=8;i<len;i+=16) {
             uint8_t g=p[i],sv=p[i+1],sig=nr_signal(g,p[i+2]);
             if(g>7 || g==4 || !sv || sig>31 || !p[i+6] || p[i+7]<4 || p[i+7]>7 || (p[i+10]&3)==2) continue;

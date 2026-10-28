@@ -168,7 +168,9 @@ extension names it: `MOD=NEO-M9N` on the NEO, `MOD=ZED-X20P` on the ZED/X20 and
 `MOD=MAX-M10S` on the MAX. With no receiver listed, none is configured. It switches to `NVF_RX_BAUD`, then requests UBX output,
 SFRBX, MON-RF, NAV-SAT, NAV-PVT, NAV-STATUS, TIM-TP, NAV-SIG, NAV-CLOCK and NAV-EOE through
 RAM-only CFG-VALSET, one key per request so a receiver that rejects one still gets the rest.
-Firmware logs ACK/NAK and bounded timeouts for each message setting.
+Firmware logs each key by its interface-description name with its ACK, NAK or bounded
+timeout, then `receiver RAM configuration done: N of M keys acknowledged`, after the rate the
+link runs at: `receiver answering at 460800 baud, set in its RAM from 38400`.
 NAV-PVT, NAV-CLOCK and NAV-STATUS of one navigation epoch are joined into the
 receiver-solution telemetry record (`0x03`, [contract](../docs/proposals/STATION-ASSURANCE.md#2-receiver-solution-telemetry-gnf1-type-0x03))
 that feeds the collector's station integrity checks. NAV-EOE completes each epoch at
@@ -184,13 +186,31 @@ and MON-RF reports SHORT, which the collector raises as `antenna_fault`.
 `CFG-HW-ANT_CFG_PWRDOWN` stays off because `ANT_OFF` is not connected. The switch
 latches off and the receiver keeps reporting SHORT until `3V3_GNSS` is power-cycled,
 which also resets the receiver; the firmware does not cycle it automatically.
+The ZED-X20P gets three more keys. `CFG-SIGNAL-QZSS_ENA` and `CFG-SIGNAL-NAVIC_ENA` come
+straight after UBX output: every X20 signal plan leaves both systems off, with their bands
+on beneath them (integration manual 2.2.4.1), so without them the panel's QZSS and NavIC
+columns could never turn green, even inside their service regions. Each resets the GNSS
+subsystem, so the next key waits 500 ms after its ACK, and both go before any status message
+is enabled, where the reset would read as a spoofing or jamming transition. The
+`UBX-SEC-SIG` rate comes last: from HPG 2.00 on, MON-RF's jamming flag always reads 0 and
+SEC-SIG carries the jamming state, which then fills the receiver context's jamming field;
+until SEC-SIG first reports a state, its unknown readings set no baseline. GPS L5 is left
+as the receiver flags it: pre-operational, unhealthy and out of the fix (2.2.5).
 Receiver flash and battery-backed configuration are not written. Any other model is
-observed without automatic configuration. The keys have the same IDs in the
+observed without automatic configuration. The shared keys have the same IDs in the
 [M9 SPG 4.04](https://content.u-blox.com/sites/default/files/u-blox-M9-SPG-4.04_InterfaceDescription_UBX-21022436.pdf),
 M10 SPG 5.10 (UBX-21035062) and
 [X20 HPG 2.11](https://content.u-blox.com/sites/default/files/documents/u-blox-X20-HPG-2.11_InterfaceDescription_UBXDOC-304424225-21617.pdf)
 interface descriptions. The ZED-X20P starts at 38400 baud and the MAX-M10S at 9600;
 both support 460800.
+
+Once the model is confirmed the firmware asks for `UBX-SEC-UNIQID` and logs the chip's
+48-bit (X20, M10) or 40-bit (M9) ID once. Every 10 seconds, beside the `tracked:` line, it
+logs `RF:` (the jamming state and its source, then each MON-RF block's antenna supervisor
+and power, AGC as a share of maximum gain, noise and CW suppression) and `signals:` (the
+code-locked signals per system and kind from NAV-SIG, pairs of halves counted once per
+satellite and unhealthy ones noted, then the bands they cover). A change in any block's
+antenna supervisor is logged when it happens, SHORT and OPEN as warnings.
 
 The USB console reports `bytes`, checksum-valid `UBX`, checksum-valid `NMEA`,
 and emitted `SFRBX` every ten seconds, including before WiFi provisioning.

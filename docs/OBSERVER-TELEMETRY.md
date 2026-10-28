@@ -95,10 +95,10 @@ the last report accumulates slow drift instead of ignoring many small steps.
 GNSS navigation and fast RF telemetry continue independently, in the higher
 priority UART task; I2C conversion waits occur only in the board task.
 
-Changes in receiver-reported MON-RF jamming or NAV-STATUS spoofing state request
-a fresh environmental conversion and full report, with a five-second minimum
-interval. Initial healthy/unknown readings establish state without a transition;
-an initial alarm also requests a snapshot. Both alarm and recovery transitions
+Changes in receiver-reported jamming (MON-RF, or UBX-SEC-SIG on the ZED-X20P) or
+NAV-STATUS spoofing state request a fresh environmental conversion and full report,
+with a five-second minimum interval. Initial healthy/unknown readings establish state
+without a transition; an initial alarm also requests a snapshot. Both alarm and recovery transitions
 count. A monotonic event counter preserves evidence of transitions between board
 polls. Closely spaced transitions are coalesced; the header carries the last
 transition's time/type/states, not an exhaustive event log. Steady alarms do not
@@ -505,6 +505,13 @@ values retain their last reading and must be interpreted with validity/uptime.
 Jamming: 0 unknown, 1 OK, 2 warning, 3 critical. Spoofing: 0 unknown/deactivated,
 1 no indication, 2 indication, 3 multiple indications. This is receiver context,
 not a replacement for high-rate ReceptionData/JammingStats.
+
+The ZED-X20P's MON-RF jamming flag always reads 0 from HPG 2.00 on, so on that receiver the
+firmware enables UBX-SEC-SIG and takes jamming from its jamState instead: 0 unknown, 1 OK,
+2 warning (SEC-SIG has no critical state), 0 while its detector is disabled. The "current
+MON-RF" validity bit and its uptime then describe the latest SEC-SIG. SEC-SIG readings that
+are still unknown when the receiver starts set no baseline, so the first state it reports is
+the baseline, as the first MON-RF reading is on other receivers.
 
 On the P3 the mosaic-G5's SBF fills the same fields ([SBF-RECEIVER.md](../esp32/docs/SBF-RECEIVER.md)
 §6). Counts come from MeasEpoch, and the fix from PVTGeodetic. Both RF fields and their uptimes

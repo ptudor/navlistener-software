@@ -63,13 +63,19 @@ def judge(text: str, mac="02a1b2c3d4e5", expect=None) -> dict:
 
 # The RAM keys the firmware sets on a ZED-X20P, in order (ubx_probe.c).
 X20_KEYS = [
-    ("CFG-UART1OUTPROT-UBX", 0x10740001), ("CFG-MSGOUT-UBX_RXM_SFRBX_UART1", 0x20910232),
+    ("CFG-UART1OUTPROT-UBX", 0x10740001), ("CFG-SIGNAL-QZSS_ENA", 0x10310024),
+    ("CFG-SIGNAL-NAVIC_ENA", 0x10310026), ("CFG-MSGOUT-UBX_RXM_SFRBX_UART1", 0x20910232),
     ("CFG-MSGOUT-UBX_MON_RF_UART1", 0x2091035A), ("CFG-MSGOUT-UBX_NAV_SAT_UART1", 0x20910016),
     ("CFG-MSGOUT-UBX_NAV_PVT_UART1", 0x20910007), ("CFG-MSGOUT-UBX_NAV_STATUS_UART1", 0x2091001B),
     ("CFG-MSGOUT-UBX_TIM_TP_UART1", 0x2091017E), ("CFG-MSGOUT-UBX_NAV_SIG_UART1", 0x20910346),
     ("CFG-MSGOUT-UBX_NAV_CLOCK_UART1", 0x20910066), ("CFG-MSGOUT-UBX_NAV_EOE_UART1", 0x20910160),
-    ("CFG-HW-ANT_CFG_SHORTDET", 0x10A3002F),
+    ("CFG-HW-ANT_CFG_SHORTDET", 0x10A3002F), ("CFG-MSGOUT-UBX_SEC_SIG_UART1", 0x20910635),
 ]  # fmt: skip
+X20_RF = (
+    "RF: jamming=OK (SEC-SIG); block 0 antenna=OK power=DONTKNOW AGC=36% noise=76 CW=15; "
+    "block 1 antenna=OK power=DONTKNOW AGC=30% noise=102 CW=3; block 2 antenna=OK power=DONTKNOW AGC=25% noise=52 CW=2"
+)
+X20_SIGNALS = "GPS L1C/A=8 L2C=6 L5=5 (5 unhealthy), GAL E1=6 E5a=6 E6=5"
 
 # A 162mm ZED-X20P board with its panel, as the universal image prints it in setup mode: the
 # W5500's identity is read at every boot, and the uplink starts only once provisioned. The
@@ -97,8 +103,11 @@ X20 = [
     log("I", "receiver", "valid receiver traffic at 38400 baud"),
     log("I", "receiver", "MON-VER: software=HPG 2.10                     hardware=000A0000  ; ZED-X20P=yes"),
     log("I", "receiver", "receiver answering at 460800 baud, set in its RAM from 38400 (CFG-UART1-BAUDRATE)"),
+    log("I", "receiver", "receiver unique chip ID 95f6bb8f2e54 (UBX-SEC-UNIQID)"),
     *(log("I", "receiver", f"RAM key {name} (0x{key:08x}): ACK") for name, key in X20_KEYS),
-    log("I", "receiver", "receiver RAM configuration done: 11 of 11 keys acknowledged; the SFRBX counter confirms raw output"),
+    log("I", "receiver", "receiver RAM configuration done: 14 of 14 keys acknowledged; the SFRBX counter confirms raw output"),
+    log("I", "receiver", X20_RF),
+    log("I", "receiver", f"signals: {X20_SIGNALS}; bands L1 L2 L5 E6"),
     *BOOT[-4:],
 ]
 
@@ -241,8 +250,11 @@ class PreEnrollmentTests(unittest.TestCase):
                 "receiver.model": ("pass", "MON-VER confirms ZED-X20P"),
                 "receiver.config": (
                     "pass",
-                    "UART1 at 460800 baud, set in its RAM from 38400; 11 of 11 RAM keys acknowledged",
+                    "UART1 at 460800 baud, set in its RAM from 38400; 14 of 14 RAM keys acknowledged",
                 ),
+                "receiver.uid": ("pass", "u-blox chip ID 95f6bb8f2e54"),
+                "receiver.antenna": ("pass", "antenna OK; 3 RF blocks, AGC 36%/30%/25%; jamming OK (SEC-SIG)"),
+                "receiver.signals": ("pass", f"bands L1 L2 L5 E6 tracked: {X20_SIGNALS}"),
                 "ethernet": ("pass", "W5500 verified; it starts once the board is provisioned"),
                 "panel_chain": ("pass", "24-bit chain read back"),
                 "setup": ("pass", "setup network and app provisioning ready"),
@@ -257,18 +269,18 @@ class PreEnrollmentTests(unittest.TestCase):
         checks = judge(kept, expect="zed-x20")
         self.assertEqual(checks["receiver"], ("pass", "valid traffic at 460800 baud"))
         self.assertEqual(
-            checks["receiver.config"], ("pass", "UART1 at 460800 baud, the configured rate; 11 of 11 RAM keys acknowledged")
+            checks["receiver.config"], ("pass", "UART1 at 460800 baud, the configured rate; 14 of 14 RAM keys acknowledged")
         )
         # A refused or unanswered key fails the check and is named.
         refused = (
             console(X20)
             .replace("CFG-MSGOUT-UBX_NAV_EOE_UART1 (0x20910160): ACK", "CFG-MSGOUT-UBX_NAV_EOE_UART1 (0x20910160): NAK (unsupported)")
             .replace("CFG-HW-ANT_CFG_SHORTDET (0x10a3002f): ACK", "CFG-HW-ANT_CFG_SHORTDET (0x10a3002f): no ACK; output unconfirmed")
-            .replace("11 of 11 keys", "9 of 11 keys")
+            .replace("14 of 14 keys", "12 of 14 keys")
         )
         self.assertEqual(
             judge(refused, expect="zed-x20")["receiver.config"],
-            ("fail", "9 of 11 RAM keys acknowledged; CFG-MSGOUT-UBX_NAV_EOE_UART1 NAK; CFG-HW-ANT_CFG_SHORTDET no ACK"),
+            ("fail", "12 of 14 RAM keys acknowledged; CFG-MSGOUT-UBX_NAV_EOE_UART1 NAK; CFG-HW-ANT_CFG_SHORTDET no ACK"),
         )
         # Still configuring when the window closed.
         unfinished = console([line for line in X20 if "configuration done" not in line])
@@ -279,6 +291,49 @@ class PreEnrollmentTests(unittest.TestCase):
         # Without --expect, the receiver line still shows the running rate.
         self.assertNotIn("receiver.config", judge(console(X20)))
         self.assertEqual(judge(console(X20))["receiver"], ("pass", "valid traffic at 38400 baud, running at 460800 baud"))
+
+    def test_the_receiver_chip_antenna_and_bands(self):
+        x20 = console(X20)
+        unread = console([line for line in X20 if "unique chip ID" not in line])
+        self.assertEqual(judge(unread, expect="zed-x20")["receiver.uid"], ("fail", "no UBX-SEC-UNIQID answer within 30 s"))
+        # A short on any block fails, and names it.
+        short = x20.replace("block 1 antenna=OK", "block 1 antenna=SHORT")
+        self.assertEqual(
+            judge(short, expect="zed-x20")["receiver.antenna"],
+            ("fail", "antenna block 1 SHORT; 3 RF blocks, AGC 36%/30%/25%; jamming OK (SEC-SIG)"),
+        )
+        # The X20 sets short detection, so its supervisor must say OK.
+        unsupervised = x20.replace("antenna=OK", "antenna=DONTKNOW")
+        self.assertEqual(
+            judge(unsupervised, expect="zed-x20")["receiver.antenna"][1].split(";")[0],
+            "antenna DONTKNOW, not OK: is short detection set?",
+        )
+        no_rf = console([line for line in X20 if "RF: " not in line])
+        self.assertEqual(judge(no_rf, expect="zed-x20")["receiver.antenna"], ("fail", "no MON-RF blocks within 30 s"))
+        # A board with no short signal wired passes on DONTKNOW, never on SHORT.
+        neo = console([*BOOT, log("I", "receiver", "MON-VER: software=SPG 4.04 hardware=000A0000  ; NEO-M9N=yes"),
+                       log("I", "receiver", "RF: jamming=OK (MON-RF); block 0 antenna=DONTKNOW power=DONTKNOW AGC=40% noise=90 CW=1")])
+        self.assertEqual(
+            judge(neo, expect="neo")["receiver.antenna"],
+            ("pass", "antenna DONTKNOW (no supervision wired); 1 RF block, AGC 40%; jamming OK (MON-RF)"),
+        )
+        self.assertEqual(judge(neo.replace("antenna=DONTKNOW", "antenna=SHORT"), expect="neo")["receiver.antenna"][0], "fail")
+        # Bands need a sky view: missing ones are a skip that says which were seen.
+        partial = x20.replace("; bands L1 L2 L5 E6", "; bands L1 L5")
+        self.assertEqual(
+            judge(partial, expect="zed-x20")["receiver.signals"],
+            ("skip", f"bands L1 L5 of L1 L2 L5 E6 tracked (needs sky): {X20_SIGNALS}"),
+        )
+        dark = x20.replace(f"{X20_SIGNALS}; bands L1 L2 L5 E6", "none code-locked; bands none")
+        self.assertEqual(
+            judge(dark, expect="zed-x20")["receiver.signals"],
+            ("skip", "bands none of L1 L2 L5 E6 tracked (needs sky): none code-locked"),
+        )
+        self.assertEqual(judge(neo, expect="neo")["receiver.signals"], ("skip", "no NAV-SIG summary within 30 s"))
+        # An unconfirmed receiver was never asked.
+        unconfirmed = judge(x20.replace("ZED-X20P=yes", "ZED-X20P=unconfirmed"), expect="zed-x20")
+        for name in ("receiver.uid", "receiver.antenna", "receiver.signals"):
+            self.assertEqual(unconfirmed[name][0], "skip")
 
     def test_a_good_p3_passes(self):
         checks = judge(console(P3), expect="mosaic-p3")
@@ -393,7 +448,7 @@ class PreEnrollmentTests(unittest.TestCase):
             station="bench-1", started=started, finished=started + timedelta(seconds=40), facts=facts,
             mac="02a1b2c3d4e5", build=build, checks=checks, console=text.encode(),
         )  # fmt: skip
-        self.assertEqual((report["tool"], report["result"]), ("bench_check.py 4", "pass"))
+        self.assertEqual((report["tool"], report["result"]), ("bench_check.py 5", "pass"))
 
 
 class ReportTests(unittest.TestCase):

@@ -41,7 +41,7 @@ static receiver_sbf_pins_t sbf_pins = {.rts = -1, .cts = -1, .reset = -1};
 static atomic_uint s_ticks;
 static atomic_bool snapshot_requested;
 void receiver_request_snapshot(void) {atomic_store(&snapshot_requested,true);}
-static bool version_seen, expected_model;
+static bool version_seen, expected_model, unique_id_logged;
 static int cfg_ack;
 static gnss_status_t health = {.supported = 0x6f}, snapshot = {.supported = 0x6f};
 static portMUX_TYPE health_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -73,6 +73,12 @@ static void observe(uint8_t cls, uint8_t id, const uint8_t *body, size_t len, vo
         }
     } else if (cls == 0x05 && (id == 0 || id == 1) && len == 2 && body[0] == 0x06 && body[1] == 0x8a) {
         cfg_ack = id == 1 ? 1 : -1;
+    } else if (cls == 0x27 && id == 0x03 && !unique_id_logged) {
+        char uid[13];
+        if (ubx_unique_id(body, len, uid)) {
+            unique_id_logged = true;
+            ESP_LOGI(TAG, "receiver unique chip ID %s (UBX-SEC-UNIQID)", uid);
+        }
     }
 }
 static void poll_version(void)
@@ -80,6 +86,99 @@ static void poll_version(void)
     uint8_t pkt[8];
     size_t n = ubx_poll_version(pkt);
     uart_write_bytes(RX_UART, pkt, n);
+}
+static void poll_unique_id(void)
+{
+    uint8_t pkt[8];
+    size_t n = ubx_poll_unique_id(pkt);
+    uart_write_bytes(RX_UART, pkt, n);
+}
+static const char *antenna_status(uint8_t v)
+{
+    static const char *const names[] = {"INIT", "DONTKNOW", "OK", "SHORT", "OPEN"};
+    return v < sizeof names / sizeof names[0] ? names[v] : "invalid";
+}
+static const char *antenna_power(uint8_t v)
+{
+    static const char *const names[] = {"OFF", "ON", "DONTKNOW"};
+    return v < sizeof names / sizeof names[0] ? names[v] : "invalid";
+}
+// Each RF block's antenna supervisor once it changes, SHORT and OPEN as warnings; ant_status
+// + 1 is kept so that 0 means not yet reported.
+static void log_antenna_changes(const gnss_status_t *s)
+{
+    static uint8_t reported[GNSS_RF_BLOCKS_MAX];
+    for (unsigned b = 0; b < s->rf_blocks; b++) {
+        const gnss_rf_block_t *k = &s->rf_block[b];
+        if (reported[b] == k->ant_status + 1) continue;
+        const char *was = reported[b] ? antenna_status(reported[b] - 1) : "not reported";
+        if (k->ant_status == 3 || k->ant_status == 4)
+            ESP_LOGW(TAG, "RF block %u antenna %s, power %s (was %s)", k->id, antenna_status(k->ant_status),
+                     antenna_power(k->ant_power), was);
+        else
+            ESP_LOGI(TAG, "RF block %u antenna %s, power %s (was %s)", k->id, antenna_status(k->ant_status),
+                     antenna_power(k->ant_power), was);
+        reported[b] = k->ant_status + 1;
+    }
+}
+// One line for the jamming state and where it came from, then MON-RF's blocks: the antenna
+// supervisor, the AGC as a share of maximum gain, the noise level and the CW suppression.
+static void log_rf(const gnss_status_t *s)
+{
+    static const char *const jamming[] = {"unknown", "OK", "warning", "critical"};
+    static char line[512];
+    int lead = snprintf(line, sizeof line, "jamming=%s (%s); ", s->rf_valid ? jamming[s->jam & 3] : "unread",
+                        s->sec_sig ? "SEC-SIG" : "MON-RF");
+    size_t used = lead > 0 ? (size_t)lead : 0;
+    for (unsigned b = 0; b < s->rf_blocks && used < sizeof line; b++) {
+        const gnss_rf_block_t *k = &s->rf_block[b];
+        int n = snprintf(line + used, sizeof line - used, "%sblock %u antenna=%s power=%s AGC=%u%% noise=%u CW=%u",
+                         b ? "; " : "", (unsigned)k->id, antenna_status(k->ant_status), antenna_power(k->ant_power),
+                         (unsigned)((k->agc * 100u + 4095u) / 8191u), k->noise_per_ms, k->cw_suppression);
+        if (n < 0) break;
+        used += (size_t)n;
+    }
+    if (!s->rf_blocks && used < sizeof line) snprintf(line + used, sizeof line - used, "no blocks");
+    ESP_LOGI(TAG, "RF: %s", line);
+}
+// Code-locked signals per system and kind, "GPS L1C/A=8 L2C=6 L5=5 (5 unhealthy), GAL E1=6",
+// then the bands they cover.
+static void log_signals(const gnss_status_t *s)
+{
+    static const uint8_t order[] = {0, 1, 2, 3, 5, 6, 7};
+    static const char *const systems[8] = {"GPS", "SBAS", "GAL", "BDS", "", "QZSS", "GLO", "NavIC"};
+    static char line[512];
+    size_t used = 0;
+    unsigned bands = 0;
+    for (unsigned o = 0; o < sizeof order; o++) {
+        bool first = true;
+        for (unsigned k = 0; k < GNSS_SIGNAL_KINDS; k++) {
+            if (gnss_signal_kinds[k].gnss != order[o] || !s->signal_locked[k]) continue;
+            bands |= 1u << gnss_signal_kinds[k].band;
+            if (used >= sizeof line) continue;
+            int n = first ? snprintf(line + used, sizeof line - used, "%s%s %s=%u", used ? ", " : "", systems[order[o]],
+                                     gnss_signal_kinds[k].name, s->signal_locked[k])
+                          : snprintf(line + used, sizeof line - used, " %s=%u", gnss_signal_kinds[k].name,
+                                     s->signal_locked[k]);
+            if (n > 0) used += (size_t)n;
+            if (s->signal_unhealthy[k] && used < sizeof line) {
+                n = snprintf(line + used, sizeof line - used, " (%u unhealthy)", s->signal_unhealthy[k]);
+                if (n > 0) used += (size_t)n;
+            }
+            first = false;
+        }
+    }
+    if (s->signal_other && used < sizeof line) {
+        int n = snprintf(line + used, sizeof line - used, "%sother=%u", used ? ", " : "", s->signal_other);
+        if (n > 0) used += (size_t)n;
+    }
+    char band_list[32] = "";
+    for (unsigned b = 0; b < GNSS_BANDS; b++)
+        if (bands & 1u << b) {
+            if (*band_list) strlcat(band_list, " ", sizeof band_list);
+            strlcat(band_list, gnss_band_names[b], sizeof band_list);
+        }
+    ESP_LOGI(TAG, "signals: %s; bands %s", used ? line : "none code-locked", bands ? band_list : "none");
 }
 static const char *key_name(uint32_t key)
 {
@@ -113,7 +212,7 @@ static void rx_task(void *arg)
     bool configured = false, baud_attempted = false, config_started = false;
     int switched_from = 0; // the rate the receiver was found at, when it was moved to CONFIG_NVF_RX_BAUD
     unsigned acknowledged = 0;
-    int64_t cfg_deadline = 0;
+    int64_t cfg_deadline = 0, rf_seen_ms = 0;
     esp_task_wdt_add(NULL);
     for (;;) {
         esp_task_wdt_reset();
@@ -173,6 +272,7 @@ static void rx_task(void *arg)
                 // MON-VER has confirmed the model at this rate, so the link runs at it.
                 if (!config_started) {
                     config_started = true; acknowledged = 0;
+                    if (!unique_id_logged) poll_unique_id();
                     if (switched_from)
                         ESP_LOGI(TAG, "receiver answering at %d baud, set in its RAM from %d (%s)", baud, switched_from,
                                  key_name(UBX_KEY_UART1_BAUDRATE));
@@ -183,22 +283,31 @@ static void rx_task(void *arg)
                     ESP_LOGI(TAG, "RAM key %s (0x%08lx): %s", key_name(keys[setting]), (unsigned long)keys[setting],
                              cfg_ack > 0 ? "ACK" : "NAK (unsupported)");
                     if (cfg_ack > 0) acknowledged++;
+                    // A CFG-SIGNAL change resets the GNSS subsystem: 500 ms after its ACK.
+                    if (cfg_ack > 0 && ubx_key_resets_gnss(keys[setting]) && cfg_deadline < now + 500)
+                        cfg_deadline = now + 500;
                     setting++; tries = 0; cfg_ack = 0;
                 } else if (now >= cfg_deadline) {
                     if (tries == 3) {
                         ESP_LOGW(TAG, "RAM key %s (0x%08lx): no ACK; output unconfirmed", key_name(keys[setting]),
                                  (unsigned long)keys[setting]);
+                        if (ubx_key_resets_gnss(keys[setting])) cfg_deadline = now + 500; // it may have applied
                         setting++; tries = 0;
                     } else {
                         set_ram(keys[setting], 1, 1);
                         tries++; cfg_deadline = now + 1000;
                     }
                 }
-            } else {
+            } else if (now >= cfg_deadline) { // after the last key's settling time, too
                 configured = true;
                 ESP_LOGI(TAG, "receiver RAM configuration done: %u of %u keys acknowledged; the SFRBX counter confirms raw output",
                          acknowledged, (unsigned)key_count);
+                if (!unique_id_logged) poll_unique_id(); // once more, after the configuration traffic
             }
+        }
+        if (health.rf_blocks_valid && health.rf_blocks_ms != rf_seen_ms) {
+            rf_seen_ms = health.rf_blocks_ms;
+            log_antenna_changes(&health);
         }
         if (now >= next_log) {
             uint32_t bytes = atomic_load_explicit(&parser->bytes, memory_order_relaxed);
@@ -212,6 +321,8 @@ static void rx_task(void *arg)
                 health.tracked[0], health.tracked[1], health.tracked[2], health.tracked[3],
                 health.tracked[5], health.tracked[6], health.tracked[7],
                 gnss_status_position_fresh(&health, now) ? "valid" : "unavailable");
+            if (health.rf_blocks_valid && now >= health.rf_blocks_ms && now - health.rf_blocks_ms <= 15000) log_rf(&health);
+            if (health.signals_valid && now >= health.signals_ms && now - health.signals_ms <= 15000) log_signals(&health);
             next_log = now + 10000;
         }
     }

@@ -14,6 +14,21 @@ size_t ubx_poll_version(uint8_t out[8])
     out[2] = 0x0a; out[3] = 0x04;
     return finish(out, 0);
 }
+size_t ubx_poll_unique_id(uint8_t out[8])
+{
+    out[2] = 0x27; out[3] = 0x03;
+    return finish(out, 0);
+}
+bool ubx_unique_id(const uint8_t *body, size_t len, char out[13])
+{
+    // Version 1 carries 5 bytes (M9, F9), version 2 carries 6 (M10, X20).
+    if (!body || !((len == 9 && body[0] == 1) || (len == 10 && body[0] == 2))) return false;
+    static const char digits[] = "0123456789abcdef";
+    size_t n = 0;
+    for (size_t i = 4; i < len; i++) { out[n++] = digits[body[i] >> 4]; out[n++] = digits[body[i] & 15]; }
+    out[n] = 0;
+    return true;
+}
 size_t ubx_set_ram(uint8_t out[20], uint32_t key, uint32_t value, unsigned width)
 {
     if (width != 1 && width != 4) return 0;
@@ -25,19 +40,30 @@ size_t ubx_set_ram(uint8_t out[20], uint32_t key, uint32_t value, unsigned width
 }
 // UBX output on UART1, then the SFRBX, MON-RF, NAV-SAT, NAV-PVT, NAV-STATUS, TIM-TP,
 // NAV-SIG, NAV-CLOCK and NAV-EOE UART1 rates. NAV-PVT, NAV-CLOCK and NAV-STATUS form the
-// receiver-solution record; NAV-EOE completes each epoch promptly. CFG-HW-ANT_CFG_SHORTDET
-// comes last and only the ZED-X20P gets it: the ZED/X20 board drives its pin 6
-// ANT_SHORT_N (default active low, internal pull-up) from the antenna switch's fault
-// output, so MON-RF reports SHORT. The NEO and MAX boards wire no short signal to their
-// receivers, which keep detection off.
+// receiver-solution record; NAV-EOE completes each epoch promptly. The ZED-X20P adds four:
+// - CFG-SIGNAL-QZSS_ENA and CFG-SIGNAL-NAVIC_ENA, right after UBX output and before any
+//   status message is on: both are off by default in every X20 signal plan (integration
+//   manual UBXDOC-963802114-12901, 2.2.4.1), with all their bands on beneath them, and each
+//   resets the GNSS subsystem, which a running NAV-STATUS or SEC-SIG would report as a
+//   spoofing or jamming transition. The M9 and M10 enable QZSS by default and have no NavIC.
+// - CFG-HW-ANT_CFG_SHORTDET: the ZED/X20 board drives its pin 6 ANT_SHORT_N (default active
+//   low, internal pull-up) from the antenna switch's fault output, so MON-RF reports SHORT.
+//   The NEO and MAX boards wire no short signal to their receivers, which keep detection off.
+// - The SEC-SIG rate: from HPG 2.00 on, MON-RF's jamming flag reads 0 and SEC-SIG carries it.
 static const uint32_t ram_keys[] = {0x10740001, 0x20910232, 0x2091035a, 0x20910016, 0x20910007,
-    0x2091001b, 0x2091017e, 0x20910346, 0x20910066, 0x20910160, 0x10a3002f};
+    0x2091001b, 0x2091017e, 0x20910346, 0x20910066, 0x20910160};
+static const uint32_t x20_keys[] = {0x10740001, 0x10310024, 0x10310026, 0x20910232, 0x2091035a,
+    0x20910016, 0x20910007, 0x2091001b, 0x2091017e, 0x20910346, 0x20910066, 0x20910160, 0x10a3002f,
+    0x20910635};
 size_t ubx_ram_keys(const char *module, const uint32_t **keys)
 {
-    size_t n = sizeof ram_keys / sizeof ram_keys[0];
+    if (module && !strcmp(module, "ZED-X20P")) { *keys = x20_keys; return sizeof x20_keys / sizeof x20_keys[0]; }
     *keys = ram_keys;
-    return module && !strcmp(module, "ZED-X20P") ? n : n - 1;
+    return sizeof ram_keys / sizeof ram_keys[0];
 }
+// The CFG-SIGNAL group, 0x31: "some changes to items within this group trigger a reset to the
+// GNSS subsystem" (X20 HPG 2.11 interface description, 6.9.22).
+bool ubx_key_resets_gnss(uint32_t key) { return (key >> 16 & 0xff) == 0x31; }
 const char *ubx_key_name(uint32_t key)
 {
     switch (key) {
@@ -52,6 +78,9 @@ const char *ubx_key_name(uint32_t key)
     case 0x20910066: return "CFG-MSGOUT-UBX_NAV_CLOCK_UART1";
     case 0x20910160: return "CFG-MSGOUT-UBX_NAV_EOE_UART1";
     case 0x10a3002f: return "CFG-HW-ANT_CFG_SHORTDET";
+    case 0x20910635: return "CFG-MSGOUT-UBX_SEC_SIG_UART1";
+    case 0x10310024: return "CFG-SIGNAL-QZSS_ENA";
+    case 0x10310026: return "CFG-SIGNAL-NAVIC_ENA";
     case UBX_KEY_UART1_BAUDRATE: return "CFG-UART1-BAUDRATE";
     }
     return NULL;

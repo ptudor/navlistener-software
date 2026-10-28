@@ -349,11 +349,15 @@ unit to that same identity.
 board's revision A: the manifest must name it, every part its list carries that the
 firmware reports at boot must answer and, where the firmware reads one, show the
 right identity. The receiver must stream and confirm its model, and a missing verdict
-fails rather than skips. A u-blox receiver must also acknowledge every setting the firmware
-changes from its defaults, all in its RAM: the report names the UART1 rate it runs at (on a
-ZED-X20P, 460800 baud, moved from the 38400 it powers up at) and any key it refused. The
-ZED/X20's W5500 must answer its version read, which the firmware makes at every boot, setup
-mode included, and the board must read the panel chain back, so fit the panel. The checks are listed in
+fails rather than skips. A u-blox receiver must also acknowledge every setting the
+firmware changes from its defaults, all in its RAM: the report names the UART1 rate it
+runs at (on a ZED-X20P, 460800 baud, moved from the 38400 it powers up at) and any key it
+refused. It must answer with its chip ID and report its antenna supervisor without a short
+or open (on the ZED/X20, OK on every RF block). The bands it tracks are reported but never
+fail the test: put the antenna where it sees the sky to see all of them pass. The
+ZED/X20's W5500 must answer its version read, which the firmware makes at every boot,
+setup mode included, and the board must read the panel chain back, so fit the panel. The
+checks are listed in
 [FLEET-REPORTS.md](../../docs/FLEET-REPORTS.md#pre-enrollment-qa---expect). Raise
 `--seconds` if a cold receiver has not answered within the 30 s window.
 

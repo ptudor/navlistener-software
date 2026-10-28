@@ -15,7 +15,10 @@
   manifest EEPROM for that sequence (esp32/docs/COMMISSIONING.md). A u-blox receiver
   must acknowledge every key the firmware sets in its RAM (`receiver.config`), and the
   report gives the UART1 rate the link runs at beside the rate the receiver was found at.
-  The console names each key. The tool is version 4; its reports remain bench report v1.
+  The console names each key. `receiver.uid` records the receiver's UBX-SEC-UNIQID chip
+  ID, `receiver.antenna` fails an antenna SHORT or OPEN (and on the ZED/X20 anything but
+  OK), and `receiver.signals` reports the bands tracked. The tool is version 5; its
+  reports remain bench report v1.
 - The S3 panel plays a boot sequence before it shows reception. Every boot sweeps the
   last 32 bits of the board's EEPROM serial across the columns, green for 1 and amber
   for 0, so a board shows the same sweep at every boot and none when its identity was
@@ -24,6 +27,15 @@
 - The ZED/X20 console reports the receiver's RTK_STAT pin, which drives the panel's RTK
   lamp: high (no carrier-phase solution), low (RTK fixed) or toggling (corrections in use,
   no fix), one line whenever that changes over 10-second windows.
+- The ZED-X20P enables QZSS and NavIC, which every X20 signal plan leaves off, so the
+  panel's QZSS and NavIC columns can turn green inside their service regions. It also
+  enables UBX-SEC-SIG and takes the jamming state from it: from HPG 2.00 on, MON-RF's
+  jamming flag always reads 0, so ZED/X20 boards never reported jamming before.
+- The receiver console logs the u-blox chip ID (UBX-SEC-UNIQID) once, and every 10
+  seconds an `RF:` line (jamming and its source; each MON-RF block's antenna supervisor,
+  power, AGC, noise and CW suppression) and a `signals:` line (code-locked signals per
+  system and kind from NAV-SIG, and the bands they cover). Antenna supervisor changes are
+  logged as they happen, SHORT and OPEN as warnings.
 - The DS3231M (or MAX31328) RTC's own temperature is read with each environmental sample,
   printed on the console and reported as ObserverDetails tag 26 (`rtc_temperature`), in
   0.25 °C steps. A zero that may be the part's power-on default is withheld.

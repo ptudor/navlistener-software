@@ -33,7 +33,7 @@ import sys
 import time
 
 FORMAT = "navlistener-bench-report-v1"
-TOOL = "bench_check.py 4"
+TOOL = "bench_check.py 5"
 DEFAULT_SECONDS = 30.0
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -62,6 +62,10 @@ _RUNNING = re.compile(r"receiver answering at (\d+) baud, (?:set in its RAM from
 _RAM_KEY = re.compile(r"RAM key (\S{1,48}) \(0x[0-9a-f]{8}\): (ACK|NAK \(unsupported\)|no ACK; output unconfirmed)")
 _KEY_VERDICTS = {"ACK": "ACK", "NAK (unsupported)": "NAK", "no ACK; output unconfirmed": "no ACK"}
 _CONFIGURED = re.compile(r"receiver RAM configuration done: (\d+) of (\d+) keys acknowledged.*")
+_UNIQUE_ID = re.compile(r"receiver unique chip ID ([0-9a-f]{10}|[0-9a-f]{12}) \(UBX-SEC-UNIQID\)")
+_RF = re.compile(r"RF: jamming=(\w+) \((SEC-SIG|MON-RF)\); (.*)")
+_RF_BLOCK = re.compile(r"block (\d+) antenna=(\w+) power=(\w+) AGC=(\d+)% noise=\d+ CW=\d+")
+_SIGNALS = re.compile(r"signals: (.*); bands (.*)")
 _NOT_MOSAIC = "; not a mosaic-G5, the receiver the manifest lists"
 _CHAIN = re.compile(r"panel chain: (24|16|unknown) bits")
 _MAC = re.compile(r"MAC:\s+((?:[0-9a-f]{2}:){5}[0-9a-f]{2})")
@@ -89,6 +93,8 @@ class BoardProfile:
     receiver: str  # the model MON-VER must confirm, or "sbf" for the mosaic-G5
     ethernet: bool = False  # COMM_W5500 listed
     panel_chain: bool = False  # IO_MCP23008 listed: the panel chain is read back
+    antenna_supervised: bool = False  # the board wires an antenna short signal the firmware enables
+    bands: tuple[str, ...] = ("L1",)  # the bands a u-blox receiver tracks with its default signal plan
 
 
 # Keyed as NVF_BOARD and NVF_MANIFEST_INIT name the boards. Not reported at boot, so not
@@ -111,6 +117,8 @@ PROFILES = {
         receiver="ZED-X20P",
         ethernet=True,
         panel_chain=True,
+        antenna_supervised=True,
+        bands=("L1", "L2", "L5", "E6"),  # signal plan SP2
     ),
     "max": BoardProfile(
         manifest="MAX revision A",
@@ -151,6 +159,9 @@ class ConsoleFacts:
     receiver_running: tuple[str, str | None] | None = None  # (rate, the rate it was moved from, or None)
     receiver_keys: dict[str, str] = field(default_factory=dict)  # RAM key name → "ACK", "NAK" or "no ACK"
     receiver_configured: tuple[int, int] | None = None  # (keys acknowledged, keys set)
+    receiver_uid: str | None = None  # UBX-SEC-UNIQID, lower-case hex
+    receiver_rf: tuple[str, str, list[tuple[str, str, str, str]]] | None = None  # latest: (jamming, its source, blocks)
+    receiver_signals: tuple[str, frozenset[str]] | None = None  # latest: (the summary, bands tracked)
     receiver_sbf: bool = False  # the mosaic-G5's COM2 was configured
     receiver_silent: bool = False
     receiver_model: tuple[str, bool] | None = None  # MON-VER: (listed model, confirmed); "" when none listed
@@ -210,6 +221,7 @@ def parse_console(text: str) -> ConsoleFacts:
             mon_ver = _MON_VER.fullmatch(message)
             sbf = _SBF_IDENTITY.fullmatch(message)
             running, key, configured = _RUNNING.fullmatch(message), _RAM_KEY.fullmatch(message), _CONFIGURED.fullmatch(message)
+            uid, rf, signals = _UNIQUE_ID.fullmatch(message), _RF.fullmatch(message), _SIGNALS.fullmatch(message)
             if baud:
                 facts.receiver_baud = baud.group(1)
             elif running:
@@ -218,6 +230,14 @@ def parse_console(text: str) -> ConsoleFacts:
                 facts.receiver_keys[key.group(1)] = _KEY_VERDICTS[key.group(2)]
             elif configured:
                 facts.receiver_configured = (int(configured.group(1)), int(configured.group(2)))
+            elif uid:
+                facts.receiver_uid = uid.group(1)
+            elif rf:
+                blocks = [b.groups() for b in _RF_BLOCK.finditer(rf.group(3))]
+                facts.receiver_rf = (rf.group(1), rf.group(2), blocks)
+            elif signals:
+                bands = frozenset() if signals.group(2) == "none" else frozenset(signals.group(2).split())
+                facts.receiver_signals = (signals.group(1), bands)
             elif message.startswith("receiver COM2 configured ("):
                 facts.receiver_sbf = True
             elif message.startswith("no UART bytes observed"):
@@ -367,6 +387,7 @@ def evaluate(
         checks.append(_receiver_model(facts, expect, seconds))
         if expect.receiver != "sbf":
             checks.append(_receiver_config(facts, seconds))
+            checks.extend(_receiver_details(facts, expect, seconds))
         if expect.ethernet:
             checks.append(_ethernet(facts))
         if expect.panel_chain:
@@ -440,6 +461,48 @@ def _receiver_config(facts: ConsoleFacts, seconds: float) -> dict:
     else:
         rate = f"UART1 at {facts.receiver_running[0]} baud, the configured rate"
     return _check("receiver.config", "pass", f"{rate}; {acknowledged} of {total} RAM keys acknowledged")
+
+
+def _receiver_details(facts: ConsoleFacts, expect: BoardProfile, seconds: float) -> list[dict]:
+    """The u-blox receiver's chip ID, its antenna supervisor and RF blocks, and the bands it
+    tracks. Signals need a sky view, so missing bands are a skip, never a failure."""
+    if facts.receiver_model is None or not facts.receiver_model[1]:
+        why = "not read: MON-VER did not confirm the listed model"
+        return [_check(name, "skip", why) for name in ("receiver.uid", "receiver.antenna", "receiver.signals")]
+    checks = []
+    if facts.receiver_uid:
+        checks.append(_check("receiver.uid", "pass", f"u-blox chip ID {facts.receiver_uid}"))
+    else:
+        checks.append(_check("receiver.uid", "fail", f"no UBX-SEC-UNIQID answer within {seconds:g} s"))
+
+    if facts.receiver_rf is None or not facts.receiver_rf[2]:
+        checks.append(_check("receiver.antenna", "fail", f"no MON-RF blocks within {seconds:g} s"))
+    else:
+        jamming, source, blocks = facts.receiver_rf
+        states = {antenna for _, antenna, _, _ in blocks}
+        agc = "/".join(f"{level}%" for _, _, _, level in blocks)
+        summary = f"{len(blocks)} RF block{'' if len(blocks) == 1 else 's'}, AGC {agc}; jamming {jamming} ({source})"
+        if states & {"SHORT", "OPEN"}:
+            bad = ", ".join(f"block {block} {antenna}" for block, antenna, _, _ in blocks if antenna in ("SHORT", "OPEN"))
+            checks.append(_check("receiver.antenna", "fail", f"antenna {bad}; {summary}"))
+        elif expect.antenna_supervised and states != {"OK"}:
+            checks.append(_check("receiver.antenna", "fail", f"antenna {'/'.join(sorted(states))}, not OK: is short detection set?; {summary}"))
+        elif expect.antenna_supervised:
+            checks.append(_check("receiver.antenna", "pass", f"antenna OK; {summary}"))
+        else:
+            checks.append(_check("receiver.antenna", "pass", f"antenna {'/'.join(sorted(states))} (no supervision wired); {summary}"))
+
+    if facts.receiver_signals is None:
+        checks.append(_check("receiver.signals", "skip", f"no NAV-SIG summary within {seconds:g} s"))
+    else:
+        summary, bands = facts.receiver_signals
+        missing = [band for band in expect.bands if band not in bands]
+        if not missing:
+            checks.append(_check("receiver.signals", "pass", f"bands {' '.join(expect.bands)} tracked: {summary}"))
+        else:
+            seen = " ".join(band for band in expect.bands if band in bands) or "none"
+            checks.append(_check("receiver.signals", "skip", f"bands {seen} of {' '.join(expect.bands)} tracked (needs sky): {summary}"))
+    return checks
 
 
 def overall(checks: list[dict]) -> str:

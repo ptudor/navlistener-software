@@ -38,9 +38,86 @@ static void reception_evidence(void)
     s.fix_valid=false;gnss_status_compare(&s,&e,&sample,19000);
     assert(sample.valid==1); // loss of position does not erase a fixed-site deficit
 }
+// MON-RF blocks and antenna supervision, SEC-SIG jamming in place of MON-RF's flag, and the
+// per-signal summary of NAV-SIG.
+static void rf_and_signals(void)
+{
+    gnss_status_t s = {0};
+    uint8_t rf[4 + 2*24] = {0}; rf[1] = 2;
+    rf[4] = 0; rf[6] = 2; rf[7] = 1; rf[16] = 82; rf[18] = 0xa0; rf[19] = 0x0f; rf[20] = 3; // L1: OK, ON
+    rf[28] = 1; rf[30] = 3; rf[31] = 1; rf[40] = 0x10; rf[41] = 1; rf[42] = 0xff; rf[43] = 0x1f; // SHORT
+    gnss_status_feed(&s, 0x0a, 0x38, rf, sizeof rf, 100);
+    assert(s.rf_blocks_valid && s.rf_blocks == 2 && s.rf_blocks_ms == 100);
+    assert(s.rf_block[0].id == 0 && s.rf_block[0].ant_status == 2 && s.rf_block[0].ant_power == 1);
+    assert(s.rf_block[0].noise_per_ms == 82 && s.rf_block[0].agc == 4000 && s.rf_block[0].cw_suppression == 3);
+    assert(s.rf_block[1].id == 1 && s.rf_block[1].ant_status == 3 && s.rf_block[1].noise_per_ms == 272 && s.rf_block[1].agc == 8191);
+    assert(s.rf_valid && s.jam == 0 && !s.event_count); // the X20's MON-RF flag reads 0
+
+    // SEC-SIG takes over: unknown readings set no baseline, the first state is the baseline.
+    uint8_t sec[4 + 4] = {2, 1, 0, 1}; // version 2, detection on, unknown, one centre frequency
+    gnss_status_feed(&s, 0x27, 9, sec, sizeof sec, 200);
+    gnss_status_feed(&s, 0x27, 9, sec, sizeof sec, 300);
+    assert(s.sec_sig && !s.sec_sig_known && s.jam == 0 && s.rf_ms == 300 && !s.event_count);
+    sec[1] = 1 | 1 << 1; gnss_status_feed(&s, 0x27, 9, sec, sizeof sec, 400);
+    assert(s.sec_sig_known && s.jam == 1 && !s.event_count); // first state, no jamming: baseline
+    rf[5] = 0; gnss_status_feed(&s, 0x0a, 0x38, rf, sizeof rf, 450);
+    assert(s.jam == 1 && s.rf_ms == 400); // MON-RF no longer moves jam
+    sec[1] = 1 | 2 << 1; gnss_status_feed(&s, 0x27, 9, sec, sizeof sec, 500);
+    assert(s.event_count == 1 && s.event_flags == 1 && s.jam == 2 && s.event_ms == 500);
+    sec[0] = 3; sec[1] = 1 | 1 << 1; gnss_status_feed(&s, 0x27, 9, sec, sizeof sec, 600);
+    assert(s.event_count == 2 && s.jam == 1); // version 3 too; recovery counts
+    sec[1] = 1 << 1; gnss_status_feed(&s, 0x27, 9, sec, sizeof sec, 700);
+    assert(s.event_count == 3 && s.jam == 0); // detection disabled reads unknown
+    sec[0] = 1; sec[1] = 1 | 2 << 1; gnss_status_feed(&s, 0x27, 9, sec, sizeof sec, 800);
+    sec[0] = 2; gnss_status_feed(&s, 0x27, 9, sec, sizeof sec - 1, 800);
+    assert(s.event_count == 3 && s.rf_ms == 700); // version 1 and a short body are ignored
+    gnss_status_t alarm = {0};
+    gnss_status_feed(&alarm, 0x27, 9, sec, sizeof sec, 100);
+    assert(alarm.event_count == 1 && alarm.jam == 2); // an alarm at first is an event
+
+    // Signal kinds: every named sigId agrees with the shared pair merging, and with its system.
+    for (unsigned g = 0; g < 8; g++)
+        for (unsigned id = 0; id < 16; id++) {
+            const int kind = gnss_signal_kind(g, id);
+            if (kind < 0) continue;
+            assert(gnss_signal_kinds[kind].gnss == g && gnss_signal_kinds[kind].name);
+            assert(gnss_signal_kind(g, nr_signal(g, id)) == kind);
+        }
+    for (unsigned k = 0; k < GNSS_SIGNAL_KINDS; k++) assert(gnss_signal_kinds[k].band < GNSS_BANDS);
+    assert(gnss_signal_kind(4, 0) < 0 && gnss_signal_kind(0, 1) < 0 && gnss_signal_kind(2, 7) < 0);
+
+    uint8_t sig[8 + 8*16] = {0}; sig[5] = 8;
+    const uint8_t rows[8][4] = { // gnssId, svId, sigId, qualityInd
+        {0, 1, 0, 7},  // GPS L1C/A
+        {0, 1, 6, 5},  // GPS L5 I, unhealthy
+        {0, 1, 7, 5},  // GPS L5 Q of the same satellite: one L5 signal
+        {2, 3, 4, 7},  // Galileo E5a Q
+        {2, 3, 0, 3},  // Galileo E1, not code locked
+        {0, 2, 15, 7}, // a sigId the tables do not name
+        {3, 60, 10, 4}, // BeiDou B3I D2
+        {7, 2, 0, 5},  // NavIC L5
+    };
+    for (unsigned i = 0; i < 8; i++) {
+        uint8_t *r = sig + 8 + 16*i;
+        r[0] = rows[i][0]; r[1] = rows[i][1]; r[2] = rows[i][2]; r[6] = 40; r[7] = rows[i][3];
+        if (rows[i][0] == 0 && (rows[i][2] == 6 || rows[i][2] == 7)) r[10] = 2;
+    }
+    gnss_status_feed(&s, 1, 0x43, sig, sizeof sig, 900);
+    assert(s.signal_locked[0] == 1 && !s.signal_unhealthy[0]);
+    assert(s.signal_locked[2] == 1 && s.signal_unhealthy[2] == 1);
+    assert(s.signal_locked[5] == 1 && s.signal_locked[4] == 0 && s.signal_locked[10] == 1 && s.signal_locked[20] == 1);
+    assert(s.signal_other == 1);
+    unsigned total = 0;
+    for (unsigned k = 0; k < GNSS_SIGNAL_KINDS; k++) total += s.signal_locked[k];
+    assert(total == 5);
+    uint8_t none[8] = {0};
+    gnss_status_feed(&s, 1, 0x43, none, sizeof none, 1000);
+    assert(!s.signal_locked[0] && !s.signal_other); // each NAV-SIG replaces the last
+}
 int main(void)
 {
     reception_evidence();
+    rf_and_signals();
     gnss_status_t timing={0}; uint8_t tp[16]={0}; tp[14]=3; tp[15]=0x10;
     gnss_status_feed(&timing,0x0d,1,tp,sizeof tp,100);
     assert(timing.tp_valid && timing.tp_flags==3 && timing.tp_ref==0x10 && timing.tp_ms==100);
@@ -102,5 +179,5 @@ int main(void)
     assert(gnss_status_same_place(377000000,-1224000000,377010000,-1224010000));
     assert(!gnss_status_same_place(377000000,-1224000000,357000000,1397000000));
     assert(gnss_status_same_place(0,1799999000,0,-1799999000));
-    puts("GNSS status: tracking, stale data, regional expectations, learned override and movement passed");
+    puts("GNSS status: tracking, stale data, regional expectations, learned override, movement, RF blocks, SEC-SIG jamming and signal kinds passed");
 }
