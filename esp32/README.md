@@ -167,9 +167,10 @@ NMEA locks the baud; 15 seconds without valid traffic restarts probing.
 extension names it: `MOD=NEO-M9N` on the NEO, `MOD=ZED-X20P` on the ZED/X20 and
 `MOD=MAX-M10S` on the MAX. With no receiver listed, none is configured. It switches to `NVF_RX_BAUD`, then requests UBX output,
 SFRBX, MON-RF, NAV-SAT, NAV-PVT, NAV-STATUS, TIM-TP, NAV-SIG, NAV-CLOCK and NAV-EOE through
-RAM-only CFG-VALSET, one key per request so a receiver that rejects one still gets the rest.
+RAM-only CFG-VALSET, one setting per request so a receiver that rejects one still gets the
+rest; a setting is one key, or keys the receiver accepts only together.
 Firmware logs each key by its interface-description name with its ACK, NAK or bounded
-timeout, then `receiver RAM configuration done: N of M keys acknowledged`, after the rate the
+timeout, then `receiver RAM configuration done: N of M settings acknowledged`, after the rate the
 link runs at: `receiver answering at 460800 baud, set in its RAM from 38400`.
 NAV-PVT, NAV-CLOCK and NAV-STATUS of one navigation epoch are joined into the
 receiver-solution telemetry record (`0x03`, [contract](../docs/proposals/STATION-ASSURANCE.md#2-receiver-solution-telemetry-gnf1-type-0x03))
@@ -196,6 +197,15 @@ is enabled, where the reset would read as a spoofing or jamming transition. The
 SEC-SIG carries the jamming state, which then fills the receiver context's jamming field;
 until SEC-SIG first reports a state, its unknown readings set no baseline. GPS L5 is left
 as the receiver flags it: pre-operational, unhealthy and out of the fix (2.2.5).
+The MAX-M10S gets its four GNSS as one setting, straight after UBX output for the same
+reason. Its data sheet gives GPS, Galileo and BeiDou B1I as the default and the M10 SPG
+5.10 defaults table leaves BeiDou off; GLONASS is off in both, so the MAX panel's BeiDou and
+GLONASS columns could stay amber. All four together need BeiDou on B1C, since B1I cannot
+run beside B1C or GLONASS L1OF (integration manual 2.1.3), and the receiver rejects an invalid
+combination, so one message turns B1I off and B1C, GLONASS L1, GLONASS and BeiDou on: valid
+from either default, and checked and applied whole. It is logged as one `RAM key` line
+naming all five. QZSS and SBAS stay on, as by default. The NEO-M9N enables every system it
+has by default and gets no signal setting.
 Receiver flash and battery-backed configuration are not written. Any other model is
 observed without automatic configuration. The shared keys have the same IDs in the
 [M9 SPG 4.04](https://content.u-blox.com/sites/default/files/u-blox-M9-SPG-4.04_InterfaceDescription_UBX-21022436.pdf),

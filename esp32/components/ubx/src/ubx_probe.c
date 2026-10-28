@@ -40,30 +40,69 @@ size_t ubx_set_ram(uint8_t out[20], uint32_t key, uint32_t value, unsigned width
 }
 // UBX output on UART1, then the SFRBX, MON-RF, NAV-SAT, NAV-PVT, NAV-STATUS, TIM-TP,
 // NAV-SIG, NAV-CLOCK and NAV-EOE UART1 rates. NAV-PVT, NAV-CLOCK and NAV-STATUS form the
-// receiver-solution record; NAV-EOE completes each epoch promptly. The ZED-X20P adds four:
-// - CFG-SIGNAL-QZSS_ENA and CFG-SIGNAL-NAVIC_ENA, right after UBX output and before any
-//   status message is on: both are off by default in every X20 signal plan (integration
-//   manual UBXDOC-963802114-12901, 2.2.4.1), with all their bands on beneath them, and each
-//   resets the GNSS subsystem, which a running NAV-STATUS or SEC-SIG would report as a
-//   spoofing or jamming transition. The M9 and M10 enable QZSS by default and have no NavIC.
+// receiver-solution record; NAV-EOE completes each epoch promptly. Signal settings come
+// right after UBX output and before any status message is on: each resets the GNSS
+// subsystem, which a running NAV-STATUS or SEC-SIG would report as a spoofing or jamming
+// transition.
+// The ZED-X20P adds four:
+// - CFG-SIGNAL-QZSS_ENA and CFG-SIGNAL-NAVIC_ENA: both are off by default in every X20
+//   signal plan (integration manual UBXDOC-963802114-12901, 2.2.4.1), with all their bands
+//   on beneath them.
 // - CFG-HW-ANT_CFG_SHORTDET: the ZED/X20 board drives its pin 6 ANT_SHORT_N (default active
 //   low, internal pull-up) from the antenna switch's fault output, so MON-RF reports SHORT.
 //   The NEO and MAX boards wire no short signal to their receivers, which keep detection off.
 // - The SEC-SIG rate: from HPG 2.00 on, MON-RF's jamming flag reads 0 and SEC-SIG carries it.
-static const uint32_t ram_keys[] = {0x10740001, 0x20910232, 0x2091035a, 0x20910016, 0x20910007,
-    0x2091001b, 0x2091017e, 0x20910346, 0x20910066, 0x20910160};
-static const uint32_t x20_keys[] = {0x10740001, 0x10310024, 0x10310026, 0x20910232, 0x2091035a,
-    0x20910016, 0x20910007, 0x2091001b, 0x2091017e, 0x20910346, 0x20910066, 0x20910160, 0x10a3002f,
-    0x20910635};
-size_t ubx_ram_keys(const char *module, const uint32_t **keys)
+// The MAX-M10S adds its four GNSS as one setting. Its data sheet gives GPS, Galileo and
+// BeiDou B1I as the default, the M10 SPG 5.10 defaults table GPS and Galileo with BeiDou
+// off, and GLONASS is off in both. All four together need BeiDou on B1C, because B1I cannot run
+// beside B1C or GLONASS L1OF (integration manual UBX-20053088, 2.1.3), and the receiver
+// rejects an invalid combination: so B1I off, B1C on, GLONASS L1 on, GLONASS on and BeiDou
+// on go in one message, valid from either default. QZSS and SBAS stay on, as by default.
+// The NEO-M9N enables every system it has by default.
+#define ONE(k) {1, {{(k), 1}}}
+#define RATES ONE(0x20910232), ONE(0x2091035a), ONE(0x20910016), ONE(0x20910007), ONE(0x2091001b), \
+    ONE(0x2091017e), ONE(0x20910346), ONE(0x20910066), ONE(0x20910160)
+static const ubx_setting_t shared_settings[] = {ONE(0x10740001), RATES};
+static const ubx_setting_t x20_settings[] = {ONE(0x10740001), ONE(0x10310024), ONE(0x10310026), RATES,
+    ONE(0x10a3002f), ONE(0x20910635)};
+static const ubx_setting_t max_settings[] = {ONE(0x10740001),
+    {5, {{0x1031000d, 0}, {0x1031000f, 1}, {0x10310018, 1}, {0x10310025, 1}, {0x10310022, 1}}}, RATES};
+#undef RATES
+#undef ONE
+size_t ubx_settings(const char *module, const ubx_setting_t **settings)
 {
-    if (module && !strcmp(module, "ZED-X20P")) { *keys = x20_keys; return sizeof x20_keys / sizeof x20_keys[0]; }
-    *keys = ram_keys;
-    return sizeof ram_keys / sizeof ram_keys[0];
+    if (module && !strcmp(module, "ZED-X20P")) {
+        *settings = x20_settings;
+        return sizeof x20_settings / sizeof x20_settings[0];
+    }
+    if (module && !strcmp(module, "MAX-M10S")) {
+        *settings = max_settings;
+        return sizeof max_settings / sizeof max_settings[0];
+    }
+    *settings = shared_settings;
+    return sizeof shared_settings / sizeof shared_settings[0];
+}
+size_t ubx_encode_setting(uint8_t out[UBX_SETTING_MAX], const ubx_setting_t *setting)
+{
+    if (!setting->count || setting->count > UBX_SETTING_ITEMS) return 0;
+    out[2] = 0x06; out[3] = 0x8a; // CFG-VALSET, version 0, RAM layer only
+    out[6] = 0; out[7] = 1; out[8] = out[9] = 0;
+    uint8_t *p = out + 10;
+    for (unsigned i = 0; i < setting->count; i++, p += 5) {
+        for (unsigned b = 0; b < 4; b++) p[b] = setting->item[i].key >> (8 * b);
+        p[4] = setting->item[i].value;
+    }
+    return finish(out, 4 + 5u * setting->count);
 }
 // The CFG-SIGNAL group, 0x31: "some changes to items within this group trigger a reset to the
 // GNSS subsystem" (X20 HPG 2.11 interface description, 6.9.22).
 bool ubx_key_resets_gnss(uint32_t key) { return (key >> 16 & 0xff) == 0x31; }
+bool ubx_setting_resets_gnss(const ubx_setting_t *setting)
+{
+    for (unsigned i = 0; i < setting->count && i < UBX_SETTING_ITEMS; i++)
+        if (ubx_key_resets_gnss(setting->item[i].key)) return true;
+    return false;
+}
 const char *ubx_key_name(uint32_t key)
 {
     switch (key) {
@@ -81,6 +120,11 @@ const char *ubx_key_name(uint32_t key)
     case 0x20910635: return "CFG-MSGOUT-UBX_SEC_SIG_UART1";
     case 0x10310024: return "CFG-SIGNAL-QZSS_ENA";
     case 0x10310026: return "CFG-SIGNAL-NAVIC_ENA";
+    case 0x1031000d: return "CFG-SIGNAL-BDS_B1_ENA";
+    case 0x1031000f: return "CFG-SIGNAL-BDS_B1C_ENA";
+    case 0x10310018: return "CFG-SIGNAL-GLO_L1_ENA";
+    case 0x10310025: return "CFG-SIGNAL-GLO_ENA";
+    case 0x10310022: return "CFG-SIGNAL-BDS_ENA";
     case UBX_KEY_UART1_BAUDRATE: return "CFG-UART1-BAUDRATE";
     }
     return NULL;

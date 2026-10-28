@@ -105,7 +105,7 @@ X20 = [
     log("I", "receiver", "receiver answering at 460800 baud, set in its RAM from 38400 (CFG-UART1-BAUDRATE)"),
     log("I", "receiver", "receiver unique chip ID 95f6bb8f2e54 (UBX-SEC-UNIQID)"),
     *(log("I", "receiver", f"RAM key {name} (0x{key:08x}): ACK") for name, key in X20_KEYS),
-    log("I", "receiver", "receiver RAM configuration done: 14 of 14 keys acknowledged; the SFRBX counter confirms raw output"),
+    log("I", "receiver", "receiver RAM configuration done: 14 of 14 settings acknowledged; the SFRBX counter confirms raw output"),
     log("I", "receiver", X20_RF),
     log("I", "receiver", f"signals: {X20_SIGNALS}; bands L1 L2 L5 E6"),
     *BOOT[-4:],
@@ -261,7 +261,7 @@ class PreEnrollmentTests(unittest.TestCase):
                 "receiver.model": ("pass", "MON-VER confirms ZED-X20P"),
                 "receiver.config": (
                     "pass",
-                    "UART1 at 460800 baud, set in its RAM from 38400; 14 of 14 RAM keys acknowledged",
+                    "UART1 at 460800 baud, set in its RAM from 38400; 14 of 14 RAM settings acknowledged",
                 ),
                 "receiver.uid": ("pass", "u-blox chip ID 95f6bb8f2e54"),
                 "receiver.antenna": ("pass", "antenna OK; 3 RF blocks, AGC 36%/30%/25%; jamming OK (SEC-SIG)"),
@@ -280,18 +280,28 @@ class PreEnrollmentTests(unittest.TestCase):
         checks = judge(kept, expect="zed-x20")
         self.assertEqual(checks["receiver"], ("pass", "valid traffic at 460800 baud"))
         self.assertEqual(
-            checks["receiver.config"], ("pass", "UART1 at 460800 baud, the configured rate; 14 of 14 RAM keys acknowledged")
+            checks["receiver.config"], ("pass", "UART1 at 460800 baud, the configured rate; 14 of 14 RAM settings acknowledged")
         )
         # A refused or unanswered key fails the check and is named.
         refused = (
             console(X20)
             .replace("CFG-MSGOUT-UBX_NAV_EOE_UART1 (0x20910160): ACK", "CFG-MSGOUT-UBX_NAV_EOE_UART1 (0x20910160): NAK (unsupported)")
             .replace("CFG-HW-ANT_CFG_SHORTDET (0x10a3002f): ACK", "CFG-HW-ANT_CFG_SHORTDET (0x10a3002f): no ACK; output unconfirmed")
-            .replace("14 of 14 keys", "12 of 14 keys")
+            .replace("14 of 14 settings", "12 of 14 settings")
         )
         self.assertEqual(
             judge(refused, expect="zed-x20")["receiver.config"],
-            ("fail", "12 of 14 RAM keys acknowledged; CFG-MSGOUT-UBX_NAV_EOE_UART1 NAK; CFG-HW-ANT_CFG_SHORTDET no ACK"),
+            ("fail", "12 of 14 RAM settings acknowledged; CFG-MSGOUT-UBX_NAV_EOE_UART1 NAK; CFG-HW-ANT_CFG_SHORTDET no ACK"),
+        )
+        # The MAX-M10S's four GNSS are one setting of five keys.
+        four = "+".join(f"CFG-SIGNAL-{k}" for k in ("BDS_B1_ENA=0", "BDS_B1C_ENA=1", "GLO_L1_ENA=1", "GLO_ENA=1", "BDS_ENA=1"))
+        max_console = console([*BOOT, log("I", "receiver", "MON-VER: software=ROM SPG 5.10 hardware=000A0000  ; MAX-M10S=yes"),
+                               log("I", "receiver", "receiver answering at 460800 baud, set in its RAM from 9600 (CFG-UART1-BAUDRATE)"),
+                               log("I", "receiver", f"RAM key {four} (5 keys): NAK (unsupported)"),
+                               log("I", "receiver", "receiver RAM configuration done: 10 of 11 settings acknowledged; the SFRBX counter confirms raw output")])
+        self.assertEqual(
+            judge(max_console, expect="max")["receiver.config"],
+            ("fail", f"10 of 11 RAM settings acknowledged; {four} NAK"),
         )
         # Still configuring when the window closed.
         unfinished = console([line for line in X20 if "configuration done" not in line])

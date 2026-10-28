@@ -13,7 +13,7 @@
   model, and the ZED/X20's W5500 must answer and its panel chain read back.
   `NVF_MANIFEST_INIT` and `NVF_MANIFEST_HDC` build the image that writes a blank
   manifest EEPROM for that sequence (esp32/docs/COMMISSIONING.md). A u-blox receiver
-  must acknowledge every key the firmware sets in its RAM (`receiver.config`), and the
+  must acknowledge every setting the firmware makes in its RAM (`receiver.config`), and the
   report gives the UART1 rate the link runs at beside the rate the receiver was found at.
   The console names each key. `receiver.uid` records the receiver's UBX-SEC-UNIQID chip
   ID, `receiver.antenna` fails an antenna SHORT or OPEN (and on the ZED/X20 anything but
@@ -34,6 +34,9 @@
   JammingStats records the collector's RF detector reads carry it too: the ESP32, the
   feeder and the collector's UBX reader put SEC-SIG's state in each block's jamState while
   SEC-SIG is current.
+- The MAX-M10S tracks GPS, Galileo, BeiDou and GLONASS together: one RAM setting turns
+  BeiDou B1I off and B1C, GLONASS and BeiDou on, the combination the M10 needs for all
+  four, where its defaults leave GLONASS (and in the SPG 5.10 table BeiDou) off.
 - The receiver console logs the u-blox chip ID (UBX-SEC-UNIQID) once, and every 10
   seconds an `RF:` line (jamming and its source; each MON-RF block's antenna supervisor,
   power, AGC, noise and CW suppression) and a `signals:` line (code-locked signals per

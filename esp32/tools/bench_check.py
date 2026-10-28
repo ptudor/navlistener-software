@@ -62,9 +62,10 @@ _SBF_IDENTITY = re.compile(r"receiver: (.{1,40}?) \(engine .*")
 # The u-blox link once MON-VER confirms the model: the rate it runs at, and the rate the
 # receiver was found at when the firmware moved it there (CFG-UART1-BAUDRATE, RAM only).
 _RUNNING = re.compile(r"receiver answering at (\d+) baud, (?:set in its RAM from (\d+) \(CFG-UART1-BAUDRATE\)|the configured rate)")
-_RAM_KEY = re.compile(r"RAM key (\S{1,48}) \(0x[0-9a-f]{8}\): (ACK|NAK \(unsupported\)|no ACK; output unconfirmed)")
+# One setting: a key's name and ID, or several keys' NAME=value joined by "+" and their count.
+_RAM_KEY = re.compile(r"RAM key (\S{1,200}) \((?:0x[0-9a-f]{8}|\d keys)\): (ACK|NAK \(unsupported\)|no ACK; output unconfirmed)")
 _KEY_VERDICTS = {"ACK": "ACK", "NAK (unsupported)": "NAK", "no ACK; output unconfirmed": "no ACK"}
-_CONFIGURED = re.compile(r"receiver RAM configuration done: (\d+) of (\d+) keys acknowledged.*")
+_CONFIGURED = re.compile(r"receiver RAM configuration done: (\d+) of (\d+) settings acknowledged.*")
 _UNIQUE_ID = re.compile(r"receiver unique chip ID ([0-9a-f]{10}|[0-9a-f]{12}) \(UBX-SEC-UNIQID\)")
 _RF = re.compile(r"RF: jamming=(\w+) \((SEC-SIG|MON-RF)\); (.*)")
 _RF_BLOCK = re.compile(r"block (\d+) antenna=(\w+) power=(\w+) AGC=(\d+)% noise=\d+ CW=\d+")
@@ -160,8 +161,8 @@ class ConsoleFacts:
     identities: dict[str, list[str]] = field(default_factory=dict)  # part name → the firmware's verdicts
     receiver_baud: str | None = None  # the rate valid traffic was first found at
     receiver_running: tuple[str, str | None] | None = None  # (rate, the rate it was moved from, or None)
-    receiver_keys: dict[str, str] = field(default_factory=dict)  # RAM key name → "ACK", "NAK" or "no ACK"
-    receiver_configured: tuple[int, int] | None = None  # (keys acknowledged, keys set)
+    receiver_keys: dict[str, str] = field(default_factory=dict)  # RAM setting name → "ACK", "NAK" or "no ACK"
+    receiver_configured: tuple[int, int] | None = None  # (settings acknowledged, settings sent)
     receiver_uid: str | None = None  # UBX-SEC-UNIQID, lower-case hex
     receiver_rf: tuple[str, str, list[tuple[str, str, str, str]]] | None = None  # latest: (jamming, its source, blocks)
     receiver_signals: tuple[str, frozenset[str]] | None = None  # latest: (the summary, bands tracked)
@@ -456,7 +457,8 @@ def _receiver_model(facts: ConsoleFacts, expect: BoardProfile, seconds: float) -
 
 def _receiver_config(facts: ConsoleFacts, seconds: float) -> dict:
     """What the firmware changed from the u-blox receiver's defaults, all in its RAM: the
-    UART rate, then each key, which the receiver must acknowledge."""
+    UART rate, then each setting (one key, or keys valid only together), which the receiver
+    must acknowledge."""
     if facts.receiver_model is None or not facts.receiver_model[1]:
         return _check("receiver.config", "skip", "not configured: MON-VER did not confirm the listed model")
     if facts.receiver_configured is None:
@@ -464,14 +466,14 @@ def _receiver_config(facts: ConsoleFacts, seconds: float) -> dict:
     acknowledged, total = facts.receiver_configured
     refused = [f"{name} {verdict}" for name, verdict in facts.receiver_keys.items() if verdict != "ACK"]
     if acknowledged != total or refused:
-        return _check("receiver.config", "fail", f"{acknowledged} of {total} RAM keys acknowledged; " + "; ".join(refused))
+        return _check("receiver.config", "fail", f"{acknowledged} of {total} RAM settings acknowledged; " + "; ".join(refused))
     if facts.receiver_running is None:
         rate = "UART1 rate not reported"
     elif facts.receiver_running[1]:
         rate = f"UART1 at {facts.receiver_running[0]} baud, set in its RAM from {facts.receiver_running[1]}"
     else:
         rate = f"UART1 at {facts.receiver_running[0]} baud, the configured rate"
-    return _check("receiver.config", "pass", f"{rate}; {acknowledged} of {total} RAM keys acknowledged")
+    return _check("receiver.config", "pass", f"{rate}; {acknowledged} of {total} RAM settings acknowledged")
 
 
 def _receiver_details(facts: ConsoleFacts, expect: BoardProfile, seconds: float) -> list[dict]:

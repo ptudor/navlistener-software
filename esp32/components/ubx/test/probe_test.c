@@ -20,27 +20,63 @@ int main(void)
     assert(pkt[10] == 0x32 && pkt[11] == 2 && pkt[12] == 0x91 && pkt[13] == 0x20 && pkt[14] == 1);
     assert(ubx_set_ram(pkt, 0x40520001, 460800, 4) == 20);
     assert(pkt[14] == 0 && pkt[15] == 8 && pkt[16] == 7 && pkt[17] == 0);
-    // The ZED-X20P's list is the shared one with QZSS and NavIC enabled straight after UBX
-    // output, before any status message, and short detection and the SEC-SIG rate last.
-    const uint32_t *keys, *x20_keys;
-    size_t count = ubx_ram_keys("NEO-M9N", &keys), x20_count = ubx_ram_keys("ZED-X20P", &x20_keys);
-    assert(count == 10 && keys[0] == 0x10740001 && keys[1] == 0x20910232 && keys[7] == 0x20910346);
-    assert(keys[8] == 0x20910066 && keys[9] == 0x20910160); // NAV-CLOCK, NAV-EOE on UART1
-    assert(x20_count == count + 4 && x20_keys[0] == keys[0] && x20_keys[1] == 0x10310024 && x20_keys[2] == 0x10310026);
-    assert(!memcmp(keys + 1, x20_keys + 3, (count - 1) * sizeof *keys));
-    assert(x20_keys[count + 2] == 0x10a3002f && x20_keys[count + 3] == 0x20910635);
-    // Only the CFG-SIGNAL keys reset the GNSS subsystem, and they precede every message rate.
-    for (size_t i = 0; i < x20_count; i++) assert(ubx_key_resets_gnss(x20_keys[i]) == (i == 1 || i == 2));
-    for (size_t i = 0; i < count; i++) assert(!ubx_key_resets_gnss(keys[i]));
-    assert(!ubx_key_resets_gnss(UBX_KEY_UART1_BAUDRATE) && ubx_key_resets_gnss(0x1031001f));
-    assert(ubx_ram_keys("MAX-M10S", &keys) == count && ubx_ram_keys(NULL, &keys) == count);
-    assert(ubx_ram_keys("ZED-X20", &keys) == count && ubx_ram_keys("ZED-X20P ", &keys) == count);
-    for (size_t i = 0; i < count; i++) assert(keys[i] != 0x10a3002f && keys[i] != 0x10310026);
-    // Every key the firmware sets has its interface-description name, each a different one.
-    for (size_t i = 0; i < x20_count; i++) {
-        assert(ubx_key_name(x20_keys[i]) && !strncmp(ubx_key_name(x20_keys[i]), "CFG-", 4));
-        for (size_t j = 0; j < i; j++) assert(strcmp(ubx_key_name(x20_keys[i]), ubx_key_name(x20_keys[j])));
+    // Settings: the shared list (NEO-M9N, and any other listed model), the ZED-X20P's with
+    // QZSS and NavIC straight after UBX output and short detection and SEC-SIG last, and the
+    // MAX-M10S's with its four GNSS as one message in the same place.
+    const ubx_setting_t *shared, *x20, *max;
+    size_t count = ubx_settings("NEO-M9N", &shared), x20_count = ubx_settings("ZED-X20P", &x20),
+           max_count = ubx_settings("MAX-M10S", &max);
+    assert(count == 10 && x20_count == count + 4 && max_count == count + 1);
+    const uint32_t rates[] = {0x20910232, 0x2091035a, 0x20910016, 0x20910007, 0x2091001b, 0x2091017e,
+                              0x20910346, 0x20910066, 0x20910160};
+    for (size_t i = 0; i < count; i++) {
+        const uint32_t want = i ? rates[i - 1] : 0x10740001;
+        assert(shared[i].count == 1 && shared[i].item[0].key == want && shared[i].item[0].value == 1);
+        assert(x20[i ? i + 2 : 0].count == 1 && x20[i ? i + 2 : 0].item[0].key == want);
+        assert(max[i ? i + 1 : 0].count == 1 && max[i ? i + 1 : 0].item[0].key == want);
     }
+    assert(x20[1].item[0].key == 0x10310024 && x20[2].item[0].key == 0x10310026);
+    assert(x20[count + 2].item[0].key == 0x10a3002f && x20[count + 3].item[0].key == 0x20910635);
+    const ubx_setting_t *four = &max[1];
+    assert(four->count == 5 && four->item[0].key == 0x1031000d && four->item[0].value == 0); // B1I off
+    assert(four->item[1].key == 0x1031000f && four->item[2].key == 0x10310018 && four->item[3].key == 0x10310025);
+    assert(four->item[4].key == 0x10310022);
+    for (unsigned i = 1; i < 5; i++) assert(four->item[i].value == 1);
+    // Only the signal settings reset the GNSS subsystem, and each precedes every message rate.
+    for (size_t i = 0; i < x20_count; i++) assert(ubx_setting_resets_gnss(&x20[i]) == (i == 1 || i == 2));
+    for (size_t i = 0; i < max_count; i++) assert(ubx_setting_resets_gnss(&max[i]) == (i == 1));
+    for (size_t i = 0; i < count; i++) assert(!ubx_setting_resets_gnss(&shared[i]));
+    assert(!ubx_key_resets_gnss(UBX_KEY_UART1_BAUDRATE) && ubx_key_resets_gnss(0x1031001f));
+    const ubx_setting_t *other;
+    assert(ubx_settings(NULL, &other) == count && other == shared);
+    assert(ubx_settings("ZED-X20", &other) == count && ubx_settings("MAX-M10S ", &other) == count);
+    // Every key the firmware sets has its interface-description name, each a different one.
+    const char *names[64]; size_t named = 0;
+    const ubx_setting_t *lists[] = {x20, max};
+    const size_t counts[] = {x20_count, max_count};
+    for (unsigned l = 0; l < 2; l++)
+        for (size_t i = 0; i < counts[l]; i++)
+            for (unsigned k = 0; k < lists[l][i].count; k++) {
+                const char *name = ubx_key_name(lists[l][i].item[k].key);
+                assert(name && !strncmp(name, "CFG-", 4));
+                bool seen = false;
+                for (size_t j = 0; j < named; j++) seen |= !strcmp(names[j], name);
+                if (!seen) names[named++] = name;
+            }
+    assert(named == x20_count + 5); // the X20's 14 and the MAX's five signal keys
+    // A one-item setting encodes as ubx_set_ram does; five items in one message.
+    uint8_t one[UBX_SETTING_MAX], single[20];
+    assert(ubx_encode_setting(one, &x20[1]) == 17 && ubx_set_ram(single, 0x10310024, 1, 1) == 17);
+    assert(!memcmp(one, single, 17));
+    uint8_t five[UBX_SETTING_MAX];
+    assert(ubx_encode_setting(five, four) == 12 + 25 && five[4] == 29 && five[5] == 0);
+    assert(five[10] == 0x0d && five[11] == 0 && five[12] == 0x31 && five[13] == 0x10 && five[14] == 0);
+    assert(five[15] == 0x0f && five[19] == 1 && five[30] == 0x22 && five[34] == 1);
+    uint8_t a = 0, b = 0;
+    for (size_t i = 2; i < 6 + 29; i++) { a += five[i]; b += a; }
+    assert(five[35] == a && five[36] == b);
+    const ubx_setting_t empty = {0}, oversized = {UBX_SETTING_ITEMS + 1, {{0}}};
+    assert(!ubx_encode_setting(five, &empty) && !ubx_encode_setting(five, &oversized));
     assert(!strcmp(ubx_key_name(0x20910007), "CFG-MSGOUT-UBX_NAV_PVT_UART1"));
     assert(!strcmp(ubx_key_name(0x10a3002f), "CFG-HW-ANT_CFG_SHORTDET"));
     assert(!strcmp(ubx_key_name(UBX_KEY_UART1_BAUDRATE), "CFG-UART1-BAUDRATE"));

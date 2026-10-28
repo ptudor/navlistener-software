@@ -193,6 +193,32 @@ static void set_ram(uint32_t key, uint32_t value, unsigned width)
     uart_write_bytes(RX_UART, pkt, n);
     uart_wait_tx_done(RX_UART, pdMS_TO_TICKS(200));
 }
+static void apply_setting(const ubx_setting_t *setting)
+{
+    uint8_t pkt[UBX_SETTING_MAX];
+    size_t n = ubx_encode_setting(pkt, setting);
+    cfg_ack = 0;
+    uart_write_bytes(RX_UART, pkt, n);
+    uart_wait_tx_done(RX_UART, pdMS_TO_TICKS(200));
+}
+// "CFG-MSGOUT-UBX_NAV_PVT_UART1 (0x20910007)" for one key; "NAME=0+NAME=1 (5 keys)" for more.
+static const char *setting_name(const ubx_setting_t *setting)
+{
+    static char name[256];
+    if (setting->count == 1) {
+        snprintf(name, sizeof name, "%s (0x%08lx)", key_name(setting->item[0].key),
+                 (unsigned long)setting->item[0].key);
+        return name;
+    }
+    size_t used = 0;
+    for (unsigned i = 0; i < setting->count && used < sizeof name; i++) {
+        int n = snprintf(name + used, sizeof name - used, "%s%s=%u", i ? "+" : "", key_name(setting->item[i].key),
+                         setting->item[i].value);
+        if (n > 0) used += (size_t)n;
+    }
+    if (used < sizeof name) snprintf(name + used, sizeof name - used, " (%u keys)", setting->count);
+    return name;
+}
 static void rx_task(void *arg)
 {
     ubx_parser_t *parser = arg;
@@ -204,10 +230,10 @@ static void rx_task(void *arg)
     int64_t last_valid = 0, next_probe = 0, next_log = 0;
     const int rates[] = {CONFIG_NVF_RX_BAUD, 38400, 115200, 9600, 230400, 460800};
     size_t rate_index = 0;
-    // One key per request: a receiver rejecting SFRBX must still get telemetry. The IDs are
-    // the same on all three receivers (ubx_probe.h).
-    const uint32_t *keys;
-    const size_t key_count = ubx_ram_keys(module, &keys);
+    // One setting per request: a receiver rejecting SFRBX must still get telemetry. A setting
+    // is one key, or a combination the receiver accepts only whole (ubx_probe.h).
+    const ubx_setting_t *settings;
+    const size_t key_count = ubx_settings(module, &settings);
     unsigned setting = 0, tries = 0;
     bool configured = false, baud_attempted = false, config_started = false;
     int switched_from = 0; // the rate the receiver was found at, when it was moved to CONFIG_NVF_RX_BAUD
@@ -280,27 +306,26 @@ static void rx_task(void *arg)
                         ESP_LOGI(TAG, "receiver answering at %d baud, the configured rate", baud);
                 }
                 if (tries && cfg_ack != 0) {
-                    ESP_LOGI(TAG, "RAM key %s (0x%08lx): %s", key_name(keys[setting]), (unsigned long)keys[setting],
+                    ESP_LOGI(TAG, "RAM key %s: %s", setting_name(&settings[setting]),
                              cfg_ack > 0 ? "ACK" : "NAK (unsupported)");
                     if (cfg_ack > 0) acknowledged++;
                     // A CFG-SIGNAL change resets the GNSS subsystem: 500 ms after its ACK.
-                    if (cfg_ack > 0 && ubx_key_resets_gnss(keys[setting]) && cfg_deadline < now + 500)
+                    if (cfg_ack > 0 && ubx_setting_resets_gnss(&settings[setting]) && cfg_deadline < now + 500)
                         cfg_deadline = now + 500;
                     setting++; tries = 0; cfg_ack = 0;
                 } else if (now >= cfg_deadline) {
                     if (tries == 3) {
-                        ESP_LOGW(TAG, "RAM key %s (0x%08lx): no ACK; output unconfirmed", key_name(keys[setting]),
-                                 (unsigned long)keys[setting]);
-                        if (ubx_key_resets_gnss(keys[setting])) cfg_deadline = now + 500; // it may have applied
+                        ESP_LOGW(TAG, "RAM key %s: no ACK; output unconfirmed", setting_name(&settings[setting]));
+                        if (ubx_setting_resets_gnss(&settings[setting])) cfg_deadline = now + 500; // it may have applied
                         setting++; tries = 0;
                     } else {
-                        set_ram(keys[setting], 1, 1);
+                        apply_setting(&settings[setting]);
                         tries++; cfg_deadline = now + 1000;
                     }
                 }
             } else if (now >= cfg_deadline) { // after the last key's settling time, too
                 configured = true;
-                ESP_LOGI(TAG, "receiver RAM configuration done: %u of %u keys acknowledged; the SFRBX counter confirms raw output",
+                ESP_LOGI(TAG, "receiver RAM configuration done: %u of %u settings acknowledged; the SFRBX counter confirms raw output",
                          acknowledged, (unsigned)key_count);
                 if (!unique_id_logged) poll_unique_id(); // once more, after the configuration traffic
             }

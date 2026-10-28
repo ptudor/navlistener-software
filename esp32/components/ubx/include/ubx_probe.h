@@ -12,11 +12,21 @@ size_t ubx_poll_version(uint8_t out[8]);
 size_t ubx_poll_unique_id(uint8_t out[8]);
 bool ubx_unique_id(const uint8_t *body, size_t len, char out[13]);
 size_t ubx_set_ram(uint8_t out[20], uint32_t key, uint32_t value, unsigned width);
-// The single-byte keys set to 1 in RAM for a listed receiver; returns the count.
-size_t ubx_ram_keys(const char *module, const uint32_t **keys);
+// One RAM-only CFG-VALSET (version 0) of up to UBX_SETTING_ITEMS one-byte (L or U1) items.
+// The receiver checks a message whole and applies all of it or none (M10 SPG 5.10, 3.10.5),
+// so a combination that is valid only whole, such as the M10's four GNSS, is one setting.
+#define UBX_SETTING_ITEMS 5u
+#define UBX_SETTING_MAX (12u + 5u * UBX_SETTING_ITEMS)
+typedef struct { uint32_t key; uint8_t value; } ubx_item_t;
+typedef struct { uint8_t count; ubx_item_t item[UBX_SETTING_ITEMS]; } ubx_setting_t;
+// The settings applied, in order, to a listed receiver; returns the count.
+size_t ubx_settings(const char *module, const ubx_setting_t **settings);
+// The setting's packet and its length; 0 for an empty or oversized setting.
+size_t ubx_encode_setting(uint8_t out[UBX_SETTING_MAX], const ubx_setting_t *setting);
 // Whether setting the key resets the receiver's GNSS subsystem: wait for its ACK and then
-// 500 ms before the next command.
+// 500 ms before the next command. A setting does when any of its items does.
 bool ubx_key_resets_gnss(uint32_t key);
+bool ubx_setting_resets_gnss(const ubx_setting_t *setting);
 // CFG-UART1-BAUDRATE, the U4 key set before the others when the receiver is found at
 // another rate.
 #define UBX_KEY_UART1_BAUDRATE 0x40520001u
