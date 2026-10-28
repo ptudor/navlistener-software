@@ -61,7 +61,8 @@ def judge(text: str, mac="02a1b2c3d4e5", expect=None) -> dict:
     }
 
 
-# A 162mm ZED-X20P board with its panel, as the universal image prints it.
+# A 162mm ZED-X20P board with its panel, as the universal image prints it in setup mode: the
+# W5500's identity is read at every boot, and the uplink starts only once provisioned.
 X20 = [
     *BOOT[:8],
     log("I", "hw_manifest", f"manifest EEPROM factory serial: {OBSERVER}"),
@@ -80,7 +81,7 @@ X20 = [
     log("I", "observer_board", "ATECC Info revision=00006005; ATECC608C (CRC verified)"),
     log("I", "io_expander", "MCP23008 at 0x24 configured: GPIO=0x3f, interrupt-on-change on GP1-GP5 to GPIO3"),
     log("I", "io_expander", "panel chain: 24 bits"),
-    log("I", "ethernet", "W5500 up at 20 MHz, polled every 10 ms, MAC 02:a1:b2:c3:d4:e8"),
+    log("I", "ethernet", "W5500 VERSIONR=0x04; W5500 verified"),
     log("I", "receiver", "valid receiver traffic at 460800 baud"),
     log("I", "receiver", "MON-VER: software=HPG 2.10                     hardware=000A0000  ; ZED-X20P=yes"),
     *BOOT[-4:],
@@ -223,7 +224,7 @@ class PreEnrollmentTests(unittest.TestCase):
                 "identity:rail_monitor@0x41": ("pass", "INA3221 verified"),
                 "receiver": ("pass", "valid traffic at 460800 baud"),
                 "receiver.model": ("pass", "MON-VER confirms ZED-X20P"),
-                "ethernet": ("pass", "W5500 started"),
+                "ethernet": ("pass", "W5500 verified; it starts once the board is provisioned"),
                 "panel_chain": ("pass", "24-bit chain read back"),
                 "setup": ("pass", "setup network and app provisioning ready"),
             },
@@ -251,7 +252,7 @@ class PreEnrollmentTests(unittest.TestCase):
         checks = judge(text, expect="zed-x20")
         self.assertEqual(checks["manifest"], ("fail", "first-boot initialization required; board: no board"))
         self.assertEqual(checks["i2c:temperature@0x18"], ("fail", "not probed; X20 revision A lists it"))
-        self.assertEqual(checks["ethernet"], ("fail", "no W5500 start reported"))
+        self.assertEqual(checks["ethernet"], ("fail", "no W5500 identity reported"))
         self.assertEqual(checks["panel_chain"], ("fail", "no panel chain verdict within 30 s"))
 
     def test_a_wrong_part_that_answers_fails_its_identity(self):
@@ -280,17 +281,37 @@ class PreEnrollmentTests(unittest.TestCase):
         self.assertEqual(judge(not_mosaic, expect="mosaic-p3")["receiver.model"][0], "fail")
 
     def test_ethernet_and_panel_failures(self):
-        text = console(
-            [line for line in X20 if "W5500 up" not in line]
-            + [log("E", "navfeeder", "ethernet unavailable (ESP_ERR_TIMEOUT); no uplink until it is repaired")]
-        ).replace(
+        text = console(X20).replace("W5500 VERSIONR=0x04; W5500 verified", "W5500 VERSIONR=0xff; unexpected identity").replace(
             "panel chain: 24 bits",
             "panel chain not detected or wrong length: 3 readbacks matched neither 24 nor 16 bits "
             "(last read 0x000000 for frame 0xa5a5a5)",
         )
         checks = judge(text, expect="zed-x20")
-        self.assertEqual(checks["ethernet"], ("fail", "ethernet unavailable (ESP_ERR_TIMEOUT); no uplink until it is repaired"))
+        self.assertEqual(checks["ethernet"], ("fail", "W5500 VERSIONR=0xff; unexpected identity"))
         self.assertEqual(checks["panel_chain"], ("fail", "panel chain not detected; is the panel fitted?"))
+        failed = console(X20).replace("W5500 VERSIONR=0x04; W5500 verified", "W5500 identity read failed: ESP_ERR_TIMEOUT")
+        self.assertEqual(judge(failed, expect="zed-x20")["ethernet"], ("fail", "W5500 identity read failed: ESP_ERR_TIMEOUT"))
+        # Only the first verdict counts.
+        twice = console(X20) + console([log("E", "ethernet", "W5500 VERSIONR=0x00; unexpected identity")])
+        self.assertEqual(judge(twice, expect="zed-x20")["ethernet"][0], "pass")
+
+    def test_a_provisioned_board_must_also_start_its_w5500(self):
+        provisioned = X20[:-4]  # no setup network: the board starts its uplink
+        up = console(provisioned + [log("I", "ethernet", "W5500 up at 10 MHz, polled every 10 ms, MAC 02:a1:b2:c3:d4:e8")])
+        self.assertEqual(judge(up, expect="zed-x20")["ethernet"], ("pass", "W5500 verified and started"))
+        failed = console(
+            provisioned + [log("E", "navfeeder", "ethernet unavailable (ESP_ERR_TIMEOUT); no uplink until it is repaired")]
+        )
+        self.assertEqual(
+            judge(failed, expect="zed-x20")["ethernet"],
+            ("fail", "W5500 verified, but ethernet unavailable (ESP_ERR_TIMEOUT); no uplink until it is repaired"),
+        )
+        silent = judge(console(provisioned), expect="zed-x20")
+        self.assertEqual(silent["ethernet"], ("fail", "W5500 verified, but no start reported"))
+        # A start without the boot identity read is still a failure: the identity is the test.
+        unread = console([line for line in provisioned if "VERSIONR" not in line]
+                         + [log("I", "ethernet", "W5500 up at 10 MHz, polled every 10 ms, MAC 02:a1:b2:c3:d4:e8")])
+        self.assertEqual(judge(unread, expect="zed-x20")["ethernet"], ("fail", "no W5500 identity reported"))
 
     def test_a_late_detection_does_not_clear_a_failed_chain(self):
         text = console(X20).replace(
@@ -321,7 +342,7 @@ class PreEnrollmentTests(unittest.TestCase):
             station="bench-1", started=started, finished=started + timedelta(seconds=40), facts=facts,
             mac="02a1b2c3d4e5", build=build, checks=checks, console=text.encode(),
         )  # fmt: skip
-        self.assertEqual((report["tool"], report["result"]), ("bench_check.py 2", "pass"))
+        self.assertEqual((report["tool"], report["result"]), ("bench_check.py 3", "pass"))
 
 
 class ReportTests(unittest.TestCase):

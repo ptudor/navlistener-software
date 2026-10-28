@@ -33,7 +33,7 @@ import sys
 import time
 
 FORMAT = "navlistener-bench-report-v1"
-TOOL = "bench_check.py 2"
+TOOL = "bench_check.py 3"
 DEFAULT_SECONDS = 30.0
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -146,7 +146,8 @@ class ConsoleFacts:
     receiver_silent: bool = False
     receiver_model: tuple[str, bool] | None = None  # MON-VER: (listed model, confirmed); "" when none listed
     sbf_product: tuple[str, bool] | None = None  # ReceiverSetup: (product, a mosaic-G5)
-    ethernet: str | None = None  # "up", or the error the firmware logged
+    ethernet_identity: str | None = None  # the W5500 VERSIONR verdict, logged at every boot
+    ethernet: str | None = None  # "up", or the error the firmware logged; provisioned boards only
     panel_chain: str | None = None  # "24", "16", "unknown" or "not detected"
     unprovisioned: bool = False
     setup_network: bool = False
@@ -211,6 +212,8 @@ def parse_console(text: str) -> ConsoleFacts:
                 facts.receiver_model = facts.receiver_model or ("", False)
             elif sbf and facts.sbf_product is None:
                 facts.sbf_product = (sbf.group(1), not message.endswith(_NOT_MOSAIC))
+        elif tag == "ethernet" and message.startswith(("W5500 VERSIONR=", "W5500 identity read failed")):
+            facts.ethernet_identity = facts.ethernet_identity or message
         elif tag == "ethernet" and message.startswith("W5500 up at "):
             facts.ethernet = "up"
         elif tag == "navfeeder" and message.startswith("ethernet unavailable (") and facts.ethernet is None:
@@ -345,10 +348,7 @@ def evaluate(
     if expect is not None:
         checks.append(_receiver_model(facts, expect, seconds))
         if expect.ethernet:
-            if facts.ethernet == "up":
-                checks.append(_check("ethernet", "pass", "W5500 started"))
-            else:
-                checks.append(_check("ethernet", "fail", facts.ethernet or "no W5500 start reported"))
+            checks.append(_ethernet(facts))
         if expect.panel_chain:
             if facts.panel_chain in ("24", "16"):
                 checks.append(_check("panel_chain", "pass", f"{facts.panel_chain}-bit chain read back"))
@@ -365,6 +365,22 @@ def evaluate(
         missing = [what for what, ok in (("setup network", facts.setup_network), ("app provisioning", facts.app_setup)) if not ok]
         checks.append(_check("setup", "fail", " and ".join(missing) + " not ready"))
     return checks
+
+
+def _ethernet(facts: ConsoleFacts) -> dict:
+    """The W5500 must answer at boot; a provisioned board must also start it (setup mode never does)."""
+    identity = facts.ethernet_identity
+    if identity is None:
+        return _check("ethernet", "fail", "no W5500 identity reported")
+    if not identity.endswith("; W5500 verified"):
+        return _check("ethernet", "fail", identity)
+    if facts.ethernet == "up":
+        return _check("ethernet", "pass", "W5500 verified and started")
+    if facts.ethernet is not None:
+        return _check("ethernet", "fail", f"W5500 verified, but {facts.ethernet}")
+    if not facts.unprovisioned:
+        return _check("ethernet", "fail", "W5500 verified, but no start reported")
+    return _check("ethernet", "pass", "W5500 verified; it starts once the board is provisioned")
 
 
 def _receiver_model(facts: ConsoleFacts, expect: BoardProfile, seconds: float) -> dict:

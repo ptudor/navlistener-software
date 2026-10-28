@@ -13,5 +13,11 @@
 // failure, including a board without Ethernet pins (ESP_ERR_NOT_SUPPORTED), leaves
 // nothing allocated and the Wi-Fi station unaffected.
 esp_err_t ethernet_start(const observer_board_t *board);
+// ethernet_identify reads the W5500's VERSIONR on the same pins, logs the verdict ("W5500
+// verified" or "unexpected identity") and frees the SPI bus again, so it runs at every boot,
+// setup mode included, before ethernet_start: a board's port is tested before it has a
+// network. ESP_ERR_INVALID_RESPONSE: another version answered (a missing chip reads 0x00 or
+// 0xff); ESP_ERR_NOT_SUPPORTED: the board has no Ethernet pins.
+esp_err_t ethernet_identify(const observer_board_t *board);
 bool ethernet_diagnostics(uint16_t *speed_mbps,uint8_t *duplex,uint8_t *autoneg);
 #endif

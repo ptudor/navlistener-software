@@ -22,6 +22,11 @@
 // starts within 5 ms, so the chip answers from 33 ms after power-up.
 #define ETH_READY_US   (33 * 1000)
 
+// The common register block's VERSIONR (W5500 datasheet section 3.1) reads 0x04. A read frame
+// is the 16-bit address, the control byte (block 0, read, variable-length data) and the data.
+#define W5500_VERSIONR 0x0039
+#define W5500_VERSION  0x04
+
 static const char *TAG = "ethernet";
 static esp_eth_handle_t active_driver;
 bool ethernet_diagnostics(uint16_t *speed_mbps,uint8_t *duplex,uint8_t *autoneg)
@@ -35,13 +40,13 @@ bool ethernet_diagnostics(uint16_t *speed_mbps,uint8_t *duplex,uint8_t *autoneg)
     return ok;
 }
 
-esp_err_t ethernet_start(const observer_board_t *board)
+static bool has_pins(const observer_board_t *board)
+{ return board->eth_sclk >= 0 && board->eth_cs >= 0 && board->eth_mosi >= 0 && board->eth_miso >= 0; }
+// Waits out the W5500's reset, then takes the SPI bus on the board's Ethernet pins.
+static esp_err_t bus_initialize(const observer_board_t *board, spi_dma_chan_t dma)
 {
-    if (board->eth_sclk < 0 || board->eth_cs < 0 || board->eth_mosi < 0 || board->eth_miso < 0)
-        return ESP_ERR_NOT_SUPPORTED;
     int64_t now = esp_timer_get_time();
     if (now < ETH_READY_US) vTaskDelay(pdMS_TO_TICKS((ETH_READY_US - now) / 1000 + 1));
-
     const spi_bus_config_t bus = {
         .mosi_io_num = board->eth_mosi,
         .miso_io_num = board->eth_miso,
@@ -49,7 +54,40 @@ esp_err_t ethernet_start(const observer_board_t *board)
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
     };
-    ESP_RETURN_ON_ERROR(spi_bus_initialize(ETH_SPI_HOST, &bus, SPI_DMA_CH_AUTO), TAG, "SPI bus");
+    return spi_bus_initialize(ETH_SPI_HOST, &bus, dma);
+}
+
+esp_err_t ethernet_identify(const observer_board_t *board)
+{
+    if (!has_pins(board)) return ESP_ERR_NOT_SUPPORTED;
+    esp_err_t err = bus_initialize(board, SPI_DMA_DISABLED);
+    if (err != ESP_OK) { ESP_LOGE(TAG, "W5500 identity read failed: SPI bus %s", esp_err_to_name(err)); return err; }
+    const spi_device_interface_config_t device = {
+        .mode = 0, .clock_speed_hz = ETH_SPI_HZ, .queue_size = 1, .spics_io_num = board->eth_cs,
+    };
+    spi_device_handle_t handle = NULL;
+    spi_transaction_t read = {
+        .length = 32, .flags = SPI_TRANS_USE_TXDATA | SPI_TRANS_USE_RXDATA,
+        .tx_data = {W5500_VERSIONR >> 8, W5500_VERSIONR & 0xff, 0x00, 0x00},
+    };
+    err = spi_bus_add_device(ETH_SPI_HOST, &device, &handle);
+    if (err == ESP_OK) err = spi_device_polling_transmit(handle, &read);
+    if (handle) spi_bus_remove_device(handle);
+    spi_bus_free(ETH_SPI_HOST);
+    if (err != ESP_OK) { ESP_LOGE(TAG, "W5500 identity read failed: %s", esp_err_to_name(err)); return err; }
+    const uint8_t version = read.rx_data[3];
+    if (version != W5500_VERSION) {
+        ESP_LOGE(TAG, "W5500 VERSIONR=0x%02x; unexpected identity", version);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    ESP_LOGI(TAG, "W5500 VERSIONR=0x%02x; W5500 verified", version);
+    return ESP_OK;
+}
+
+esp_err_t ethernet_start(const observer_board_t *board)
+{
+    if (!has_pins(board)) return ESP_ERR_NOT_SUPPORTED;
+    ESP_RETURN_ON_ERROR(bus_initialize(board, SPI_DMA_CH_AUTO), TAG, "SPI bus");
 
     esp_err_t ret = ESP_OK; // set by the ESP_GOTO_ON_* checks
     esp_eth_mac_t *mac = NULL;

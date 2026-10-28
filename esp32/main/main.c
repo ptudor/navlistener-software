@@ -487,6 +487,10 @@ void app_main(void)
     ESP_ERROR_CHECK(receiver_start(&s_parser));
     if (observer_board_start() != ESP_OK)
         ESP_LOGW(TAG, "observer panel/diagnostics task unavailable");
+#if CONFIG_NVF_ETHERNET_W5500
+    // The port's identity at every boot, setup mode included; the uplink starts once provisioned.
+    if (observer_board_wired_uplink()) (void)ethernet_identify(observer_board_current());
+#endif
 
     nvf_update_hooks_t update_hooks={.online=uplink_online,.durable_link=pusher_durable_connected,
         .pause=spool_pause_producers,.resume=spool_resume_producers};

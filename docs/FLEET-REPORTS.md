@@ -34,7 +34,7 @@ document and refuses every invalid one.
 ```json
 {
   "format": "navlistener-bench-report-v1",
-  "tool": "bench_check.py 2",
+  "tool": "bench_check.py 3",
   "station": "bench-1",
   "started_at": "2026-10-23T14:02:11Z",
   "finished_at": "2026-10-23T14:02:49Z",
@@ -123,7 +123,7 @@ It changes these checks and adds the rest:
 | `identity:<part>@0x<addr>` | The part's identity registers read as that part: the MCP9808, the HDC2080/HDC2022 family, the BMP388 or BMP58x family and the INA3221 | An unexpected identity, or no identity read |
 | `receiver` | As above | As above, and also when there is no verdict within the window |
 | `receiver.model` | MON-VER confirms the model the revision lists, or the mosaic-G5's ReceiverSetup names a mosaic-G5 | Another model, an unconfirmed one, or no answer within the window |
-| `ethernet` | ZED/X20 only: the W5500 started | It did not, or no start was reported |
+| `ethernet` | ZED/X20 only: the W5500 answered its VERSIONR read at boot, and a provisioned board also started it | Another identity, a failed read, no identity reported, or a provisioned board that did not start it |
 | `panel_chain` | ZED/X20 only: the I/O expander read a 24- or 16-bit LED chain back | The chain was not detected, or no verdict within the window |
 
 The other checks are unchanged. A report made with `--expect` is an ordinary v1

@@ -349,7 +349,8 @@ unit to that same identity.
 board's revision A: the manifest must name it, every part its list carries that the
 firmware reports at boot must answer and, where the firmware reads one, show the
 right identity. The receiver must stream and confirm its model, and a missing verdict
-fails rather than skips; the ZED/X20 must also start its W5500 and read the panel
+fails rather than skips; the ZED/X20's W5500 must answer its version read, which the
+firmware makes at every boot, setup mode included, and the board must read the panel
 chain back, so fit the panel. The checks are listed in
 [FLEET-REPORTS.md](../../docs/FLEET-REPORTS.md#pre-enrollment-qa---expect). Raise
 `--seconds` if a cold receiver has not answered within the 30 s window.

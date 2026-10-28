@@ -521,7 +521,9 @@ while either link has an address. Leave the browser form's SSID empty for a wire
 The Wi-Fi station starts even without a network, because
 the radio is the random-number generator's entropy source for TLS. With no network it does
 not scan or associate. A W5500 that does not answer is logged, and the unit carries on over
-Wi-Fi if one is configured.
+Wi-Fi if one is configured. At every boot, setup mode included, the firmware first reads the
+W5500's VERSIONR, which must be `0x04`, and logs `W5500 verified` or the unexpected identity,
+then frees the bus: an unprovisioned board's port is tested although its uplink never starts.
 
 ## Network diagnostics
 
