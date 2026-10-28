@@ -582,22 +582,22 @@ esp32-hardware-discovery (`eeprom_intsat_template()`), so every writer produces 
 bytes; the library's host tests fix each released list byte for byte, and a board change is
 a new revision there. The library also identifies the fitted part (`eeprom_identify()`,
 from the 24CS Manufacturer ID or the M24128-U identification page). Each header is
-`GNSS_PCB_MAIN` revision A. Entry 0 is the EEPROM's self-reference, carrying the identified
-part: the 24CS128 fitted on every board, or the pin-compatible M24128-U alternate. Entry 1
+`GNSS_PCB_MAIN` revision 1 for A or revision 2 for X20 B. Entry 0 is the EEPROM's self-reference, carrying the identified
+part: a 24CS128, the 24CS256 on the 162mm X20, or the pin-compatible M24128-U alternate. Entry 1
 names the board: a `CAT_INTSAT` descriptor whose address byte is the board revision (1 = A).
 Firmware and clients know a board's pins and part addresses from that ID and revision; the
 other entries say which parts are installed.
 
-| Entry | NEO first spin | MAX mobile | ZED-X20P (162mm) | mosaic-G5 P3 (162mm) |
+| Entry | NEO first spin | MAX mobile | ZED-X20P (162mm, A/B) | mosaic-G5 P3 (162mm) |
 |---|---|---|---|---|
-| `CAT_INTSAT`, revision | `INTSAT_NEO`, 1 | `INTSAT_MAX`, 1 | `INTSAT_X20`, 1 | `INTSAT_MOSAIC_P3`, 1 |
+| `CAT_INTSAT`, revision | `INTSAT_NEO`, 1 | `INTSAT_MAX`, 1 | `INTSAT_X20`, 1 (A) or 2 (B) | `INTSAT_MOSAIC_P3`, 1 |
 | `CAT_GPS` | `GPS_NEO_M9N` | `GPS_MAX_M10S` | `GPS_ZED_X20P` | `GPS_MOSAIC_G5_P3` |
 | `CAT_RTC` | `RTC_MCP79412` `0x6F` | `RTC_MCP79412` `0x6F` | `RTC_DS3231M` `0x68` | `RTC_MCP79412` `0x6F` |
 | `CAT_PRESSURE` | `PRESSURE_BMP388` `0x76` | `PRESSURE_MS5607` `0x77` | `PRESSURE_BMP581` `0x46` | `PRESSURE_MS5607` `0x77` |
 | `CAT_POWER`, GPIO38 (`3V3_GNSS`) | `POWER_ADM7150` | `POWER_TPS7A20` | `POWER_ADM7150` | `POWER_ADM7150` |
 | `CAT_POWER`, GPIO21 (`3V3_SENS`) | `POWER_RT9193` | `POWER_TPS7A20` | `POWER_TPS7A20` | `POWER_RT9193` |
 | `CAT_POWER`, I2C | — | — | `POWER_INA3221` `0x41` (rail monitor) | `POWER_INA3221` `0x41` (rail monitor) |
-| `CAT_IO_EXPANDER` | — | — | `IO_MCP23008` `0x24` (interrupt collector, panel chain readback) | — |
+| `CAT_IO_EXPANDER` | — | — | `IO_MCP23008` `0x24` (interrupt collector, panel chain readback); B also has `IO_MCP23008` `0x25` (receiver service/status) | — |
 | Additional sensors | — | `IMU_ICM45686` `0x69`, `SENSOR_MAG_MMC34160PJ` `0x30`, `SENSOR_THERMOCOUPLE_MAX31856` (SPI) | — | `TEMP_MCP9808` `0x1F` (LDL1117 spreader, U47), `TEMP_SHT35` `0x44`, `SENSOR_HIH8121` `0x27` |
 | Ethernet | — | — | `COMM_W5500` (SPI), `CONNECTOR_ETHERNET_RJ45` | — |
 | `CAT_BATTERY` | `BATTERY_CR123A` | `BATTERY_CR2032`; `BATTERY_CR123A` not populated (optional external cell) | `BATTERY_CR2032`, `BATTERY_CR123A` (carrier) | `BATTERY_CR2032` (RTC only) |
@@ -608,7 +608,8 @@ TLC5916 drivers by output-enable GPIO47/GPIO48 (two on the NEO and MAX; the 162m
 three, of which U12 and U14 share GPIO47), USB-OTG and the Qwiic port. The ZED-X20P column is
 the 162mm mainboard with its required LED panel; revision A was redefined to it on
 2026-10-07, before any X20 EEPROM was programmed, and the 3900 mil square schematic is being
-brought to the same parts so it can carry the list. The P3 column is the mosaic-G5 P3 card in
+brought to the same parts so it can carry the list. Revision B keeps that installed list and
+adds U41 at `0x25`; the default-DNP receiver USB option is deliberately absent. The P3 column is the mosaic-G5 P3 card in
 the same enclosure with the same panel on its 24-bit ribbon. It carries two MCP9808s, so
 firmware tells their roles apart by address (`eeprom_has_ic_at()`): `0x18` measures the board,
 `0x1F` the LDL1117 system regulator's heat spreader (§6.2).

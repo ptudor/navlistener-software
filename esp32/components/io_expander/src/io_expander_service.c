@@ -36,6 +36,27 @@ static int64_t rail_alert_ms;
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
+esp_err_t io_expander_prepare_shared_peer(i2c_master_bus_handle_t bus, uint8_t address)
+{
+    if (!bus || address > 0x7f || address == MCP23008_ADDRESS) return ESP_ERR_INVALID_ARG;
+    const i2c_device_config_t config = {.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = address, .scl_speed_hz = EXPANDER_I2C_HZ};
+    i2c_master_dev_handle_t peer = NULL;
+    esp_err_t err = i2c_master_bus_add_device(bus, &config, &peer);
+    const uint8_t disable[] = {MCP23008_GPINTEN, 0};
+    const uint8_t open_drain[] = {MCP23008_IOCON, MCP23008_IOCON_ODR};
+    uint8_t reg = MCP23008_IOCON, value = 0;
+    if (err == ESP_OK) err = i2c_master_transmit(peer, disable, sizeof disable, I2C_TIMEOUT_MS);
+    if (err == ESP_OK) err = i2c_master_transmit(peer, open_drain, sizeof open_drain, I2C_TIMEOUT_MS);
+    if (err == ESP_OK) err = i2c_master_transmit_receive(peer, &reg, 1, &value, 1, I2C_TIMEOUT_MS);
+    if (err == ESP_OK && value != MCP23008_IOCON_ODR) err = ESP_ERR_INVALID_RESPONSE;
+    if (peer) {
+        esp_err_t remove = i2c_master_bus_rm_device(peer);
+        if (err == ESP_OK) err = remove;
+    }
+    return err;
+}
+
 static bool reg_read(void *ctx, uint8_t reg, uint8_t *value)
 {
     (void)ctx;

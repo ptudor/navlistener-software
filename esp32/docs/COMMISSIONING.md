@@ -317,7 +317,7 @@ unit to that same identity.
    `build/s3-manifest-init-zed-x20-hdc2080-layout3`. The wrapper refuses to build
    it without both settings and fails it if the generated configuration differs.
 3. A board whose manifest EEPROM is blank: flash the initialization image. Its
-   first boot writes the board's revision-A list, reads it back and adopts the
+   first boot writes the selected board revision's list, reads it back and adopts the
    identity; `manifest` then reports the board, "programmed this boot". Keep this
    report as the record of programming. Skip this step on a board already
    programmed: the image never writes to a programmed EEPROM or one the board has
@@ -345,8 +345,11 @@ unit to that same identity.
    test, identity sweep of serial ...89abcdef`), so it confirms the serial was read
    over I2C.
 
-`--expect` takes `neo`, `zed-x20`, `max` or `mosaic-p3` and holds the board to that
-board's revision A: the manifest must name it, every part its list carries that the
+For an X20 revision-B assembly, use `NVF_MANIFEST_INIT=zed-x20-b` above and
+`--expect zed-x20-b` for QA; plain `zed-x20` remains revision A.
+
+`--expect` takes `neo`, `zed-x20`, `zed-x20-b`, `max` or `mosaic-p3` and holds the board to that
+exact revision: the manifest must name it, every part its list carries that the
 firmware reports at boot must answer and, where the firmware reads one, show the
 right identity. The receiver must stream and confirm its model, and a missing verdict
 fails rather than skips. A u-blox receiver must also acknowledge every setting the

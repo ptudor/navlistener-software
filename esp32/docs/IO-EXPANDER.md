@@ -1,7 +1,7 @@
-# MCP23008 interrupt collector and panel readback (X20 revision A)
+# MCP23008 interrupt collector and panel readback (X20 revisions A and B)
 
 The specification and task list for the firmware that reads U39, the MCP23008 I/O
-expander on the 162mm ZED-X20P mainboard (`INTSAT_X20` revision A), kept as the
+expander on the 162mm ZED-X20P mainboard (`INTSAT_X20` revisions A and B), kept as the
 feature's documentation; section 11 records where the implementation departs from it
 and why. It follows the project's rules: one universal image, every driver gated by the
 manifest and failing closed, no Kconfig per-board switches, and the universal image built
@@ -17,7 +17,7 @@ All of this is from the board's netlist and the IC review; do not re-derive it.
 | I2C | 7-bit address `0x24` (A2 high, A1 and A0 low) on the shared manifest bus, GPIO6 SDA / GPIO7 SCL, 100 kHz as the other devices |
 | Supply | `3V3_SYS` (always on). The bus pull-ups are on `3V3_SENS` (GPIO21 `SENS_EN`, default on), so the expander answers only while that rail is on |
 | RESET# | tied to `ESP_EN`: the expander resets with the ESP32, so it must be configured after every boot |
-| INT | to ESP32 **GPIO3**, net `EXP_INT_N`, 10 kΩ pull-up to `3V3_SYS`. Default push-pull active-low output (IOCON ODR = 0, INTPOL = 0) stays. GPIO3 is a strapping pin (JTAG_SEL): read it only, never drive it, never burn `EFUSE_STRAP_JTAG_SEL` |
+| INT | to ESP32 **GPIO3**, net `EXP_INT_N`, 10 kΩ pull-up to `3V3_SYS`. Firmware sets IOCON.ODR for open-drain active-low operation; revision B shares this net with U41. GPIO3 is a strapping pin (JTAG_SEL): read it only, never drive it, never burn `EFUSE_STRAP_JTAG_SEL` |
 | GP0 | `PANEL_SDO`, the last TLC5916's SDO of the LED chain (3V3_SYS logic, through 33 Ω). On the 162mm board the chain is 24 bits: U12 green, U13 amber, U14 status. On the 3900 mil square board, which runs the same X20 row, GP0 reads that board's on-board 16-bit chain instead |
 | GP1 | `ETH_INT_N`, W5500 INTn (3V3_ETH logic, no external pull-up). The W5500 is polled and its interrupt masks are zero, so this line idles high today |
 | GP2 | `BARO_INT_N`, BMP581 INT, 10 kΩ to `3V3_SENS`. Not enabled by firmware today (the sensor is polled) |
@@ -33,8 +33,13 @@ chain attached and the unused pins never float.
 Board rows: `main/board_reservations.h` already carries `exp_int_n` (3 on the X20 row,
 `NVF_NONE` on the NEO and MAX), `panel_status_byte` and `led_panel_sdi`; `board.c`
 configures `exp_int_n` as a floating input in `board_inputs()`. The manifest lists the
-expander as `IC_I2C(CAT_IO_EXPANDER, IO_MCP23008, 0x24)` (esp32-hardware-discovery
-cafbc9e); `observer_board_lists(CAT_IO_EXPANDER, IO_MCP23008)` is the gate.
+expander as `IC_I2C(CAT_IO_EXPANDER, IO_MCP23008, 0x24)`; revision B also lists U41 at
+`0x25`. The collector gate is address-qualified, so U41 cannot stand in for U39.
+
+On revision B, startup first writes U41 GPINTEN=0 and IOCON.ODR=1 and reads IOCON back.
+Only then may U39 enable its sources. U41 otherwise remains in its reset-safe all-input
+state until the separate receiver-service driver owns GP0-GP7. If this preparation fails,
+U39 interrupt service stays disabled so the two outputs cannot contend.
 
 ## 2. Register programme (MCP23008, BANK = 0, DS20001919 Table 1-3)
 
@@ -45,7 +50,7 @@ cafbc9e); `observer_board_lists(CAT_IO_EXPANDER, IO_MCP23008)` is the gate.
 | GPINTEN | 0x02 | 0x3E | interrupt-on-change on GP1–GP5 only |
 | DEFVAL | 0x03 | 0x00 | unused with INTCON = 0 |
 | INTCON | 0x04 | 0x00 | compare with the previous value, so a steady level does not retrigger |
-| IOCON | 0x05 | 0x00 | sequential addressing, slew-rate control on, INT push-pull active-low |
+| IOCON | 0x05 | 0x04 | sequential addressing, slew-rate control on, INT open-drain active-low |
 | GPPU | 0x06 | 0xC1 | pull-ups on GP0, GP6, GP7 only |
 
 INTF (0x07) names the pins that caused the interrupt; reading INTCAP (0x08) or GPIO

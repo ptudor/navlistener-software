@@ -57,7 +57,7 @@
 #define NVF_PIN_GEOFENCE_STAT 42
 #define NVF_PIN_CONSOLE_VBUS  14  /* U32 buffers the console host's VBUS through R97 */
 #define NVF_PIN_EXP_INT_N      3  /* U39 INT, R94 pull-up; a strap read only as an input */
-#define NVF_PINS_ZED_X20 (NVF_PINS_COMMON | \
+#define NVF_PINS_ZED_X20_COMMON (NVF_PINS_COMMON | \
     NVF_PIN(1)  | /* LED_PANEL_SDI                    */ \
     NVF_PIN(2)  | /* BRIGHT_ADC trimmer wiper         */ \
     NVF_PIN(NVF_PIN_CONSOLE_VBUS) | NVF_PIN(NVF_PIN_EXP_INT_N) | \
@@ -65,7 +65,10 @@
     NVF_PIN(NVF_PIN_ETH_MOSI) | NVF_PIN(NVF_PIN_ETH_MISO) | \
     NVF_PIN(NVF_PIN_GNSS_UART2_TX) | NVF_PIN(NVF_PIN_GNSS_UART2_RX) | \
     NVF_PIN(18) | /* BRIGHT_BUTTON presets            */ \
-    NVF_PIN(NVF_PIN_RTK_STAT) | NVF_PIN(NVF_PIN_GEOFENCE_STAT))
+    NVF_PIN(NVF_PIN_RTK_STAT))
+#define NVF_PINS_ZED_X20_A (NVF_PINS_ZED_X20_COMMON | NVF_PIN(NVF_PIN_GEOFENCE_STAT))
+// Revision B reads GEOFENCE_STAT through U41 GP6, freeing ESP32 GPIO42.
+#define NVF_PINS_ZED_X20_B NVF_PINS_ZED_X20_COMMON
 
 // MAX: the MAX31856 thermocouple converter's SPI and data-ready, the IMU's two
 // interrupts, the environmental interrupts, the brightness trimmer and buttons.
@@ -127,7 +130,8 @@ _Static_assert(((NVF_PINS_NEO | NVF_PINS_MAX | NVF_PINS_MOSAIC_P3) & NVF_PIN(3))
         name " claims a pin the S3 or the N16R8 module does not offer"); \
     _Static_assert(((map) & NVF_PINS_STRAP_AVOID) == 0, name " lands on a strapping pin")
 NVF_PINS_CHECK(NVF_PINS_NEO, "the NEO pin map");
-NVF_PINS_CHECK(NVF_PINS_ZED_X20, "the ZED/X20 pin map");
+NVF_PINS_CHECK(NVF_PINS_ZED_X20_A, "the revision-A ZED/X20 pin map");
+NVF_PINS_CHECK(NVF_PINS_ZED_X20_B, "the revision-B ZED/X20 pin map");
 NVF_PINS_CHECK(NVF_PINS_MAX, "the MAX pin map");
 NVF_PINS_CHECK(NVF_PINS_MOSAIC_P3, "the P3 pin map");
 
@@ -145,11 +149,26 @@ NVF_PINS_CHECK(NVF_PINS_MOSAIC_P3, "the P3 pin map");
 #define NVF_I2C_RTC_EUI       0x57 /* MCP79412 EEPROM, NEO, MAX and P3 */
 #define NVF_I2C_CRYPTO        0x60 /* ATECC608C                    */
 #define NVF_I2C_RTC_TCXO      0x68 /* DS3231M, ZED/X20 (MAX31328 on the superseded square list) */
-#define NVF_I2C_IO_EXPANDER   0x24 /* MCP23008, ZED/X20            */
+#define NVF_I2C_IO_EXPANDER   0x24 /* MCP23008 U39, ZED/X20 interrupt collector */
+#define NVF_I2C_RECEIVER_EXPANDER 0x25 /* MCP23008 U41, X20 revision B receiver service */
 #define NVF_I2C_IMU           0x69 /* ICM-45686, MAX, strapped     */
 #define NVF_I2C_RTC           0x6f /* MCP79412 RTCC, NEO, MAX and P3 */
 #define NVF_I2C_PRESSURE      0x76 /* BMP388, NEO                  */
 #define NVF_I2C_PRESSURE_ALT  0x77 /* MS5607, MAX and P3, CSB low  */
+
+// U41 receiver-service functions. GP0-GP3 are only ever driven low or released;
+// GP4-GP6 are inputs and GP7 is reserved at a test point.
+#define NVF_RXEXP_SAFEBOOT_N   (1u << 0)
+#define NVF_RXEXP_RESET_N      (1u << 1)
+#define NVF_RXEXP_EXTINT       (1u << 2)
+#define NVF_RXEXP_ANT_ENABLE   (1u << 3)
+#define NVF_RXEXP_ANT_FAULT_N  (1u << 4)
+#define NVF_RXEXP_TX_READY     (1u << 5)
+#define NVF_RXEXP_GEOFENCE     (1u << 6)
+#define NVF_RXEXP_SPARE        (1u << 7)
+_Static_assert((NVF_RXEXP_SAFEBOOT_N | NVF_RXEXP_RESET_N | NVF_RXEXP_EXTINT | NVF_RXEXP_ANT_ENABLE |
+                NVF_RXEXP_ANT_FAULT_N | NVF_RXEXP_TX_READY | NVF_RXEXP_GEOFENCE | NVF_RXEXP_SPARE) == 0xff,
+               "the X20 receiver expander pin allocation must cover GP0-GP7 exactly once");
 
 // Each board's function pins; -1 marks a function the board does not have. board.c holds
 // every row, the image drives the boards it supports (Kconfig NVF_BOARD_SUPPORT_*), and
@@ -210,8 +229,8 @@ typedef struct {
 #define NVF_X20_RAIL_5V   {.name = "+5V", .shunt_mohm = 20, .warn_ma = 1000, .crit_ma = 1300}
 #define NVF_X20_RAIL_GNSS {.name = "3V3_GNSS", .shunt_mohm = 50, .warn_ma = 350, .crit_ma = 500}
 #define NVF_X20_RAIL_SYS  {.name = "3V3_SYS", .shunt_mohm = 20, .warn_ma = 800, .crit_ma = 1000}
-#define NVF_BOARD_X20_ROW {.model = BOARD_MODEL_X20_A, .name = "X20 revision A", .intsat_id = INTSAT_X20, \
-    .family = "gnss-color-zed-x20", .pins = NVF_PINS_ZED_X20, .boot_steps_brightness = false, \
+#define NVF_BOARD_X20_ROW(model_id, revision_name, pin_map) {.model = (model_id), .name = (revision_name), .intsat_id = INTSAT_X20, \
+    .family = "gnss-color-zed-x20", .pins = (pin_map), .boot_steps_brightness = false, \
     .led_sdi = NVF_NONE, .led_panel_sdi = 1, .panel_status_byte = true, \
     .console_vbus = NVF_PIN_CONSOLE_VBUS, .exp_int_n = NVF_PIN_EXP_INT_N, .pwr_alert_n = NVF_NONE, \
     .rtk_stat = NVF_PIN_RTK_STAT, \
@@ -221,6 +240,8 @@ typedef struct {
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
     .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE, \
     .rails = {NVF_X20_RAIL_5V, NVF_X20_RAIL_GNSS, NVF_X20_RAIL_SYS}} /* U37 through R74, R75, R76 */
+#define NVF_BOARD_X20_A_ROW NVF_BOARD_X20_ROW(BOARD_MODEL_X20_A, "X20 revision A", NVF_PINS_ZED_X20_A)
+#define NVF_BOARD_X20_B_ROW NVF_BOARD_X20_ROW(BOARD_MODEL_X20_B, "X20 revision B", NVF_PINS_ZED_X20_B)
 #define NVF_BOARD_MAX_ROW {.model = BOARD_MODEL_MAX_A, .name = "MAX revision A", .intsat_id = INTSAT_MAX, \
     .family = "gnss-color-max", .pins = NVF_PINS_MAX, .boot_steps_brightness = false, \
     .led_sdi = 14, .led_panel_sdi = NVF_NONE, .panel_status_byte = false, \
@@ -267,9 +288,12 @@ _Static_assert(NVF_P3_REGULATOR_RELEASE_CENTI_C < NVF_P3_REGULATOR_THROTTLE_CENT
     .rails = {NVF_P3_RAIL_5V, NVF_P3_RAIL_GNSS, NVF_P3_RAIL_SYS}, /* U37 through R89, R75, R76 */ \
     .regulator = NVF_P3_REGULATOR}
 // Every function pin is on its board's map.
-_Static_assert(NVF_PIN_ON(NVF_PINS_ZED_X20, 1) && NVF_PIN_ON(NVF_PINS_ZED_X20, 2) &&
-               NVF_PIN_ON(NVF_PINS_ZED_X20, 18) && NVF_PIN_ON(NVF_PINS_ZED_X20, NVF_PIN_CONSOLE_VBUS) &&
-               NVF_PIN_ON(NVF_PINS_ZED_X20, NVF_PIN_EXP_INT_N) && NVF_PIN_ON(NVF_PINS_ZED_X20, NVF_PIN_RTK_STAT),
+_Static_assert(NVF_PIN_ON(NVF_PINS_ZED_X20_A, NVF_PIN_GEOFENCE_STAT) &&
+               !NVF_PIN_ON(NVF_PINS_ZED_X20_B, NVF_PIN_GEOFENCE_STAT),
+               "only X20 revision A connects GEOFENCE_STAT to ESP32 GPIO42");
+_Static_assert(NVF_PIN_ON(NVF_PINS_ZED_X20_B, 1) && NVF_PIN_ON(NVF_PINS_ZED_X20_B, 2) &&
+               NVF_PIN_ON(NVF_PINS_ZED_X20_B, 18) && NVF_PIN_ON(NVF_PINS_ZED_X20_B, NVF_PIN_CONSOLE_VBUS) &&
+               NVF_PIN_ON(NVF_PINS_ZED_X20_B, NVF_PIN_EXP_INT_N) && NVF_PIN_ON(NVF_PINS_ZED_X20_B, NVF_PIN_RTK_STAT),
                "an X20 function pin is missing from its map");
 _Static_assert(NVF_PIN_ON(NVF_PINS_NEO, 14) && NVF_PIN_ON(NVF_PINS_MAX, 14), "the on-board chain's data pin is missing from its map");
 _Static_assert(NVF_PIN_ON(NVF_PINS_MAX, 2) && NVF_PIN_ON(NVF_PINS_MAX, 18),

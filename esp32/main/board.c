@@ -98,7 +98,8 @@ void observer_board_cycle_brightness(void)
 // A test build still names the others, so the update service knows the device's board.
 static const struct { observer_board_t board; bool driven; } known[] = {
     {NVF_BOARD_NEO_ROW, CONFIG_NVF_BOARD_SUPPORT_NEO},
-    {NVF_BOARD_X20_ROW, CONFIG_NVF_BOARD_SUPPORT_X20},
+    {NVF_BOARD_X20_A_ROW, CONFIG_NVF_BOARD_SUPPORT_X20},
+    {NVF_BOARD_X20_B_ROW, CONFIG_NVF_BOARD_SUPPORT_X20},
     {NVF_BOARD_MAX_ROW, CONFIG_NVF_BOARD_SUPPORT_MAX},
     {NVF_BOARD_P3_ROW, CONFIG_NVF_BOARD_SUPPORT_MOSAIC_P3},
 };
@@ -109,7 +110,7 @@ static eeprom_capabilities_t listed;
 static observer_rtc_part_t rtc_part;
 static bool thermocouple_listed, imu_listed, barometer_listed, magnetometer_listed, rails_listed;
 // The MCP23008 is listed and the board row has its interrupt pin; cleared if it cannot start.
-static bool expander_listed;
+static bool expander_listed, receiver_expander_listed;
 // The INA3221's alert line reaches its own pin (the P3's PWR_ALERT_N on GPIO41) rather than the
 // expander: its falling edge wakes the board task, which reads and releases the latched flags.
 static bool rail_alert_direct;
@@ -124,6 +125,9 @@ static regulator_thermal_t regulator;
 // allocated address; tags 24 and 25.
 static bool sht3x_listed, hih8121_listed;
 _Static_assert(NVF_I2C_IO_EXPANDER == MCP23008_ADDRESS, "the expander's address differs from the allocation record");
+_Static_assert(NVF_I2C_RECEIVER_EXPANDER >= 0x20 && NVF_I2C_RECEIVER_EXPANDER <= 0x27 &&
+               NVF_I2C_RECEIVER_EXPANDER != NVF_I2C_IO_EXPANDER,
+               "the receiver expander must have its own MCP23008 address");
 const observer_board_t *observer_board_current(void) { return board; }
 bool observer_board_lists(uint8_t category, uint8_t id)
 {
@@ -195,6 +199,15 @@ static bool listed_with_pins(uint8_t category, uint8_t id, bool pins, const char
 {
     if (!observer_board_lists(category, id)) return false;
     if (!pins) ESP_LOGE(TAG, "the manifest lists a %s, but the %s has no pins for it; it is not used", name, board->name);
+    return pins;
+}
+static bool listed_at_with_pins(uint8_t category, uint8_t id, uint8_t address,
+                                bool pins, const char *name)
+{
+    if (!observer_board_lists_at(category, id, address)) return false;
+    if (!pins)
+        ESP_LOGE(TAG, "the manifest lists a %s at 0x%02x, but the %s has no pins for it; it is not used",
+                 name, address, board->name);
     return pins;
 }
 void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_t (*now_ns)(void))
@@ -296,8 +309,11 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
     parts.sht3x = sht3x_listed ? NVF_I2C_HUMIDITY_SHT3X : 0;
     parts.hih8121 = hih8121_listed ? NVF_I2C_HUMIDITY_HIH : 0;
     environment_configure(&parts);
-    expander_listed = listed_with_pins(CAT_IO_EXPANDER, IO_MCP23008, board && board->exp_int_n >= 0,
-                                       "MCP23008 I/O expander");
+    expander_listed = listed_at_with_pins(CAT_IO_EXPANDER, IO_MCP23008, NVF_I2C_IO_EXPANDER,
+                                          board && board->exp_int_n >= 0,
+                                          "MCP23008 interrupt collector");
+    receiver_expander_listed = observer_board_lists_at(CAT_IO_EXPANDER, IO_MCP23008,
+                                                        NVF_I2C_RECEIVER_EXPANDER);
     rail_alert_direct = rails_listed && board->pwr_alert_n >= 0;
     thermocouple_listed = listed_with_pins(CAT_SENSOR, SENSOR_THERMOCOUPLE_MAX31856,
                                            board && board->tc_sck >= 0, "MAX31856 thermocouple converter");
@@ -565,6 +581,7 @@ static void identify_peripherals(void)
         {CAT_IMU, IMU_ICM45686, NVF_I2C_IMU, "IMU"},
         {CAT_SENSOR, SENSOR_MAG_MMC34160PJ, NVF_I2C_MAGNETOMETER, "magnetometer"},
         {CAT_IO_EXPANDER, IO_MCP23008, NVF_I2C_IO_EXPANDER, "I/O expander"},
+        {CAT_IO_EXPANDER, IO_MCP23008, NVF_I2C_RECEIVER_EXPANDER, "receiver I/O expander"},
     };
     for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
         if (!observer_board_lists_at(parts[i].category, parts[i].id, parts[i].address)) continue;
@@ -1347,7 +1364,17 @@ esp_err_t observer_board_start(void)
     esp_err_t err = gpio_config(&config);
     if (err != ESP_OK) return err;
     if ((err = board_inputs()) != ESP_OK) return err;
-    // The expander's interrupt handler goes on GPIO3 once its register programme reads back.
+    // On revision B, put U41's shared INT output in open-drain mode before U39 can
+    // enable any source. U41 otherwise remains at its safe reset state: every pin an
+    // input and every interrupt disabled until the receiver-service driver owns it.
+    if (expander_listed && receiver_expander_listed &&
+        (err = io_expander_prepare_shared_peer(hardware_manifest_i2c_bus(),
+                                                NVF_I2C_RECEIVER_EXPANDER)) != ESP_OK) {
+        ESP_LOGE(TAG, "receiver-service MCP23008 safe-state unavailable: %s; the shared interrupt is not used",
+                 esp_err_to_name(err));
+        expander_listed = false;
+    }
+    // U39's interrupt handler goes on GPIO3 once its register programme reads back.
     if (expander_listed && (err = io_expander_start(hardware_manifest_i2c_bus(), board->exp_int_n)) != ESP_OK) {
         ESP_LOGE(TAG, "MCP23008 I/O expander service unavailable: %s; its lines and the panel readback are not used",
                  esp_err_to_name(err));

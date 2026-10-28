@@ -1,7 +1,7 @@
 #ifndef MANIFEST_BOARD_H
 #define MANIFEST_BOARD_H
 // Which observer board a verified manifest describes. Each manifest names its board with
-// one installed CAT_INTSAT descriptor whose address byte is the revision (1 = A); the
+// one installed CAT_INTSAT descriptor whose address byte is the revision (1 = A, 2 = B); the
 // firmware knows a board's pins and parts from that ID and revision. Pure: the ESP side
 // reads the descriptors with the discovery library.
 #include <stdbool.h>
@@ -12,6 +12,7 @@ typedef enum {
     BOARD_MODEL_NONE = 0,     // no usable manifest, or it names no board: not configured
     BOARD_MODEL_NEO_A,
     BOARD_MODEL_X20_A,
+    BOARD_MODEL_X20_B,
     BOARD_MODEL_MAX_A,
     BOARD_MODEL_P3_A,
     BOARD_MODEL_UNSUPPORTED,  // a board or revision this firmware does not know

@@ -24,7 +24,7 @@ LCD development board is unsupported; adding flash alone does not make it a
 supported substitute. Its drivers and partition table remain as legacy source.
 
 - **Custom GNSS color observer:** ESP32-S3, receiver UART on GPIO4/GPIO5, shared I2C on
-  GPIO6/GPIO7, and a 24CS128 manifest at `0x50`. One universal image runs on the NEO, the
+  GPIO6/GPIO7, and a 24CS-family manifest EEPROM at `0x50`. One universal image runs on the NEO, the
   ZED/X20, the MAX and the mosaic-G5 P3. At boot it reads the manifest: its `CAT_INTSAT` entry names the
   board and revision, which fix the pins ([`main/board_reservations.h`](main/board_reservations.h)),
   and each driver runs only for a part the manifest lists installed: the receiver it
@@ -40,7 +40,7 @@ supported substitute. Its drivers and partition table remain as legacy source.
   they carry one board's drivers, run nothing board-specific on any other board, and
   install over the air only on their own board. Startup reads the 128-bit factory serial and manifest;
   `NVF_MANIFEST_FACTORY_INIT` is a manufacturing-only, default-off permission to initialize a
-  blank, never-seen EEPROM from a revision-A component list; `NVF_MANIFEST_BOARD`
+  blank, never-seen EEPROM from the selected board-and-revision component list; `NVF_MANIFEST_BOARD`
   chooses which board's list it writes. The lists are esp32-hardware-discovery's Intsat
   templates, tabulated in
   [the observer contract](../docs/HARDWARE-OBSERVER.md#52-how-navlistener-consumes-it). It never
@@ -78,10 +78,10 @@ another build directory. It does not erase flash; migration from an older layout
 uses the separate erase/reflash procedure below. The development flash command
 refuses builds that enable chip locking.
 
-`NVF_MANIFEST_INIT=neo|zed-x20|max|mosaic-p3 NVF_MANIFEST_HDC=hdc2080|hdc2022
+`NVF_MANIFEST_INIT=neo|zed-x20|zed-x20-b|max|mosaic-p3 NVF_MANIFEST_HDC=hdc2080|hdc2022
 ./build-navfeeder-esp.sh` builds the manufacturing image that writes a blank
 manifest EEPROM: the universal image with `NVF_MANIFEST_FACTORY_INIT`, that board's
-revision-A list and the lot's humidity sensor, in
+selected revision list and the lot's humidity sensor, in
 `build/s3-manifest-init-<board>-<hdc>-layout3`. Both settings are required. It is
 the first image of the [pre-enrollment QA](docs/COMMISSIONING.md#pre-enrollment-qa)
 sequence, after which the board runs the ordinary image.
@@ -811,11 +811,12 @@ The pusher reconnects when sent records remain outstanding without durable ACK a
 ### Hardware-discovery dependency and release evidence
 
 Normal builds pin `esp_hardware_discovery` to commit
-`b18f4ffbb7fb1e85fd075c206c382433d606e0ed` (24CS256/24CS512 support, the `POWER_TPS7A20`,
+`f0011c5bb3471ca0915653e41506e89b30086254` (24CS256/24CS512 support, the `POWER_TPS7A20`,
 `COMM_W5500`, `SENSOR_THERMOCOUPLE_MAX31856`, `PRESSURE_BMP580`, `PRESSURE_BMP581`,
 `RTC_DS3231M` and `GPS_MOSAIC_G5_P3` catalog IDs, the `CAT_INTSAT` board category with
 `INTSAT_MOSAIC_P3`, part identification, `eeprom_has_ic_at()` and the Intsat board templates,
-whose X20 list is the 162mm assembly with the DS3231M, MCP23008 and BMP581 and whose P3 list
+whose X20 revision-B list adds the receiver-control MCP23008 at `0x25` to the 162mm
+assembly's DS3231M, interrupt collector and BMP581, and whose P3 list
 names both MCP9808s), with the IDF 5.5.4/ESP32-S3
 resolution committed in `dependencies.lock`. Updating the pin is a deliberate
 source change: review upstream layout changes and run the component's

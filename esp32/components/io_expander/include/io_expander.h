@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 enum { MCP23008_ADDRESS = 0x24 };
+enum { MCP23008_IOCON_ODR = 0x04 };
 // Register addresses with IOCON.BANK = 0 (Table 1-3).
 enum {
     MCP23008_IODIR = 0x00, MCP23008_IPOL = 0x01, MCP23008_GPINTEN = 0x02, MCP23008_DEFVAL = 0x03,
@@ -21,8 +22,8 @@ enum {
     IO_EXPANDER_SOURCES = 0x3e,   // GP1-GP5: the alert lines, each interrupting on change
 };
 // The register programme for IODIR through GPPU, written and read back in that order: all
-// inputs, no inversion, interrupt-on-change (INTCON = 0) on GP1-GP5 only, IOCON 0 (sequential
-// addressing, slew-rate control, INT push-pull active-low), pull-ups on GP0, GP6 and GP7 only.
+// inputs, no inversion, interrupt-on-change (INTCON = 0) on GP1-GP5 only, IOCON.ODR set
+// (sequential addressing, slew-rate control, open-drain INT), pull-ups on GP0, GP6 and GP7 only.
 // GP1-GP5 come from the 3V3_ETH and 3V3_SENS domains, so their internal pull-ups stay off.
 extern const uint8_t io_expander_programme[7];
 

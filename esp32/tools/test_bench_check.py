@@ -234,7 +234,7 @@ class ConsoleTests(unittest.TestCase):
 
 
 class PreEnrollmentTests(unittest.TestCase):
-    """--expect: the board must be the named board's revision A, with every part it lists."""
+    """--expect: the board must be the named board revision, with every part it lists."""
 
     def test_a_good_x20_passes_every_check(self):
         checks = judge(console(X20), expect="zed-x20")
@@ -271,6 +271,15 @@ class PreEnrollmentTests(unittest.TestCase):
                 "setup": ("pass", "setup network and app provisioning ready"),
             },
         )
+
+    def test_a_good_x20_revision_b_requires_both_expanders(self):
+        lines = [line.replace("board: X20 revision A", "board: X20 revision B") for line in X20]
+        insert = next(i for i, line in enumerate(lines) if "I/O expander at 0x24" in line) + 1
+        lines.insert(insert, log("I", "observer_board", "receiver I/O expander at 0x25: ESP_OK"))
+        checks = judge(console(lines), expect="zed-x20-b")
+        self.assertEqual(checks["manifest"], ("pass", "X20 revision B, as expected"))
+        self.assertEqual(checks["i2c:i_o_expander@0x24"], ("pass", "ESP_OK"))
+        self.assertEqual(checks["i2c:receiver_i_o_expander@0x25"], ("pass", "ESP_OK"))
 
     def test_the_receiver_config_reports_what_the_firmware_changed(self):
         # A receiver already at the configured rate, as after an ESP32 reset: nothing moved.

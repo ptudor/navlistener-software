@@ -23,6 +23,10 @@ typedef struct {
     int64_t rail_alert_ms;   // their uptime; 0 before the first
 } io_expander_status_t;
 
+// Leaves a second MCP23008 on the same INT net with interrupts disabled and an open-drain
+// INT output. Call this before io_expander_start; its other registers and all-input reset
+// state are left alone. The temporary device handle is removed before return.
+esp_err_t io_expander_prepare_shared_peer(i2c_master_bus_handle_t bus, uint8_t address);
 // Adds the expander at 0x24 (100 kHz), starts its task and configures it. The falling-edge
 // handler on int_gpio, already an input, is installed once the programme reads back; a
 // configuration that fails is retried by io_expander_poll.

@@ -2,13 +2,13 @@
 set -e
 # Build the supported ESP32-S3 observer (16 MiB flash, 8 MiB PSRAM, layout 3).
 # Usage: [NVF_BOARD=universal|neo|zed-x20|max|mosaic-p3] ./build-navfeeder-esp.sh [flash]
-#        NVF_MANIFEST_INIT=neo|zed-x20|max|mosaic-p3 NVF_MANIFEST_HDC=hdc2080|hdc2022 \
+#        NVF_MANIFEST_INIT=neo|zed-x20|zed-x20-b|max|mosaic-p3 NVF_MANIFEST_HDC=hdc2080|hdc2022 \
 #            ./build-navfeeder-esp.sh [flash]
 # NVF_BOARD selects the universal image (the default, in build/s3-layout3) or a
 # single-board test build, each in its own build directory.
 # NVF_MANIFEST_INIT builds the manufacturing image of the pre-enrollment sequence
 # (docs/COMMISSIONING.md): the universal image with NVF_MANIFEST_FACTORY_INIT, which
-# writes a blank, never-seen manifest EEPROM with that board's revision-A list and
+# writes a blank, never-seen manifest EEPROM with that board revision's list and
 # the batch's humidity sensor, in build/s3-manifest-init-<board>-<hdc>-layout3.
 # S3_BUILD_DIR selects a separate generated configuration; existing values survive.
 case "${1:-}" in
@@ -34,9 +34,10 @@ if [ -n "$init" ]; then
     case "$init" in
         neo) init_board=NEO_A ;;
         zed-x20) init_board=ZED_X20_A ;;
+        zed-x20-b) init_board=ZED_X20_B ;;
         max) init_board=MAX_A ;;
         mosaic-p3) init_board=MOSAIC_P3_A ;;
-        *) echo "NVF_MANIFEST_INIT must be neo, zed-x20, max or mosaic-p3" >&2; exit 2 ;;
+        *) echo "NVF_MANIFEST_INIT must be neo, zed-x20, zed-x20-b, max or mosaic-p3" >&2; exit 2 ;;
     esac
     # The humidity part is written into every manifest and the firmware cannot tell
     # the two apart afterwards, so the batch's BOM must name it: there is no default.

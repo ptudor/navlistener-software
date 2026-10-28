@@ -139,17 +139,25 @@ static esp_err_t adopted_uid_store(const uint8_t uid[NVF_BOARD_UID_SIZE])
 // The board and batch that the hacker-friendly factory-init build writes onto a blank,
 // never-seen EEPROM. The list itself is the library's Intsat template, the same one the
 // factory CA writes, so both produce identical bytes.
-#if CONFIG_NVF_MANIFEST_BOARD_ZED_X20_A
+#if CONFIG_NVF_MANIFEST_BOARD_ZED_X20_B
 #define MANIFEST_BOARD_ID INTSAT_X20
+#define MANIFEST_BOARD_REVISION 2
+#define MANIFEST_BOARD_NAME "ZED-X20P revision B"
+#elif CONFIG_NVF_MANIFEST_BOARD_ZED_X20_A
+#define MANIFEST_BOARD_ID INTSAT_X20
+#define MANIFEST_BOARD_REVISION 1
 #define MANIFEST_BOARD_NAME "ZED-X20P revision A"
 #elif CONFIG_NVF_MANIFEST_BOARD_MAX_A
 #define MANIFEST_BOARD_ID INTSAT_MAX
+#define MANIFEST_BOARD_REVISION 1
 #define MANIFEST_BOARD_NAME "MAX-M10S mobile revision A"
 #elif CONFIG_NVF_MANIFEST_BOARD_MOSAIC_P3_A
 #define MANIFEST_BOARD_ID INTSAT_MOSAIC_P3
+#define MANIFEST_BOARD_REVISION 1
 #define MANIFEST_BOARD_NAME "mosaic-G5 P3 revision A"
 #else
 #define MANIFEST_BOARD_ID INTSAT_NEO
+#define MANIFEST_BOARD_REVISION 1
 #define MANIFEST_BOARD_NAME "NEO first-spin revision A"
 #endif
 // The part at 0x40 on the batch being initialized. Field firmware reads it back from the
@@ -258,7 +266,8 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
         allow_factory_init) {
         eeprom_capabilities_t defaults;
         const eeprom_intsat_options_t batch = {.humidity_id = MANIFEST_HDC};
-        ESP_RETURN_ON_FALSE(eeprom_intsat_template(MANIFEST_BOARD_ID, 1, &batch, profile, &defaults) &&
+        ESP_RETURN_ON_FALSE(eeprom_intsat_template(MANIFEST_BOARD_ID, MANIFEST_BOARD_REVISION,
+                                                   &batch, profile, &defaults) &&
                             defaults.i2c_address == address, ESP_ERR_NOT_SUPPORTED, TAG,
                             "no " MANIFEST_BOARD_NAME " manifest for this EEPROM");
         ESP_LOGW(TAG, "factory-init enabled: programming blank " MANIFEST_BOARD_NAME " manifest");

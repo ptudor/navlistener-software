@@ -6,7 +6,7 @@ const uint8_t io_expander_programme[7] = {
     IO_EXPANDER_SOURCES, // GPINTEN: interrupt-on-change on GP1-GP5 only
     0x00,                // DEFVAL: unused with INTCON = 0
     0x00,                // INTCON: compare with the previous value, so a steady level does not retrigger
-    0x00,                // IOCON: sequential addressing, slew-rate control, INT push-pull active-low
+    MCP23008_IOCON_ODR,  // IOCON: sequential addressing, slew-rate control, open-drain active-low INT
     0xc1,                // GPPU: GP0 reads 1 with no chain attached; GP6 and GP7 never float
 };
 

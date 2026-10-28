@@ -124,6 +124,19 @@ PROFILES = {
         antenna_supervised=True,
         bands=("L1", "L2", "L5", "E6"),  # signal plan SP2
     ),
+    "zed-x20-b": BoardProfile(
+        manifest="X20 revision B",
+        parts=(
+            ("temperature", "18"), ("humidity", "40"), ("pressure", "46"), ("rail_monitor", "41"),
+            ("rtc", "68"), ("i_o_expander", "24"), ("receiver_i_o_expander", "25"),
+        ),
+        identities=("temperature", "humidity", "pressure", "rail_monitor"),
+        receiver="ZED-X20P",
+        ethernet=True,
+        panel_chain=True,
+        antenna_supervised=True,
+        bands=("L1", "L2", "L5", "E6"),
+    ),
     "max": BoardProfile(
         manifest="MAX revision A",
         parts=(

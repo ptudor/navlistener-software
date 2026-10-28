@@ -83,7 +83,7 @@ static void programme_test(void)
     io_expander_t x = {0};
     assert(io_expander_configure(&x, &io, 100) && x.configured);
     static const uint8_t want[7][2] = {{0x00, 0xff}, {0x01, 0x00}, {0x02, 0x3e}, {0x03, 0x00}, {0x04, 0x00},
-                                       {0x05, 0x00}, {0x06, 0xc1}};
+                                       {0x05, MCP23008_IOCON_ODR}, {0x06, 0xc1}};
     assert(c.write_count == 7);
     for (unsigned i = 0; i < 7; i++) assert(c.writes[i].reg == want[i][0] && c.writes[i].value == want[i][1]);
     assert(c.operations == 7 + 7 + 1 && c.gpio_reads == 1);

@@ -293,7 +293,7 @@ menu "navfeeder-esp"
             blank, its 128-bit factory serial (24CS or M24128-U) is valid, and
             that identity has never been recorded
             in the independent hwmanifest NVS namespace, program the compiled
-            GNSS_PCB_MAIN revision-A component list chosen below, with the
+            GNSS_PCB_MAIN board-and-revision component list chosen below, with the
             fitted humidity sensor, and verify it by readback. Field firmware
             reads every optional and alternate part from that manifest.
 
@@ -321,6 +321,9 @@ menu "navfeeder-esp"
             depends on NVF_BOARD_SUPPORT_MAX
         config NVF_MANIFEST_BOARD_ZED_X20_A
             bool "ZED-X20P, revision A"
+            depends on NVF_BOARD_SUPPORT_X20
+        config NVF_MANIFEST_BOARD_ZED_X20_B
+            bool "ZED-X20P, revision B"
             depends on NVF_BOARD_SUPPORT_X20
         config NVF_MANIFEST_BOARD_MOSAIC_P3_A
             bool "mosaic-G5 P3, revision A"

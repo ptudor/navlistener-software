@@ -111,7 +111,8 @@ The window defaults to 30 seconds.
 
 ### Pre-enrollment QA (`--expect`)
 
-`--expect neo|zed-x20|max|mosaic-p3` holds the board to that board's revision A,
+`--expect neo|zed-x20|zed-x20-b|max|mosaic-p3` holds the board to that exact revision
+(`zed-x20` is A and `zed-x20-b` is B),
 as its manifest template in esp32-hardware-discovery lists it, before the board is
 signed or enrolled ([the sequence](../esp32/docs/COMMISSIONING.md#pre-enrollment-qa)).
 It changes these checks and adds the rest:
