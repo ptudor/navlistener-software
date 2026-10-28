@@ -14,6 +14,10 @@ void observer_rtc_select(observer_rtc_part_t part);
 void observer_rtc_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, int64_t now_ms);
 // Snapshot only; call from the same board task. Flags describe the last read.
 report_rtc_t observer_rtc_status(void);
+// Reads the DS3231M's or MAX31328's temperature now, for tag 26, and logs it; call only from
+// the board task, with the environmental sample. Not present for any other part, and not
+// answering until the first poll has attached the RTC.
+report_rtc_temperature_t observer_rtc_temperature(void);
 void observer_rtc_square_wave_status(uint8_t *state, uint8_t *control, uint8_t *trim);
 // USB requests are copied and executed by the board task, the sole RTC I/O owner.
 // A request never implicitly re-enrolls the board or changes credentials.

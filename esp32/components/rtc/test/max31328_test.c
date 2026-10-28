@@ -165,9 +165,41 @@ static void service_test(void)
         assert(rtc_service_execute(&io,true,&req,service_audit,&c,&r)!=RTC_SERVICE_OK);
     }
 }
+// Status 0x0f, aging 0x10, then the temperature pair 0x11-0x12.
+static unsigned temperature(uint8_t status, uint8_t msb, uint8_t lsb, const int16_t *previous, int16_t *centi_c)
+{
+    const uint8_t regs[4] = {status, 0, msb, lsb};
+    *centi_c = 12345; // untouched unless OK
+    return max31328_temperature(regs, previous, centi_c);
+}
+static void temperature_test(void)
+{
+    int16_t c, near_zero = 25, far = 2425;
+    // The datasheet's example, 00011001 01b, is +25.25 C.
+    assert(temperature(0, 0x19, 0x40, NULL, &c) == MAX31328_TEMPERATURE_OK && c == 2525);
+    assert(temperature(MAX31328_OSF, 0x18, 0xc0, NULL, &c) == MAX31328_TEMPERATURE_OK && c == 2475);
+    // Two's complement: -0.25 C, -25.75 C, and the register's ends.
+    assert(temperature(0, 0xff, 0xc0, NULL, &c) == MAX31328_TEMPERATURE_OK && c == -25);
+    assert(temperature(0, 0xe6, 0x40, NULL, &c) == MAX31328_TEMPERATURE_OK && c == -2575);
+    assert(temperature(0, 0x80, 0x00, NULL, &c) == MAX31328_TEMPERATURE_OK && c == -12800);
+    assert(temperature(0, 0x7f, 0xc0, NULL, &c) == MAX31328_TEMPERATURE_OK && c == 12775);
+    // Zero with OSF set may be the power-on default: withheld at boot, and after a reading far
+    // from it, as when the rail dropped; kept beside a reading within 0.5 C, or with OSF clear.
+    assert(temperature(MAX31328_OSF, 0, 0, NULL, &c) == MAX31328_TEMPERATURE_DEFAULT && c == 12345);
+    assert(temperature(MAX31328_OSF, 0, 0, &far, &c) == MAX31328_TEMPERATURE_DEFAULT);
+    assert(temperature(MAX31328_OSF, 0, 0, &near_zero, &c) == MAX31328_TEMPERATURE_OK && c == 0);
+    near_zero = -50;
+    assert(temperature(MAX31328_OSF, 0, 0, &near_zero, &c) == MAX31328_TEMPERATURE_OK && c == 0);
+    near_zero = -75;
+    assert(temperature(MAX31328_OSF, 0, 0, &near_zero, &c) == MAX31328_TEMPERATURE_DEFAULT);
+    assert(temperature(MAX31328_A1F, 0, 0, NULL, &c) == MAX31328_TEMPERATURE_OK && c == 0);
+    // The low six bits of 0x12 read zero; anything else is not this register.
+    for (uint8_t bit = 1; bit < 0x40; bit <<= 1)
+        assert(temperature(0, 0x19, 0x40 | bit, NULL, &c) == MAX31328_TEMPERATURE_INVALID && c == 12345);
+}
 int main(void)
 {
-    calendar_test(); set_test(); square_test();service_test();
-    puts("MAX31328 calendar, OSF, verified set, square wave and I2C fault tests passed");
+    calendar_test(); set_test(); square_test();service_test(); temperature_test();
+    puts("MAX31328 calendar, OSF, verified set, square wave, temperature and I2C fault tests passed");
     return 0;
 }

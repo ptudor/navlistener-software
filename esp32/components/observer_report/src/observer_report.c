@@ -71,6 +71,10 @@ uint8_t observer_report_due(const report_policy_t *p, const observer_report_t *r
         changed = xa[i]->present != xb[i]->present || xa[i]->state != xb[i]->state || xa[i]->valid != xb[i]->valid ||
             xa[i]->status != xb[i]->status || (xb[i]->valid && (abs(xa[i]->centi_c - xb[i]->centi_c) >= 50 ||
                                                                abs(xa[i]->centi_rh - xb[i]->centi_rh) >= 200));
+    // The RTC's temperature on tag 1's terms too: 0.5 C, two of its steps.
+    const report_rtc_temperature_t *ka = &p->last.rtc_temperature, *kb = &r->rtc_temperature;
+    changed = changed || ka->present != kb->present || ka->state != kb->state || ka->valid != kb->valid ||
+        (kb->valid && abs(ka->centi_c - kb->centi_c) >= 50);
     return changed ? REPORT_CHANGE : 0;
 }
 void observer_report_sent(report_policy_t *p, const observer_report_t *r)
@@ -81,13 +85,14 @@ size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t 
     while (fwlen < 32 && r->firmware[fwlen]) fwlen++;
     // Header 24; six fixed TLVs (14,17,16,40,29,29); firmware TLV; optional heater (58),
     // barometer (10), thermocouple (12), motion (95), humidity-sensor (2), pressure-sensor (2),
-    // rails (27), regulator (23), SHT3x (7) and HIH8121 (8) TLVs.
+    // rails (27), regulator (23), SHT3x (7), HIH8121 (8) and RTC-temperature (5) TLVs.
     size_t length = 24 + 18 + 14 + 17 + 16 + 5 + NVF_BOARD_UID_SIZE + 29 + 29 + 3 + fwlen +
                     (r->heater.present ? 3 + 58 : 0) + (r->barometer.present ? 3 + 10 : 0) +
                     (r->thermocouple.present ? 3 + 12 : 0) + (r->motion.present ? 3 + 95 : 0) +
                     (r->humidity.present ? 3 + 2 : 0) + (r->pressure.present ? 3 + 2 : 0) +
                     (r->rails.present ? 3 + 27 : 0) + (r->regulator.present ? 3 + 23 : 0) +
-                    (r->sht3x.present ? 3 + 7 : 0) + (r->hih8121.present ? 3 + 8 : 0);
+                    (r->sht3x.present ? 3 + 7 : 0) + (r->hih8121.present ? 3 + 8 : 0) +
+                    (r->rtc_temperature.present ? 3 + 5 : 0);
     if (!out || cap < length) return 0;
     memset(out, 0, length);
     out[0] = 1; out[1] = r->reason; gnf1_be64(out+2, r->uptime_ms);
@@ -157,6 +162,8 @@ size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t 
       b[0]=1; b[1]=h->state; b[2]=h->valid; gnf1_be16(b+3,h->centi_c); gnf1_be16(b+5,h->centi_rh); }
     if (r->hih8121.present) { TLV(25, 8); const report_humidity_extra_t *h=&r->hih8121;
       b[0]=1; b[1]=h->state; b[2]=h->valid; b[3]=h->status; gnf1_be16(b+4,h->centi_c); gnf1_be16(b+6,h->centi_rh); }
+    if (r->rtc_temperature.present) { TLV(26, 5); const report_rtc_temperature_t *k=&r->rtc_temperature;
+      b[0]=1; b[1]=k->state; b[2]=k->valid; gnf1_be16(b+3,k->centi_c); }
 #undef TLV
     return offset;
 }

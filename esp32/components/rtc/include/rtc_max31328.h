@@ -9,7 +9,7 @@
 // set) are never valid; a failed set leaves that bit set so it cannot pass as retained time.
 enum {
     MAX31328_ADDRESS = 0x68,
-    MAX31328_CONTROL = 0x0e, MAX31328_STATUS = 0x0f, MAX31328_AGING = 0x10,
+    MAX31328_CONTROL = 0x0e, MAX31328_STATUS = 0x0f, MAX31328_AGING = 0x10, MAX31328_TEMPERATURE = 0x11,
     MAX31328_EOSC = 0x80, MAX31328_BBSQW = 0x40, MAX31328_CONV = 0x20, MAX31328_RS = 0x18,
     MAX31328_INTCN = 0x04, MAX31328_A2IE = 0x02, MAX31328_A1IE = 0x01,
     MAX31328_OSF = 0x80, MAX31328_EN32KHZ = 0x08, MAX31328_BSY = 0x04, MAX31328_A2F = 0x02,
@@ -31,4 +31,13 @@ unsigned max31328_set_verified(const rtc_io_t *io, const rtc_time_ref_t *ref, in
 // output off. Returns rtc_square_wave's codes: 1 enabled, 2 stopped or invalid calendar,
 // 3 alarm interrupts in use (left alone), 4 I/O failure. OSF is never cleared here.
 unsigned max31328_square_wave(const rtc_io_t *io, uint8_t *control, uint8_t *aging);
+// The temperature the oscillator compensation measures (DS3231M datasheet p16, MAX31328 p14):
+// a 10-bit two's-complement code in 0.25 C steps, the integer part at 0x11 and the fraction
+// in bits 7:6 of 0x12, whose other bits read zero. A power-on reset loads 0 C until the first
+// conversion, about 2 s after VCC (DS3231M p10, MAX31328 p9), and powers up with OSF set. So
+// a zero is withheld as possibly that default unless OSF is clear (no power loss since the
+// calendar was last set) or the previous reading, NULL when there is none, lay within 0.5 C.
+enum { MAX31328_TEMPERATURE_OK, MAX31328_TEMPERATURE_DEFAULT, MAX31328_TEMPERATURE_INVALID };
+// regs: status 0x0f through 0x12, read in one burst. *centi_c (0.01 C) is set only when OK.
+unsigned max31328_temperature(const uint8_t regs[4], const int16_t *previous_centi_c, int16_t *centi_c);
 #endif

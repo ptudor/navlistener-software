@@ -427,6 +427,15 @@ the flag would not clear, it stops retrying and trusts only GNSS time. The part 
 accessed during its 300 ms power-up recovery (tREC). See the
 [MAX31328 datasheet](https://www.analog.com/media/en/technical-documentation/data-sheets/max31328.pdf).
 
+Both parts measure their own temperature to compensate the oscillator, and firmware reads
+it with each environmental sample: the console prints `rtc: DS3231M temperature=24.25 C`
+every 30 seconds and ObserverDetails carries it as tag 26 (`rtc_temperature`). It is a
+0.25 °C reading, typically within 3 °C, of the RTC itself, which makes it a fourth
+temperature beside the MCP9808, HDC2080 and BMP581 for comparing one board's sensors. A
+power-on reset loads 0 °C until the first conversion about 2 s later, and sets the
+oscillator-stop flag, so a zero is withheld while that flag is set unless the previous
+reading lay within 0.5 °C of it.
+
 This establishes a seconds-resolution RTC baseline. Qualified GNSS or a running
 RTC can now bootstrap the system clock, with source and clock changes recorded;
 this does not authenticate GNSS time or provide PPS alignment.

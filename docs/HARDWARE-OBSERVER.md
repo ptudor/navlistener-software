@@ -616,7 +616,8 @@ firmware tells their roles apart by address (`eeprom_has_ic_at()`): `0x18` measu
 One universal firmware image serves all four boards. It drives a board's pins only when the
 manifest's `CAT_INTSAT` entry names that board and a revision it knows, and runs each driver
 only for a part listed installed: RAM-only configuration of the listed receiver (NEO-M9N,
-ZED-X20P or MAX-M10S), the MCP79412, MAX31328 or DS3231M RTC, the MCP9808, HDC2080/HDC2022, BMP388
+ZED-X20P or MAX-M10S), the MCP79412, MAX31328 or DS3231M RTC (the last two with their own
+temperature, tag 26), the MCP9808, HDC2080/HDC2022, BMP388
 and ATECC608C, the ZED/X20's BMP581, INA3221 rail monitor (telemetry tags 15-16) and W5500
 Ethernet uplink, the P3's INA3221 and MS5607, its SHT35 and HIH8121 humidity sensors (tags 24
 and 25) and its regulator-spreader MCP9808, which throttles Wi-Fi transmit power (tag 23,

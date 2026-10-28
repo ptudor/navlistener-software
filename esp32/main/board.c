@@ -1008,6 +1008,7 @@ static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expect
     if (rails_listed) rails_report();
     if (regulator_listed) regulator_report(now);
     humidity_extra_report();
+    report.rtc_temperature = observer_rtc_temperature(); // tag 26, on boards whose RTC measures it
     // After every sample, so no component's time is later than the report's.
     last_environment = esp_timer_get_time() / 1000;
     next_environment = last_environment + 30000;

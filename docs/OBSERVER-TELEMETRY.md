@@ -373,6 +373,7 @@ invalid lengths/enums/ranges, and trailing partial TLVs are rejected.
 | 23 regulator | 23 | The system regulator's spreader temperature and the Wi-Fi throttle it drives; layout below |
 | 24 SHT3x | 7 | The SHT3x humidity sensor beside the HDC (the P3's SHT35); layout below |
 | 25 HIH8121 | 8 | The HIH8121 humidity sensor beside the HDC; layout below |
+| 26 RTC temperature | 5 | The DS3231M's (or MAX31328's) own temperature; layout below |
 
 Environment mask bits 0/1/2 identify MCP/HDC/BMP respectively; the BMP is the part
 tag 15 names, which on the ZED/X20 is the BMP581. Valid requires
@@ -592,6 +593,29 @@ power-on-to-data-ready maximum, and uses only a fresh result (Honeywell technica
 `null`. A report is due when a part's state, validity or status changes, or its reading moves
 0.5 °C or 2 %RH, as for tag 1.
 
+## RTC temperature (tag 26, version 1)
+
+The ZED/X20's DS3231M, and the MAX31328 the same driver supports, measures its own temperature
+to compensate its oscillator. A board whose manifest lists either carries tag 26 in each
+environmental report, read with that sample. It is the RTC's reading, typically within 3 °C
+(DS3231M datasheet, DC characteristics), kept out of tag 1 so that its fields mean the same on
+every board; beside the MCP9808, HDC and BMP it shows whether one board's sensors agree.
+
+| Offset | Meaning |
+|---:|---|
+| 0 | Version U8 = 1 |
+| 1 | State U8: not answering=0, answering=1 |
+| 2 | Validity U8: measurement=1 (requires answering) |
+| 3 | Temperature I16, 0.01 °C, in 0.25 °C steps, −128…127.75 °C (the register's range) |
+
+The temperature registers `0x11`-`0x12` hold a 10-bit two's-complement code (DS3231M datasheet
+p16, MAX31328 p14); a pair whose unused low bits are set is withheld. A power-on reset loads
+0 °C until the first conversion, about 2 s after VCC, and sets the oscillator-stop flag. A zero
+is therefore withheld while that flag is set, unless the previous reading this boot lay within
+0.5 °C of it. The parts are rated to −45 °C (DS3231M) or −40 °C (MAX31328) and +85 °C;
+readings beyond are reported as read. A withheld or failed reading is zero, served as `null`.
+A report is due when the state or validity changes, or the reading moves 0.5 °C, as for tag 1.
+
 ## Timing component (tag 8, version 1)
 
 S3 firmware sends a timing-only record once per second, with reason `check-in`
@@ -657,7 +681,10 @@ boards add `regulator` (tag 23): `state`, nullable `spreader_c` and `peak_c`,
 `throttled_s`, and the board's `throttle_c`, `full_c` and `release_c`. It is the regulator's
 temperature, separate from `environment`. P3 boards also add `sht3x` (tag 24) and `hih8121`
 (tag 25), each with `state`, nullable `temperature_c` and `humidity_percent`, and for the
-HIH8121 a `status` (`fresh`, `stale`, `command_mode` or `unused`) while it answers.
+HIH8121 a `status` (`fresh`, `stale`, `command_mode` or `unused`) while it answers. Boards
+whose RTC is a DS3231M or MAX31328 add `rtc_temperature` (tag 26): `state` (`answering` or
+`not_answering`) and nullable `temperature_c`, the RTC's own reading, separate from
+`environment`.
 Component health and identifiers appear under `rtc`, `atecc`, `eeprom`,
 `resources`, `receiver`, and `firmware`. `humidity_heater` carries tag 10:
 `state`, `trusted_utc`, `last_run_readable`, `runs_since_boot`,

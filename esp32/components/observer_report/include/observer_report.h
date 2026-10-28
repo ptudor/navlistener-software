@@ -107,6 +107,14 @@ typedef struct {
     uint16_t centi_rh;
 } report_humidity_extra_t;
 typedef struct { uint8_t flags; uint64_t epoch, sampled_ms; } report_rtc_t;
+// Tag 26: the temperature the ZED/X20's DS3231M (or a MAX31328) measures for its oscillator
+// compensation, in 0.25 C steps; present when the manifest lists either. Invalid stays zero.
+typedef struct {
+    bool present;
+    uint8_t state;   // 0 not answering, 1 answering
+    uint8_t valid;   // 1: measured (requires state 1)
+    int16_t centi_c;
+} report_rtc_temperature_t;
 typedef struct {
     uint64_t checked_ms;
     uint8_t revision_valid, revision[4], config_lock, data_lock, rng;
@@ -141,6 +149,7 @@ typedef struct {
     report_regulator_t regulator;
     report_humidity_extra_t sht3x, hih8121;
     report_rtc_t rtc;
+    report_rtc_temperature_t rtc_temperature;
     report_crypto_t crypto;
     report_manifest_t manifest;
     report_resources_t resources;

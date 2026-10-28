@@ -39,16 +39,18 @@ type ObserverDetails struct {
 	Regulator      *BoardRegulator `json:"regulator,omitempty"`
 	// SHT3x and HIH8121 are the humidity sensors beside the HDC (tags 24 and 25), each
 	// present when the manifest lists it.
-	SHT3x     *BoardExtraHumidity `json:"sht3x,omitempty"`
-	HIH8121   *BoardExtraHumidity `json:"hih8121,omitempty"`
-	RTC       *BoardRTC           `json:"rtc,omitempty"`
-	ATECC     *BoardATECC         `json:"atecc,omitempty"`
-	EEPROM    *BoardEEPROM        `json:"eeprom,omitempty"`
-	Resources *BoardResources     `json:"resources,omitempty"`
-	Network   *BoardNetwork       `json:"network,omitempty"`
-	Receiver  *BoardReceiver      `json:"receiver,omitempty"`
-	Firmware  string              `json:"firmware,omitempty"`
-	Update    *BoardUpdate        `json:"update,omitempty"`
+	SHT3x   *BoardExtraHumidity `json:"sht3x,omitempty"`
+	HIH8121 *BoardExtraHumidity `json:"hih8121,omitempty"`
+	RTC     *BoardRTC           `json:"rtc,omitempty"`
+	// RTCTemperature is tag 26, present when the manifest lists a DS3231M or MAX31328.
+	RTCTemperature *BoardRTCTemperature `json:"rtc_temperature,omitempty"`
+	ATECC          *BoardATECC          `json:"atecc,omitempty"`
+	EEPROM         *BoardEEPROM         `json:"eeprom,omitempty"`
+	Resources      *BoardResources      `json:"resources,omitempty"`
+	Network        *BoardNetwork        `json:"network,omitempty"`
+	Receiver       *BoardReceiver       `json:"receiver,omitempty"`
+	Firmware       string               `json:"firmware,omitempty"`
+	Update         *BoardUpdate         `json:"update,omitempty"`
 	// UpdateStatusRejected records a tag 9 this collector could not decode: a
 	// state, trust profile, error domain or security bit from newer firmware,
 	// or progress past the artifact length. The tag is skippable by design, so
@@ -339,6 +341,11 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 				d.SHT3x = h
 			} else {
 				d.HIH8121 = h
+			}
+		case 26:
+			var err error
+			if d.RTCTemperature, err = decodeRTCTemperature(v); err != nil {
+				return nil, err
 			}
 		default:
 			continue // bounded unknown extensions are skipped, not interpreted

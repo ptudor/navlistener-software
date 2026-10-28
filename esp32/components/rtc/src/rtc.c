@@ -173,6 +173,39 @@ static bool max31328_write_registers(void *ctx, uint8_t reg, const uint8_t *data
 }
 // The DS3231M and the MAX31328 share this register map and driver; logs name the fitted part.
 static const char *tcxo_name(void) { return part == OBSERVER_RTC_DS3231M ? "DS3231M" : "MAX31328"; }
+static report_rtc_temperature_t temperature;
+report_rtc_temperature_t observer_rtc_temperature(void)
+{
+    if (part != OBSERVER_RTC_MAX31328 && part != OBSERVER_RTC_DS3231M) return (report_rtc_temperature_t){0};
+    const report_rtc_temperature_t previous = temperature;
+    temperature = (report_rtc_temperature_t){.present = true};
+    uint8_t regs[4];
+    if (!dev) {
+        ESP_LOGW(TAG, "%s temperature not read: the RTC has not answered", tcxo_name());
+        return temperature;
+    }
+    if (!read_registers(dev, MAX31328_STATUS, regs, sizeof regs)) {
+        ESP_LOGW(TAG, "%s temperature read failed", tcxo_name());
+        return temperature;
+    }
+    temperature.state = 1;
+    int16_t centi_c;
+    switch (max31328_temperature(regs, previous.valid ? &previous.centi_c : NULL, &centi_c)) {
+    case MAX31328_TEMPERATURE_OK:
+        temperature.valid = 1; temperature.centi_c = centi_c;
+        ESP_LOGI(TAG, "%s temperature=%.2f C", tcxo_name(), centi_c / 100.0);
+        break;
+    case MAX31328_TEMPERATURE_DEFAULT:
+        ESP_LOGI(TAG, "%s temperature withheld: 0.00 C with the oscillator-stop flag set may be its power-on default",
+                 tcxo_name());
+        break;
+    default:
+        ESP_LOGW(TAG, "%s temperature withheld: registers 0x%02x 0x%02x have unused bits set", tcxo_name(),
+                 regs[2], regs[3]);
+        break;
+    }
+    return temperature;
+}
 static void max31328_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, int64_t now)
 {
     if (now < MAX31328_RECOVERY_MS) return;

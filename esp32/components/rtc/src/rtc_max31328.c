@@ -91,3 +91,15 @@ unsigned max31328_square_wave(const rtc_io_t *io, uint8_t *control, uint8_t *agi
     *control = state[0]; *aging = state[2];
     return state[0] == desired && !(state[1] & MAX31328_EN32KHZ) ? 1 : 4;
 }
+
+unsigned max31328_temperature(const uint8_t regs[4], const int16_t *previous_centi_c, int16_t *centi_c)
+{
+    if (regs[3] & 0x3f) return MAX31328_TEMPERATURE_INVALID;
+    // The 16-bit pair is the code shifted left by six; dividing keeps the sign.
+    const int16_t quarters = (int16_t)(uint16_t)(regs[2] << 8 | regs[3]) / 64;
+    if (!quarters && (regs[0] & MAX31328_OSF) && !(previous_centi_c && *previous_centi_c >= -50 &&
+                                                  *previous_centi_c <= 50))
+        return MAX31328_TEMPERATURE_DEFAULT;
+    *centi_c = (int16_t)(quarters * 25);
+    return MAX31328_TEMPERATURE_OK;
+}

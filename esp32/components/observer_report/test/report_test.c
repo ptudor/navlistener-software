@@ -5,7 +5,7 @@
 #include <string.h>
 int main(int argc, char **argv)
 {
-    assert(argc == 7);
+    assert(argc == 8);
     observer_report_t r = {.uptime_ms=1000000, .event_count=3, .event_ms=999000,
         .reason=8, .event_flags=1, .event_states=6,
         .environment={7,7,2550,4212,2500,5000,100000},
@@ -191,6 +191,32 @@ int main(int argc, char **argv)
     assert(observer_report_due(&p,&h)==REPORT_CHANGE); // a stale fetch
     observer_report_sent(&p,&h); h.uptime_ms+=60000; h.sht3x=(report_humidity_extra_t){.present=true};
     assert(observer_report_due(&p,&h)==REPORT_CHANGE); // the SHT35 stopped answering
+
+    // The RTC's temperature (tag 26) closes an X20 report: the X20 fixture with its DS3231M
+    // reading 24.25 C.
+    observer_report_t k=g; k.uptime_ms=golden.uptime_ms; k.regulator=(report_regulator_t){0};
+    k.rtc_temperature=(report_rtc_temperature_t){.present=true,.state=1,.valid=1,.centi_c=2425};
+    f=fopen(argv[7],"r"); assert(f); size_t rtc_count=0;
+    while (fscanf(f,"%2x",&byte)==1) { assert(rtc_count<sizeof expected); expected[rtc_count++]=byte; }
+    fclose(f);
+    assert(rtc_count==x20_count+8);
+    assert(observer_report_encode(actual,sizeof actual,&k)==rtc_count && !memcmp(actual,expected,rtc_count));
+    static const uint8_t rtc_tail[]={0x1a,0,5, 1,1,1, 0x09,0x79};
+    assert(!memcmp(actual+rtc_count-sizeof rtc_tail,rtc_tail,sizeof rtc_tail));
+    // Withheld or lost, the reading is zero on the wire.
+    observer_report_t withheld=k; withheld.rtc_temperature=(report_rtc_temperature_t){.present=true,.state=1};
+    assert(observer_report_encode(actual,sizeof actual,&withheld)==rtc_count);
+    static const uint8_t withheld_tail[]={0x1a,0,5, 1,1,0, 0,0};
+    assert(!memcmp(actual+rtc_count-sizeof withheld_tail,withheld_tail,sizeof withheld_tail));
+    p=(report_policy_t){0}; observer_report_sent(&p,&k);
+    k.uptime_ms+=60000; k.rtc_temperature.centi_c+=25;
+    assert(!observer_report_due(&p,&k)); // one 0.25 C step rides along
+    k.rtc_temperature.centi_c+=25;
+    assert(observer_report_due(&p,&k)==REPORT_CHANGE); // 0.5 C
+    observer_report_sent(&p,&k); k.uptime_ms+=60000; k.rtc_temperature.valid=0; k.rtc_temperature.centi_c=0;
+    assert(observer_report_due(&p,&k)==REPORT_CHANGE); // withheld as the power-on default
+    observer_report_sent(&p,&k); k.uptime_ms+=60000; k.rtc_temperature.state=0;
+    assert(observer_report_due(&p,&k)==REPORT_CHANGE); // the RTC stopped answering
     assert(panel_pwm_off_ticks(50)==512 && panel_pwm_off_ticks(20)==819 && panel_pwm_off_ticks(10)==922);
     assert(panel_pwm_off_ticks(100)==0 && panel_pwm_off_ticks(0)==1024);
     assert(panel_next_brightness(20)==10 && panel_next_brightness(10)==50 && panel_next_brightness(50)==20);

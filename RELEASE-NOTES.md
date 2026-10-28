@@ -22,6 +22,9 @@
 - The ZED/X20 console reports the receiver's RTK_STAT pin, which drives the panel's RTK
   lamp: high (no carrier-phase solution), low (RTK fixed) or toggling (corrections in use,
   no fix), one line whenever that changes over 10-second windows.
+- The DS3231M (or MAX31328) RTC's own temperature is read with each environmental sample,
+  printed on the console and reported as ObserverDetails tag 26 (`rtc_temperature`), in
+  0.25 °C steps. A zero that may be the part's power-on default is withheld.
 - The S3 observer sets up over its WPA2 setup network; Bluetooth is off. BLE
   provisioning beside the setup network exhausted internal RAM, so an
   unprovisioned board reset in a loop. The setup label is now a Wi-Fi network QR
