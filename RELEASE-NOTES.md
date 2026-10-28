@@ -12,8 +12,10 @@
   part its manifest lists must answer as that part, the receiver must confirm its
   model, and the ZED/X20's W5500 must answer and its panel chain read back.
   `NVF_MANIFEST_INIT` and `NVF_MANIFEST_HDC` build the image that writes a blank
-  manifest EEPROM for that sequence (esp32/docs/COMMISSIONING.md). The tool is
-  version 3; its reports remain bench report v1.
+  manifest EEPROM for that sequence (esp32/docs/COMMISSIONING.md). A u-blox receiver
+  must acknowledge every key the firmware sets in its RAM (`receiver.config`), and the
+  report gives the UART1 rate the link runs at beside the rate the receiver was found at.
+  The console names each key. The tool is version 4; its reports remain bench report v1.
 - The S3 panel plays a boot sequence before it shows reception. Every boot sweeps the
   last 32 bits of the board's EEPROM serial across the columns, green for 1 and amber
   for 0, so a board shows the same sweep at every boot and none when its identity was

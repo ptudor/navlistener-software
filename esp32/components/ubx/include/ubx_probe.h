@@ -10,6 +10,11 @@ size_t ubx_poll_version(uint8_t out[8]);
 size_t ubx_set_ram(uint8_t out[20], uint32_t key, uint32_t value, unsigned width);
 // The single-byte keys set to 1 in RAM for a listed receiver; returns the count.
 size_t ubx_ram_keys(const char *module, const uint32_t **keys);
+// CFG-UART1-BAUDRATE, the U4 key set before the others when the receiver is found at
+// another rate.
+#define UBX_KEY_UART1_BAUDRATE 0x40520001u
+// The interface descriptions' name for a key the firmware sets, for the log; NULL for any other.
+const char *ubx_key_name(uint32_t key);
 // A MON-VER body whose extensions include exactly "MOD=<module>", such as "NEO-M9N".
 bool ubx_version_is_module(const uint8_t *body, size_t len, const char *module);
 typedef struct { unsigned state, length; uint8_t checksum, expected; } nmea_probe_t;

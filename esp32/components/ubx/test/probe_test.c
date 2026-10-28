@@ -29,6 +29,15 @@ int main(void)
     assert(ubx_ram_keys("MAX-M10S", &keys) == count && ubx_ram_keys(NULL, &keys) == count);
     assert(ubx_ram_keys("ZED-X20", &keys) == count && ubx_ram_keys("ZED-X20P ", &keys) == count);
     for (size_t i = 0; i < count; i++) assert(keys[i] != 0x10a3002f);
+    // Every key the firmware sets has its interface-description name, each a different one.
+    for (size_t i = 0; i < x20_count; i++) {
+        assert(ubx_key_name(x20_keys[i]) && !strncmp(ubx_key_name(x20_keys[i]), "CFG-", 4));
+        for (size_t j = 0; j < i; j++) assert(strcmp(ubx_key_name(x20_keys[i]), ubx_key_name(x20_keys[j])));
+    }
+    assert(!strcmp(ubx_key_name(0x20910007), "CFG-MSGOUT-UBX_NAV_PVT_UART1"));
+    assert(!strcmp(ubx_key_name(0x10a3002f), "CFG-HW-ANT_CFG_SHORTDET"));
+    assert(!strcmp(ubx_key_name(UBX_KEY_UART1_BAUDRATE), "CFG-UART1-BAUDRATE"));
+    assert(!ubx_key_name(0x40520002) && !ubx_key_name(0));
     assert(ubx_set_ram(pkt, 0x10a3002f, 1, 1) == 17);
     assert(pkt[10] == 0x2f && pkt[11] == 0 && pkt[12] == 0xa3 && pkt[13] == 0x10 && pkt[14] == 1);
     uint8_t version[220] = {0}; strcpy((char *)version+40, "MOD=NEO-M9N");

@@ -33,7 +33,7 @@ import sys
 import time
 
 FORMAT = "navlistener-bench-report-v1"
-TOOL = "bench_check.py 3"
+TOOL = "bench_check.py 4"
 DEFAULT_SECONDS = 30.0
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -56,6 +56,12 @@ _IDENTITY = re.compile(r"(temperature|humidity|rail monitor) IDs=[0-9a-f]{4}/[0-
 _PRESSURE_ID = re.compile(r"pressure chip ID=0x[0-9a-f]{2}(?: revision=0x[0-9a-f]{2})?; (.+)")
 _MON_VER = re.compile(r"MON-VER: software=.*; (\S{1,32})=(yes|unconfirmed)")
 _SBF_IDENTITY = re.compile(r"receiver: (.{1,40}?) \(engine .*")
+# The u-blox link once MON-VER confirms the model: the rate it runs at, and the rate the
+# receiver was found at when the firmware moved it there (CFG-UART1-BAUDRATE, RAM only).
+_RUNNING = re.compile(r"receiver answering at (\d+) baud, (?:set in its RAM from (\d+) \(CFG-UART1-BAUDRATE\)|the configured rate)")
+_RAM_KEY = re.compile(r"RAM key (\S{1,48}) \(0x[0-9a-f]{8}\): (ACK|NAK \(unsupported\)|no ACK; output unconfirmed)")
+_KEY_VERDICTS = {"ACK": "ACK", "NAK (unsupported)": "NAK", "no ACK; output unconfirmed": "no ACK"}
+_CONFIGURED = re.compile(r"receiver RAM configuration done: (\d+) of (\d+) keys acknowledged.*")
 _NOT_MOSAIC = "; not a mosaic-G5, the receiver the manifest lists"
 _CHAIN = re.compile(r"panel chain: (24|16|unknown) bits")
 _MAC = re.compile(r"MAC:\s+((?:[0-9a-f]{2}:){5}[0-9a-f]{2})")
@@ -141,7 +147,10 @@ class ConsoleFacts:
     atecc: tuple[str, str] | None = None  # (revision, model)
     parts: dict[tuple[str, str], list[str]] = field(default_factory=dict)  # (name, address) → results
     identities: dict[str, list[str]] = field(default_factory=dict)  # part name → the firmware's verdicts
-    receiver_baud: str | None = None
+    receiver_baud: str | None = None  # the rate valid traffic was first found at
+    receiver_running: tuple[str, str | None] | None = None  # (rate, the rate it was moved from, or None)
+    receiver_keys: dict[str, str] = field(default_factory=dict)  # RAM key name → "ACK", "NAK" or "no ACK"
+    receiver_configured: tuple[int, int] | None = None  # (keys acknowledged, keys set)
     receiver_sbf: bool = False  # the mosaic-G5's COM2 was configured
     receiver_silent: bool = False
     receiver_model: tuple[str, bool] | None = None  # MON-VER: (listed model, confirmed); "" when none listed
@@ -200,8 +209,15 @@ def parse_console(text: str) -> ConsoleFacts:
             baud = re.match(r"valid receiver traffic at (\d+) baud", message)
             mon_ver = _MON_VER.fullmatch(message)
             sbf = _SBF_IDENTITY.fullmatch(message)
+            running, key, configured = _RUNNING.fullmatch(message), _RAM_KEY.fullmatch(message), _CONFIGURED.fullmatch(message)
             if baud:
                 facts.receiver_baud = baud.group(1)
+            elif running:
+                facts.receiver_running = (running.group(1), running.group(2))
+            elif key:
+                facts.receiver_keys[key.group(1)] = _KEY_VERDICTS[key.group(2)]
+            elif configured:
+                facts.receiver_configured = (int(configured.group(1)), int(configured.group(2)))
             elif message.startswith("receiver COM2 configured ("):
                 facts.receiver_sbf = True
             elif message.startswith("no UART bytes observed"):
@@ -335,7 +351,9 @@ def evaluate(
             checks.append(_check(f"identity:{name}@0x{listed[name]}", result, detail))
 
     if facts.receiver_baud is not None:
-        checks.append(_check("receiver", "pass", f"valid traffic at {facts.receiver_baud} baud"))
+        running = facts.receiver_running[0] if facts.receiver_running else facts.receiver_baud
+        moved = f", running at {running} baud" if running != facts.receiver_baud else ""
+        checks.append(_check("receiver", "pass", f"valid traffic at {facts.receiver_baud} baud{moved}"))
     elif facts.receiver_sbf:
         checks.append(_check("receiver", "pass", "COM2 configured for SBF"))
     elif facts.receiver_silent:
@@ -347,6 +365,8 @@ def evaluate(
 
     if expect is not None:
         checks.append(_receiver_model(facts, expect, seconds))
+        if expect.receiver != "sbf":
+            checks.append(_receiver_config(facts, seconds))
         if expect.ethernet:
             checks.append(_ethernet(facts))
         if expect.panel_chain:
@@ -400,6 +420,26 @@ def _receiver_model(facts: ConsoleFacts, expect: BoardProfile, seconds: float) -
     if not confirmed:
         return _check("receiver.model", "fail", f"MON-VER does not confirm {model}")
     return _check("receiver.model", "pass", f"MON-VER confirms {model}")
+
+
+def _receiver_config(facts: ConsoleFacts, seconds: float) -> dict:
+    """What the firmware changed from the u-blox receiver's defaults, all in its RAM: the
+    UART rate, then each key, which the receiver must acknowledge."""
+    if facts.receiver_model is None or not facts.receiver_model[1]:
+        return _check("receiver.config", "skip", "not configured: MON-VER did not confirm the listed model")
+    if facts.receiver_configured is None:
+        return _check("receiver.config", "fail", f"no RAM configuration result within {seconds:g} s")
+    acknowledged, total = facts.receiver_configured
+    refused = [f"{name} {verdict}" for name, verdict in facts.receiver_keys.items() if verdict != "ACK"]
+    if acknowledged != total or refused:
+        return _check("receiver.config", "fail", f"{acknowledged} of {total} RAM keys acknowledged; " + "; ".join(refused))
+    if facts.receiver_running is None:
+        rate = "UART1 rate not reported"
+    elif facts.receiver_running[1]:
+        rate = f"UART1 at {facts.receiver_running[0]} baud, set in its RAM from {facts.receiver_running[1]}"
+    else:
+        rate = f"UART1 at {facts.receiver_running[0]} baud, the configured rate"
+    return _check("receiver.config", "pass", f"{rate}; {acknowledged} of {total} RAM keys acknowledged")
 
 
 def overall(checks: list[dict]) -> str:

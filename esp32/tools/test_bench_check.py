@@ -61,8 +61,19 @@ def judge(text: str, mac="02a1b2c3d4e5", expect=None) -> dict:
     }
 
 
+# The RAM keys the firmware sets on a ZED-X20P, in order (ubx_probe.c).
+X20_KEYS = [
+    ("CFG-UART1OUTPROT-UBX", 0x10740001), ("CFG-MSGOUT-UBX_RXM_SFRBX_UART1", 0x20910232),
+    ("CFG-MSGOUT-UBX_MON_RF_UART1", 0x2091035A), ("CFG-MSGOUT-UBX_NAV_SAT_UART1", 0x20910016),
+    ("CFG-MSGOUT-UBX_NAV_PVT_UART1", 0x20910007), ("CFG-MSGOUT-UBX_NAV_STATUS_UART1", 0x2091001B),
+    ("CFG-MSGOUT-UBX_TIM_TP_UART1", 0x2091017E), ("CFG-MSGOUT-UBX_NAV_SIG_UART1", 0x20910346),
+    ("CFG-MSGOUT-UBX_NAV_CLOCK_UART1", 0x20910066), ("CFG-MSGOUT-UBX_NAV_EOE_UART1", 0x20910160),
+    ("CFG-HW-ANT_CFG_SHORTDET", 0x10A3002F),
+]  # fmt: skip
+
 # A 162mm ZED-X20P board with its panel, as the universal image prints it in setup mode: the
-# W5500's identity is read at every boot, and the uplink starts only once provisioned.
+# W5500's identity is read at every boot, and the uplink starts only once provisioned. The
+# receiver powers up at 38400 baud and is moved to 460800 in its RAM before the other keys.
 X20 = [
     *BOOT[:8],
     log("I", "hw_manifest", f"manifest EEPROM factory serial: {OBSERVER}"),
@@ -82,8 +93,12 @@ X20 = [
     log("I", "io_expander", "MCP23008 at 0x24 configured: GPIO=0x3f, interrupt-on-change on GP1-GP5 to GPIO3"),
     log("I", "io_expander", "panel chain: 24 bits"),
     log("I", "ethernet", "W5500 VERSIONR=0x04; W5500 verified"),
-    log("I", "receiver", "valid receiver traffic at 460800 baud"),
     log("I", "receiver", "MON-VER: software=HPG 2.10                     hardware=000A0000  ; ZED-X20P=yes"),
+    log("I", "receiver", "valid receiver traffic at 38400 baud"),
+    log("I", "receiver", "MON-VER: software=HPG 2.10                     hardware=000A0000  ; ZED-X20P=yes"),
+    log("I", "receiver", "receiver answering at 460800 baud, set in its RAM from 38400 (CFG-UART1-BAUDRATE)"),
+    *(log("I", "receiver", f"RAM key {name} (0x{key:08x}): ACK") for name, key in X20_KEYS),
+    log("I", "receiver", "receiver RAM configuration done: 11 of 11 keys acknowledged; the SFRBX counter confirms raw output"),
     *BOOT[-4:],
 ]
 
@@ -222,17 +237,53 @@ class PreEnrollmentTests(unittest.TestCase):
                 "identity:humidity@0x40": ("pass", "HDC2080/HDC2022 family verified (the manifest names the variant)"),
                 "identity:pressure@0x46": ("pass", "BMP580/BMP581 family (ID cannot distinguish them)"),
                 "identity:rail_monitor@0x41": ("pass", "INA3221 verified"),
-                "receiver": ("pass", "valid traffic at 460800 baud"),
+                "receiver": ("pass", "valid traffic at 38400 baud, running at 460800 baud"),
                 "receiver.model": ("pass", "MON-VER confirms ZED-X20P"),
+                "receiver.config": (
+                    "pass",
+                    "UART1 at 460800 baud, set in its RAM from 38400; 11 of 11 RAM keys acknowledged",
+                ),
                 "ethernet": ("pass", "W5500 verified; it starts once the board is provisioned"),
                 "panel_chain": ("pass", "24-bit chain read back"),
                 "setup": ("pass", "setup network and app provisioning ready"),
             },
         )
 
+    def test_the_receiver_config_reports_what_the_firmware_changed(self):
+        # A receiver already at the configured rate, as after an ESP32 reset: nothing moved.
+        kept = console(X20).replace("valid receiver traffic at 38400 baud", "valid receiver traffic at 460800 baud").replace(
+            "set in its RAM from 38400 (CFG-UART1-BAUDRATE)", "the configured rate"
+        )
+        checks = judge(kept, expect="zed-x20")
+        self.assertEqual(checks["receiver"], ("pass", "valid traffic at 460800 baud"))
+        self.assertEqual(
+            checks["receiver.config"], ("pass", "UART1 at 460800 baud, the configured rate; 11 of 11 RAM keys acknowledged")
+        )
+        # A refused or unanswered key fails the check and is named.
+        refused = (
+            console(X20)
+            .replace("CFG-MSGOUT-UBX_NAV_EOE_UART1 (0x20910160): ACK", "CFG-MSGOUT-UBX_NAV_EOE_UART1 (0x20910160): NAK (unsupported)")
+            .replace("CFG-HW-ANT_CFG_SHORTDET (0x10a3002f): ACK", "CFG-HW-ANT_CFG_SHORTDET (0x10a3002f): no ACK; output unconfirmed")
+            .replace("11 of 11 keys", "9 of 11 keys")
+        )
+        self.assertEqual(
+            judge(refused, expect="zed-x20")["receiver.config"],
+            ("fail", "9 of 11 RAM keys acknowledged; CFG-MSGOUT-UBX_NAV_EOE_UART1 NAK; CFG-HW-ANT_CFG_SHORTDET no ACK"),
+        )
+        # Still configuring when the window closed.
+        unfinished = console([line for line in X20 if "configuration done" not in line])
+        self.assertEqual(judge(unfinished, expect="zed-x20")["receiver.config"], ("fail", "no RAM configuration result within 30 s"))
+        # An unconfirmed model is never configured, which receiver.model already fails.
+        unconfirmed = judge(console(X20).replace("ZED-X20P=yes", "ZED-X20P=unconfirmed"), expect="zed-x20")
+        self.assertEqual(unconfirmed["receiver.config"], ("skip", "not configured: MON-VER did not confirm the listed model"))
+        # Without --expect, the receiver line still shows the running rate.
+        self.assertNotIn("receiver.config", judge(console(X20)))
+        self.assertEqual(judge(console(X20))["receiver"], ("pass", "valid traffic at 38400 baud, running at 460800 baud"))
+
     def test_a_good_p3_passes(self):
         checks = judge(console(P3), expect="mosaic-p3")
         self.assertEqual(checks["receiver.model"], ("pass", "ReceiverSetup names mosaic-G5 P3"))
+        self.assertNotIn("receiver.config", checks)  # the mosaic-G5 is configured in SBF
         self.assertNotIn("ethernet", checks)
         self.assertNotIn("panel_chain", checks)
         self.assertEqual({result for result, _ in checks.values()}, {"pass"})
@@ -342,7 +393,7 @@ class PreEnrollmentTests(unittest.TestCase):
             station="bench-1", started=started, finished=started + timedelta(seconds=40), facts=facts,
             mac="02a1b2c3d4e5", build=build, checks=checks, console=text.encode(),
         )  # fmt: skip
-        self.assertEqual((report["tool"], report["result"]), ("bench_check.py 3", "pass"))
+        self.assertEqual((report["tool"], report["result"]), ("bench_check.py 4", "pass"))
 
 
 class ReportTests(unittest.TestCase):

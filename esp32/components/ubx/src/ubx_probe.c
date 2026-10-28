@@ -38,6 +38,24 @@ size_t ubx_ram_keys(const char *module, const uint32_t **keys)
     *keys = ram_keys;
     return module && !strcmp(module, "ZED-X20P") ? n : n - 1;
 }
+const char *ubx_key_name(uint32_t key)
+{
+    switch (key) {
+    case 0x10740001: return "CFG-UART1OUTPROT-UBX";
+    case 0x20910232: return "CFG-MSGOUT-UBX_RXM_SFRBX_UART1";
+    case 0x2091035a: return "CFG-MSGOUT-UBX_MON_RF_UART1";
+    case 0x20910016: return "CFG-MSGOUT-UBX_NAV_SAT_UART1";
+    case 0x20910007: return "CFG-MSGOUT-UBX_NAV_PVT_UART1";
+    case 0x2091001b: return "CFG-MSGOUT-UBX_NAV_STATUS_UART1";
+    case 0x2091017e: return "CFG-MSGOUT-UBX_TIM_TP_UART1";
+    case 0x20910346: return "CFG-MSGOUT-UBX_NAV_SIG_UART1";
+    case 0x20910066: return "CFG-MSGOUT-UBX_NAV_CLOCK_UART1";
+    case 0x20910160: return "CFG-MSGOUT-UBX_NAV_EOE_UART1";
+    case 0x10a3002f: return "CFG-HW-ANT_CFG_SHORTDET";
+    case UBX_KEY_UART1_BAUDRATE: return "CFG-UART1-BAUDRATE";
+    }
+    return NULL;
+}
 bool ubx_version_is_module(const uint8_t *body, size_t len, const char *module)
 {
     if (!body || !module || len < 40 || (len - 40) % 30) return false;

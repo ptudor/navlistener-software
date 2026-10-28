@@ -81,6 +81,11 @@ static void poll_version(void)
     size_t n = ubx_poll_version(pkt);
     uart_write_bytes(RX_UART, pkt, n);
 }
+static const char *key_name(uint32_t key)
+{
+    const char *name = ubx_key_name(key);
+    return name ? name : "unnamed key";
+}
 static void set_ram(uint32_t key, uint32_t value, unsigned width)
 {
     uint8_t pkt[20];
@@ -105,7 +110,9 @@ static void rx_task(void *arg)
     const uint32_t *keys;
     const size_t key_count = ubx_ram_keys(module, &keys);
     unsigned setting = 0, tries = 0;
-    bool configured = false, baud_attempted = false;
+    bool configured = false, baud_attempted = false, config_started = false;
+    int switched_from = 0; // the rate the receiver was found at, when it was moved to CONFIG_NVF_RX_BAUD
+    unsigned acknowledged = 0;
     int64_t cfg_deadline = 0;
     esp_task_wdt_add(NULL);
     for (;;) {
@@ -134,7 +141,7 @@ static void rx_task(void *arg)
         prev_valid = valid; prev_nmea = nmea_count;
         if (CONFIG_NVF_RX_AUTOPROBE && locked && now - last_valid > 15000) {
             locked = version_seen = expected_model = false;
-            configured = baud_attempted = false; setting = tries = 0;
+            configured = baud_attempted = config_started = false; setting = tries = 0; switched_from = 0;
             ESP_LOGW(TAG, "no valid receiver traffic for 15 s; probing again");
         }
         if (CONFIG_NVF_RX_AUTOPROBE && !locked && now >= next_probe) {
@@ -152,8 +159,9 @@ static void rx_task(void *arg)
                 // Change only the receiver's RAM setting. Re-probe if the new
                 // baud fails; an ACK may be emitted at either side of the change.
                 baud_attempted = true;
-                set_ram(0x40520001, CONFIG_NVF_RX_BAUD, 4); // CFG-UART1-BAUDRATE
+                set_ram(UBX_KEY_UART1_BAUDRATE, CONFIG_NVF_RX_BAUD, 4);
                 vTaskDelay(pdMS_TO_TICKS(100));
+                switched_from = baud;
                 baud = CONFIG_NVF_RX_BAUD;
                 uart_set_baudrate(RX_UART, baud);
                 uart_flush_input(RX_UART);
@@ -162,12 +170,24 @@ static void rx_task(void *arg)
                 last_valid = now;
                 poll_version(); next_probe = now + 3000;
             } else if (setting < key_count) {
+                // MON-VER has confirmed the model at this rate, so the link runs at it.
+                if (!config_started) {
+                    config_started = true; acknowledged = 0;
+                    if (switched_from)
+                        ESP_LOGI(TAG, "receiver answering at %d baud, set in its RAM from %d (%s)", baud, switched_from,
+                                 key_name(UBX_KEY_UART1_BAUDRATE));
+                    else
+                        ESP_LOGI(TAG, "receiver answering at %d baud, the configured rate", baud);
+                }
                 if (tries && cfg_ack != 0) {
-                    ESP_LOGI(TAG, "RAM key 0x%08lx: %s", (unsigned long)keys[setting], cfg_ack > 0 ? "ACK" : "NAK (unsupported)");
+                    ESP_LOGI(TAG, "RAM key %s (0x%08lx): %s", key_name(keys[setting]), (unsigned long)keys[setting],
+                             cfg_ack > 0 ? "ACK" : "NAK (unsupported)");
+                    if (cfg_ack > 0) acknowledged++;
                     setting++; tries = 0; cfg_ack = 0;
                 } else if (now >= cfg_deadline) {
                     if (tries == 3) {
-                        ESP_LOGW(TAG, "RAM key 0x%08lx: no ACK; output unconfirmed", (unsigned long)keys[setting]);
+                        ESP_LOGW(TAG, "RAM key %s (0x%08lx): no ACK; output unconfirmed", key_name(keys[setting]),
+                                 (unsigned long)keys[setting]);
                         setting++; tries = 0;
                     } else {
                         set_ram(keys[setting], 1, 1);
@@ -176,7 +196,8 @@ static void rx_task(void *arg)
                 }
             } else {
                 configured = true;
-                ESP_LOGI(TAG, "receiver RAM configuration attempted; SFRBX counter confirms raw output");
+                ESP_LOGI(TAG, "receiver RAM configuration done: %u of %u keys acknowledged; the SFRBX counter confirms raw output",
+                         acknowledged, (unsigned)key_count);
             }
         }
         if (now >= next_log) {

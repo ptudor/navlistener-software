@@ -34,7 +34,7 @@ document and refuses every invalid one.
 ```json
 {
   "format": "navlistener-bench-report-v1",
-  "tool": "bench_check.py 3",
+  "tool": "bench_check.py 4",
   "station": "bench-1",
   "started_at": "2026-10-23T14:02:11Z",
   "finished_at": "2026-10-23T14:02:49Z",
@@ -96,7 +96,7 @@ capture window and judges only lines the firmware printed:
 | `manifest` | The hardware manifest names a supported board | It names none, or no boot action was printed | — |
 | `atecc` | The secure element answered with a CRC-verified info read | It did not, on a named board | The manifest names no board |
 | `i2c:<part>@0x<addr>` | The firmware probed the part and it answered | It probed the part and it did not | — |
-| `receiver` | Valid receiver traffic, or the mosaic-G5's COM2 configured for SBF | No UART bytes from the receiver | No verdict within the window |
+| `receiver` | Valid receiver traffic, or the mosaic-G5's COM2 configured for SBF; the detail adds the running rate when the firmware moved a u-blox receiver to another | No UART bytes from the receiver | No verdict within the window |
 | `setup` | An unprovisioned board raised its setup network and the app's provisioning | It did not | The board is provisioned |
 
 A board whose manifest a factory-initialization image wrote during the capture
@@ -123,6 +123,7 @@ It changes these checks and adds the rest:
 | `identity:<part>@0x<addr>` | The part's identity registers read as that part: the MCP9808, the HDC2080/HDC2022 family, the BMP388 or BMP58x family and the INA3221 | An unexpected identity, or no identity read |
 | `receiver` | As above | As above, and also when there is no verdict within the window |
 | `receiver.model` | MON-VER confirms the model the revision lists, or the mosaic-G5's ReceiverSetup names a mosaic-G5 | Another model, an unconfirmed one, or no answer within the window |
+| `receiver.config` | u-blox receivers only: the receiver acknowledged every key the firmware sets in its RAM; the detail gives the UART1 rate it runs at and the rate it was moved from | A key refused or unanswered (each named), or no configuration result within the window; a skip when the model was not confirmed, so nothing was set |
 | `ethernet` | ZED/X20 only: the W5500 answered its VERSIONR read at boot, and a provisioned board also started it | Another identity, a failed read, no identity reported, or a provisioned board that did not start it |
 | `panel_chain` | ZED/X20 only: the I/O expander read a 24- or 16-bit LED chain back | The chain was not detected, or no verdict within the window |
 
