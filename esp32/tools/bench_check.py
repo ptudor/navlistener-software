@@ -39,6 +39,9 @@ DEFAULT_SECONDS = 30.0
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _BOOT = re.compile(r"rst:0x[0-9a-f]+ \(")
 _LOG = re.compile(r"[IWE] \(\d+\) ([A-Za-z0-9_]+): (.*)")
+# Where a log line starts. The Wi-Fi driver can print without ending its line, so the next
+# line lands on the end of it: "I (1578) wifi:I (1578) observer_board: ATECC Info ...".
+_LOG_START = re.compile(r"[IWE] \(\d+\) [A-Za-z0-9_]+:")
 _PANICS = (
     "Guru Meditation Error",
     "abort() was called",
@@ -174,10 +177,18 @@ class ConsoleFacts:
     app_setup: bool = False
 
 
+def _segments(raw: str) -> list[str]:
+    """One console line split where each log line starts, text before the first kept."""
+    line = _ANSI.sub("", raw).strip()
+    starts = [m.start() for m in _LOG_START.finditer(line)]
+    if not starts or starts[0]:
+        starts.insert(0, 0)
+    return [line[a:b].strip() for a, b in zip(starts, starts[1:] + [len(line)])]
+
+
 def parse_console(text: str) -> ConsoleFacts:
     facts = ConsoleFacts()
-    for raw in text.splitlines():
-        line = _ANSI.sub("", raw).strip()
+    for line in (segment for raw in text.splitlines() for segment in _segments(raw)):
         if _BOOT.match(line):
             facts.boots += 1
             continue

@@ -18,6 +18,8 @@
 #define UBX_ID_NAVSAT 0x35
 #define UBX_ID_MONHW  0x09
 #define UBX_ID_MONRF  0x38
+#define UBX_CLASS_SEC 0x27
+#define UBX_ID_SECSIG 0x09
 
 _Static_assert(RD_BODY_MAX <= GNF1_MAX_RAW, "a ReceptionData body must fit a record");
 
@@ -72,11 +74,25 @@ static void emit_sfrbx(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
     atomic_fetch_add_explicit(&p->frames_nav, 1, memory_order_relaxed); /* regression fix */
 }
 
+// observe_secsig: UBX-SEC-SIG version 2 or 3 (version U1, sigSecFlags X1 [bit 0
+// jamDetEnabled, bits 2..1 jamState], reserved U1, jamNumCentFreqs U1, then 4 bytes per
+// centre frequency). From the X20's HPG 2.00 on, MON-RF's jammingState always reads 0 and
+// SEC-SIG carries it: 0 unknown, 1 OK, 2 warning, and 0 while detection is disabled.
+static void observe_secsig(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
+{
+    if (len < 4 || (payload[0] != 2 && payload[0] != 3) || len != 4u + 4u * payload[3]) return;
+    p->sec_sig = true;
+    p->sec_sig_jam = (payload[1] & 1) ? (payload[1] >> 1) & 3 : 0;
+    p->sec_sig_age = 0;
+}
+
 // emit_monrf: UBX-MON-RF (F9+) -> JammingStats (0x05). Layout: version U1, nBlocks U1,
 // reserved U1[2], then nBlocks x 24-byte blocks (blockId U1, flags X1 [bits0-1=jamState],
 // antStatus U1, antPower U1, postStatus U4 @4, reserved U1[4] @8, noisePerMS U2 @12,
 // agcCnt U2 @14, jamInd U1 @16 (previously read @14/@16/@20, off by the 2-byte
-// antStatus/antPower pair).
+// antStatus/antPower pair). While SEC-SIG is current its jamming state stands in every
+// block's jamState; SEC-SIG's per-frequency flags are not mapped to blocks, whose bands
+// are the product's configuration.
 static void emit_monrf(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
 {
     if (len < 4) return;
@@ -84,6 +100,8 @@ static void emit_monrf(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
     if (n_blocks == 0 || 4u + n_blocks * 24u > len) return;
     unsigned body_len = 2u + n_blocks * 8u;
     if (body_len > GNF1_MAX_RAW) return;
+    const bool sec_sig = p->sec_sig && p->sec_sig_age < 2;
+    if (p->sec_sig_age < UINT8_MAX) p->sec_sig_age++;
 
     uint8_t *rec = p->scratch;
     uint8_t *body = rec + GNF1_RECORD_HDR;
@@ -96,7 +114,7 @@ static void emit_monrf(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
         gnf1_be16(body + o + 1, rd_le16(b + 14));    // agcCnt
         gnf1_be16(body + o + 3, rd_le16(b + 12));    // noisePerMS
         body[o + 5] = b[16];                         // jamInd (CW)
-        body[o + 6] = (uint8_t)(b[1] & 0x03);        // jammingState
+        body[o + 6] = sec_sig ? p->sec_sig_jam : (uint8_t)(b[1] & 0x03); // jammingState
         body[o + 7] = b[2];                          // antStatus
     }
     gnf1_be64(rec, p->now());
@@ -164,6 +182,7 @@ static void dispatch(ubx_parser_t *p)
     if (p->observe) p->observe(p->cls, p->id, p->payload, p->len, p->observe_ctx);
     if (p->cls == UBX_CLASS_RXM && p->id == UBX_ID_SFRBX)      emit_sfrbx(p, p->payload, p->len);
     else if (p->cls == UBX_CLASS_MON && p->id == UBX_ID_MONRF) emit_monrf(p, p->payload, p->len);
+    else if (p->cls == UBX_CLASS_SEC && p->id == UBX_ID_SECSIG) observe_secsig(p, p->payload, p->len);
     else if (p->cls == UBX_CLASS_MON && p->id == UBX_ID_MONHW) emit_monhw(p, p->payload, p->len);
     else if (p->cls == UBX_CLASS_NAV && p->id == UBX_ID_NAVSAT) emit_navsat(p, p->payload, p->len);
     else if (p->cls == UBX_CLASS_NAV) {

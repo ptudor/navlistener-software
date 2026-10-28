@@ -64,6 +64,10 @@ typedef struct {
     uint8_t payload[UBX_MAX_PAYLOAD];
     uint8_t scratch[GNF1_RECORD_MAX]; // record assembly (emit target)
     rs_assembler_t solution;          // the receiver-solution epoch being joined
+    // UBX-SEC-SIG's jamming state, which replaces MON-RF's per-block flag in JammingStats
+    // records while it is current: sent within the last two MON-RF messages (ubx.c).
+    bool sec_sig;
+    uint8_t sec_sig_jam, sec_sig_age;
 
     // counters (for the display/telemetry) — _Atomic : written by rx_task's
     // parser and read by ui_task's dashboard, so plain uint32_t cross-task access is a

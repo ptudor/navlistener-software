@@ -266,6 +266,40 @@ static void test_reception_delivery(void) {
 	close(fd[0]); close(fd[1]);
 }
 
+/* MON-RF's JammingStats jamState: each block's own flag, then UBX-SEC-SIG's state in every
+ * block while a SEC-SIG arrived within the last two MON-RF messages. */
+static unsigned char spooled_jam(unsigned block) {
+	struct frame *f = &g_spool.ring[(g_spool.head + g_spool.count - 1) % g_spool.cap];
+	assert(f->data[12] == F_T_JAMMING);
+	return f->data[RECORD_HDR + 2 + block * 8 + 6];
+}
+static void monrf(unsigned char flags0, unsigned char flags1) {
+	unsigned char rf[4 + 2 * 24] = {0, 2};
+	rf[4] = 0; rf[5] = flags0; rf[6] = 2;
+	rf[28] = 1; rf[29] = flags1; rf[30] = 2;
+	assert(emit_monrf(rf, sizeof rf) == 1);
+}
+static void test_sec_sig_jamming(void) {
+	assert(spool_init(&g_spool, 16, NULL, 0) == 0);
+	memset(&g_sec_sig, 0, sizeof g_sec_sig);
+	monrf(2, 1);
+	assert(spooled_jam(0) == 2 && spooled_jam(1) == 1);
+	const unsigned char warning[8] = {2, 1 | 2 << 1, 0, 1, 0x10, 0x0a, 0x18, 0};
+	assert(observe_secsig(warning, sizeof warning));
+	monrf(0, 0); assert(spooled_jam(0) == 2 && spooled_jam(1) == 2);
+	monrf(0, 0); assert(spooled_jam(0) == 2 && spooled_jam(1) == 2);
+	monrf(0, 0); assert(spooled_jam(0) == 0 && spooled_jam(1) == 0); /* stale */
+	const unsigned char quiet[8] = {3, 1 | 1 << 1, 0, 1, 0x10, 0x0a, 0x18, 0};
+	assert(observe_secsig(quiet, sizeof quiet));
+	monrf(0, 3); assert(spooled_jam(0) == 1 && spooled_jam(1) == 1);
+	const unsigned char v1[8] = {1, 1 | 2 << 1, 0, 1, 0, 0, 0, 0};
+	assert(!observe_secsig(v1, sizeof v1) && !observe_secsig(warning, sizeof warning - 1));
+	while (g_spool.count) { free(g_spool.ring[g_spool.head].data); g_spool.head = (g_spool.head + 1) % g_spool.cap; g_spool.count--; }
+	free(g_spool.ring);
+	pthread_mutex_destroy(&g_spool.mu);
+	memset(&g_sec_sig, 0, sizeof g_sec_sig);
+}
+
 int main(void) {
 	assert(ubx_config_port("uart1") == 1 && ubx_config_port("uart2") == 2);
 	assert(ubx_config_port("usb") == 3 && ubx_config_port("auto") == 0);
@@ -273,7 +307,8 @@ int main(void) {
 	test_reader_delivery();
 	test_solution_delivery();
 	test_reception_delivery();
+	test_sec_sig_jamming();
 	test_write_failure();
-	puts("UBX RAM setup, NMEA-only recovery, interleaved delivery, golden receiver solution, golden reception and write timeout: PASS");
+	puts("UBX RAM setup, NMEA-only recovery, interleaved delivery, golden receiver solution, golden reception, SEC-SIG jamming and write timeout: PASS");
 	return 0;
 }

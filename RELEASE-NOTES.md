@@ -30,7 +30,10 @@
 - The ZED-X20P enables QZSS and NavIC, which every X20 signal plan leaves off, so the
   panel's QZSS and NavIC columns can turn green inside their service regions. It also
   enables UBX-SEC-SIG and takes the jamming state from it: from HPG 2.00 on, MON-RF's
-  jamming flag always reads 0, so ZED/X20 boards never reported jamming before.
+  jamming flag always reads 0, so ZED/X20 boards never reported jamming before. The
+  JammingStats records the collector's RF detector reads carry it too: the ESP32, the
+  feeder and the collector's UBX reader put SEC-SIG's state in each block's jamState while
+  SEC-SIG is current.
 - The receiver console logs the u-blox chip ID (UBX-SEC-UNIQID) once, and every 10
   seconds an `RF:` line (jamming and its source; each MON-RF block's antenna supervisor,
   power, AGC, noise and CW suppression) and a `signals:` line (code-locked signals per

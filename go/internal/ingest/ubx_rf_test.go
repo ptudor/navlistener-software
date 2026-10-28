@@ -56,6 +56,59 @@ func TestParseMONRF(t *testing.T) {
 	}
 }
 
+// TestSECSIGJammingInMONRF: once the receiver sends UBX-SEC-SIG (version 2 or 3), its
+// jamming state replaces MON-RF's per-block flag, which the X20 always reports as 0, for
+// as long as a SEC-SIG arrived within the last two MON-RF messages.
+func TestSECSIGJammingInMONRF(t *testing.T) {
+	block := func(id, flags byte) []byte { b := make([]byte, 24); b[0], b[1], b[2] = id, flags, 2; return b }
+	monrf := func(flags0, flags1 byte) []byte {
+		p := append([]byte{0, 2, 0, 0}, block(0, flags0)...)
+		return ubxMsg(ubxClassMON, ubxIDMONRF, append(p, block(1, flags1)...))
+	}
+	secsig := func(version, flags byte) []byte {
+		return ubxMsg(ubxClassSEC, ubxIDSECSIG, []byte{version, flags, 0, 1, 0x10, 0x0a, 0x18, 0})
+	}
+	var stream []byte
+	for _, m := range [][]byte{
+		monrf(2, 1),                    // no SEC-SIG yet: each block's own flag
+		secsig(2, 1|2<<1), monrf(0, 0), // warning, carried into both blocks
+		monrf(0, 0),                    // still current one MON-RF later
+		monrf(0, 0),                    // stale: MON-RF's own flag again
+		secsig(3, 1|1<<1), monrf(0, 3), // version 3, no jamming
+		secsig(2, 2<<1), monrf(2, 2), // detection disabled reads unknown
+	} {
+		stream = append(stream, m...)
+	}
+	var frames []*RawFrame
+	var errs []string
+	_ = scanUBX(bytes.NewReader(stream), "stn", fixedTime,
+		func(f *RawFrame) { frames = append(frames, f) }, func(kind string) { errs = append(errs, kind) })
+	want := [][2]int{{2, 1}, {2, 2}, {2, 2}, {0, 0}, {1, 1}, {0, 0}}
+	if len(frames) != len(want) {
+		t.Fatalf("got %d frames, want %d", len(frames), len(want))
+	}
+	for i, f := range frames {
+		if got := [2]int{f.RF.Bands[0].JamState, f.RF.Bands[1].JamState}; got != want[i] {
+			t.Errorf("MON-RF %d: jamState %v, want %v", i, got, want[i])
+		}
+	}
+	if len(errs) != 0 {
+		t.Errorf("errors = %v", errs)
+	}
+	// Version 1, and a version 2 body whose length disagrees with its count, are errors
+	// that leave MON-RF's own flags in place.
+	frames = nil
+	bad := append(secsig(1, 1|2<<1), ubxMsg(ubxClassSEC, ubxIDSECSIG, []byte{2, 1 | 2<<1, 0, 1, 0, 0, 0})...)
+	_ = scanUBX(bytes.NewReader(append(bad, monrf(1, 0)...)), "stn", fixedTime,
+		func(f *RawFrame) { frames = append(frames, f) }, func(kind string) { errs = append(errs, kind) })
+	if len(errs) != 2 || errs[0] != "ubx_secsig" || errs[1] != "ubx_secsig" {
+		t.Errorf("errors = %v", errs)
+	}
+	if len(frames) != 1 || frames[0].RF.Bands[0].JamState != 1 || frames[0].RF.Bands[1].JamState != 0 {
+		t.Errorf("after malformed SEC-SIG: %+v", frames)
+	}
+}
+
 // TestParseMONHW checks the legacy MON-HW single-band extraction (agcCnt @18, aStatus @20,
 // jammingState in flags bits 2-3 @22, jamInd @45).
 func TestParseMONHW(t *testing.T) {

@@ -150,6 +150,17 @@ class ConsoleTests(unittest.TestCase):
             },
         )
 
+    def test_a_line_glued_onto_an_unfinished_one_is_still_read(self):
+        # The Wi-Fi driver leaves its line open; the ATECC and receiver lines follow on it.
+        glued = [
+            line.replace(log("I", "observer_board", "ATECC Info"), log("I", "wifi", "") + log("I", "observer_board", "ATECC Info"))
+            for line in BOOT
+        ]
+        glued.append("Haven't to connect to a suitable AP now!" + log("I", "receiver", "valid receiver traffic at 9600 baud"))
+        checks = judge(console(glued))
+        self.assertEqual(checks["atecc"], ("pass", "ATECC608C revision 00006005, CRC verified"))
+        self.assertEqual(checks["receiver"], ("pass", "valid traffic at 9600 baud"))
+
     def test_another_image_fails_the_firmware_check(self):
         text = console([line.replace("d4249998a", "5d322d70d") for line in BOOT])
         self.assertEqual(judge(text)["firmware.image"], ("fail", "booted ELF 5d322d70d, build ELF d4249998a"))

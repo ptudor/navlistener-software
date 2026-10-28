@@ -145,6 +145,8 @@ _Static_assert(RD_BODY_MAX <= MAX_RAW, "a ReceptionData body must fit a record")
 #define UBX_ID_NAVSAT 0x35
 #define UBX_ID_MONHW 0x09
 #define UBX_ID_MONRF 0x38
+#define UBX_CLASS_SEC 0x27
+#define UBX_ID_SECSIG 0x09
 #define UBX_MAX_PAYLOAD (1u << 14)
 
 /* GNF1 telemetry record types (docs/CONSTELLATIONS.md §6.2): receiver-side metadata that
@@ -1328,6 +1330,25 @@ static int emit_solution(const rs_epoch_t *epoch) {
 	return emit_telem_at(RS_TELEM_TYPE, body, (unsigned)n, epoch->arrived_ns);
 }
 
+/* UBX-SEC-SIG's jamming state, which replaces MON-RF's per-block flag while it is current:
+ * sent within the last two MON-RF messages. From the X20's HPG 2.00 on, MON-RF's
+ * jammingState always reads 0 and SEC-SIG (version 2 or 3: version U1, sigSecFlags X1 with
+ * jamDetEnabled in bit 0 and jamState in bits 2..1, reserved U1, jamNumCentFreqs U1, then 4
+ * bytes per centre frequency) carries it: 0 unknown, 1 OK, 2 warning, and 0 while detection
+ * is disabled. Its per-frequency flags are not mapped to blocks, whose bands are the
+ * product's configuration. The ESP32's ubx.c and the collector's scanUBX apply the same rule.
+ * Touched only by the reader. */
+static struct { int seen; unsigned char jam, age; } g_sec_sig;
+
+/* observe_secsig takes one SEC-SIG payload. Returns 1 if it was a version 2 or 3 body. */
+static int observe_secsig(const unsigned char *p, unsigned len) {
+	if (len < 4 || (p[0] != 2 && p[0] != 3) || len != 4u + 4u * p[3]) return 0;
+	g_sec_sig.seen = 1;
+	g_sec_sig.jam = (p[1] & 1) ? (unsigned char)((p[1] >> 1) & 3) : 0;
+	g_sec_sig.age = 0;
+	return 1;
+}
+
 /* emit_monrf converts a UBX-MON-RF payload (F9+ RF-front-end telemetry) into a JammingStats
  * (0x05) record. Layout: version U1, nBlocks U1, reserved U1[2], then nBlocks × 24-byte
  * blocks — blockId U1, flags X1 (bits 0-1 = jammingState), antStatus U1, antPower U1,
@@ -1342,6 +1363,8 @@ static int emit_monrf(const unsigned char *p, unsigned len) {
 	if (nBlocks == 0 || 4u + nBlocks * 24u > len) return 0;
 	unsigned bodylen = 2u + nBlocks * 8u;
 	if (bodylen > MAX_RAW) return 0;
+	const int sec_sig = g_sec_sig.seen && g_sec_sig.age < 2;
+	if (g_sec_sig.age < 255) g_sec_sig.age++;
 	unsigned char body[MAX_RAW];
 	body[0] = TELEM_VERSION;
 	body[1] = (unsigned char)nBlocks;
@@ -1352,7 +1375,7 @@ static int emit_monrf(const unsigned char *p, unsigned len) {
 		be16(body + o + 1, rd_le16(b + 14));      /* agcCnt */
 		be16(body + o + 3, rd_le16(b + 12));      /* noisePerMS */
 		body[o + 5] = b[16];                      /* jamInd (CW) */
-		body[o + 6] = (unsigned char)(b[1] & 0x03); /* jammingState */
+		body[o + 6] = sec_sig ? g_sec_sig.jam : (unsigned char)(b[1] & 0x03); /* jammingState */
 		body[o + 7] = b[2];                       /* antStatus */
 	}
 	return emit_telem(F_T_JAMMING, body, bodylen);
@@ -1538,6 +1561,8 @@ static int run_ubx(int fd, int configure_ubx, int enable_gps_l5) {
 			{ delivered += emit_monrf(payload, len); frames++; }
 		else if (head[0] == UBX_CLASS_MON && head[1] == UBX_ID_MONHW)
 			{ delivered += emit_monhw(payload, len); frames++; }
+		else if (head[0] == UBX_CLASS_SEC && head[1] == UBX_ID_SECSIG)
+			observe_secsig(payload, len);
 		else if (head[0] == UBX_CLASS_NAV && head[1] == UBX_ID_NAVSAT)
 			{ delivered += emit_navsat(payload, len); frames++; }
 		else if (head[0] == RS_UBX_CLASS_NAV && (head[1] == RS_UBX_ID_PVT || head[1] == RS_UBX_ID_CLOCK ||

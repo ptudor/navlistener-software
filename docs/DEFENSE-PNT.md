@@ -47,14 +47,15 @@ blind when a receiver boots inside an already degraded environment (§5).
 
 The table maps receiver telemetry to current and proposed detector inputs. Current
 GNF1 telemetry carries the supported UBX records described in
-`docs/CONSTELLATIONS.md §6.2`. SEC-SIG/SEC-SIGLOG transport and Septentrio central
-decoding remain planned; listing a receiver message here does not imply a wired detector.
+`docs/CONSTELLATIONS.md §6.2`. SEC-SIG's jamming state is carried as described below;
+its spoofing state, SEC-SIGLOG and Septentrio central decoding remain planned. Listing a
+receiver message here does not imply a wired detector.
 
 | Source message | Carries | GNF1 type | Threat signal it feeds |
 |---|---|---|---|
 | **UBX-MON-RF** (F9+) | per-RF-band AGC, noise level, CW-suppression %, jamming state, antenna status | `JammingStats` (0x05) | broadband + narrowband jamming (§2) |
 | **UBX-MON-HW** (legacy) | AGC monitor, noise, `jammingState`, CW indicator | `JammingStats` (0x05) | jamming, older receivers |
-| **UBX-SEC-SIG / SEC-SIGLOG** | per-signal spoofing-detection state, jamming-detection state (multi-tier) | `JammingStats` (0x05) | receiver's own spoofing verdict (an input, §3) |
+| **UBX-SEC-SIG / SEC-SIGLOG** | per-signal spoofing-detection state, jamming-detection state (multi-tier) | `JammingStats` (0x05) jamState, from SEC-SIG's jamState | the receiver's own jamming flag (§2); its spoofing verdict (an input, §3) is planned |
 | **UBX-NAV-SAT** | per-SV C/N₀, elevation, azimuth, pseudorange residual, quality indicator, health, used-in-solution | `ReceptionData` (0x01) | C/N₀-vs-elevation plausibility (§3), simultaneous C/N₀ drop (§2) |
 | **UBX-RXM-RAWX** | pseudorange, carrier phase, Doppler, lock-time, C/N₀ | `RFData` (0x02) | Doppler plausibility, measured iono (§3, `docs/MATH.md §7.4`) |
 | **UBX-NAV-PVT / NAV-CLOCK / NAV-STATUS** | position, velocity, UTC, clock bias/drift, fix and spoofing state | `ReceiverSolution` (0x03) | position, clock and time-reference integrity checks |
@@ -66,7 +67,14 @@ version 2, `common/reception_data.h`, shared by the ESP32 and the feeder), both 
 fixed-layout GNF1 telemetry records that ride the existing DATA stream (no protobuf on the wire
 — `docs/DESIGN.md §2`; body layouts in `go/internal/ingest/telemetry.go`). The collector sees the raw receiver numbers rather than a pre-digested
 flag, and the PNT-defense detector runs identically over dial- and push-sourced stations.
-**Remaining:** fold the UBX-SEC-SIG / SEC-SIGLOG per-signal spoofing/jamming state into the
+From the ZED-X20P's HPG 2.00 on, MON-RF's per-block jammingState always reads 0 and
+UBX-SEC-SIG (version 2 or 3) carries the jamming state. The ESP32 firmware enables SEC-SIG
+on the ZED-X20P, and the ESP32, the feeder and the collector's own UBX reader all put
+SEC-SIG's jamState (0 unknown, 1 OK, 2 warning; 0 while detection is disabled) into every
+block's jamState while a SEC-SIG arrived within the last two MON-RF messages, and each
+block's own flag otherwise. SEC-SIG's per-frequency jammed flags are not mapped to blocks,
+whose bands are the product's configuration. The feeder does not enable SEC-SIG output.
+**Remaining:** fold the UBX-SEC-SIG / SEC-SIGLOG per-signal spoofing state into the
 `JammingStats` body (raises the spoof-gate fusion count, §3) once that source is wired.
 
 ---

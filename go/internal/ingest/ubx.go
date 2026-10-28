@@ -24,6 +24,8 @@ const (
 	ubxClassMON   = 0x0A
 	ubxIDMONHW    = 0x09
 	ubxIDMONRF    = 0x38
+	ubxClassSEC   = 0x27
+	ubxIDSECSIG   = 0x09
 	ubxMaxPayload = 1 << 14 // guard against a corrupt length prefix
 )
 
@@ -35,6 +37,7 @@ const (
 func scanUBX(r io.Reader, source string, now func() time.Time, emit func(*RawFrame), onErr func(kind string)) error {
 	br := bufio.NewReaderSize(r, 1<<16)
 	var epoch solutionAssembler
+	var secSig secSigJamming
 	emitSolution := func(e *completedEpoch) {
 		if e != nil {
 			emit(solutionFrame(e, source))
@@ -111,9 +114,14 @@ func scanUBX(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 			}
 		case cls == ubxClassMON && id == ubxIDMONRF:
 			if f := parseMONRF(body, source, now()); f != nil {
+				secSig.apply(f.RF)
 				emit(f)
 			} else {
 				onErr("ubx_monrf")
+			}
+		case cls == ubxClassSEC && id == ubxIDSECSIG:
+			if !secSig.observe(body) {
+				onErr("ubx_secsig")
 			}
 		case cls == ubxClassMON && id == ubxIDMONHW:
 			if f := parseMONHW(body, source, now()); f != nil {
@@ -312,6 +320,41 @@ func parseMONRF(p []byte, source string, recv time.Time) *RawFrame {
 		})
 	}
 	return &RawFrame{Source: source, Recv: recv, MsgType: TelemJammingStats, RF: rf}
+}
+
+// secSigJamming carries UBX-SEC-SIG's jamming state into MON-RF's bands. From the X20's
+// HPG 2.00 on, MON-RF's per-block jammingState always reads 0 and SEC-SIG (version 2 or 3:
+// version U1, sigSecFlags X1 with jamDetEnabled in bit 0 and jamState in bits 2..1, reserved
+// U1, jamNumCentFreqs U1, then 4 bytes per centre frequency) carries it: 0 unknown, 1 OK,
+// 2 warning, and 0 while detection is disabled. It stands in every band while a SEC-SIG
+// arrived within the last two MON-RF messages; its per-frequency flags are not mapped to
+// bands, whose meaning is the product's configuration. The ESP32's ubx.c and the feeder's
+// navfeeder.c apply the same rule.
+type secSigJamming struct {
+	state, age int
+	seen       bool
+}
+
+// observe takes one SEC-SIG payload; false when it is not a version 2 or 3 body.
+func (s *secSigJamming) observe(p []byte) bool {
+	if len(p) < 4 || (p[0] != 2 && p[0] != 3) || len(p) != 4+4*int(p[3]) {
+		return false
+	}
+	s.state, s.age, s.seen = 0, 0, true
+	if p[1]&1 != 0 {
+		s.state = int(p[1] >> 1 & 3)
+	}
+	return true
+}
+
+// apply sets each band's JamState from a current SEC-SIG, and ages it by one MON-RF.
+func (s *secSigJamming) apply(rf *RawRF) {
+	if s.seen && s.age < 2 {
+		for i := range rf.Bands {
+			rf.Bands[i].JamState = s.state
+		}
+	}
+	s.age++
 }
 
 // parseMONHW converts a legacy UBX-MON-HW payload (60 bytes) into a single-band RF
