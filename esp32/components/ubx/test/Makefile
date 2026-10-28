@@ -1,12 +1,13 @@
 CC ?= cc
 CFLAGS ?= -O1 -g -Wall -Wextra -Werror -std=c11
 .PHONY: all clean
-all: build/probe_test build/status_test build/solution_test build/reception_test build/sfrbx_test
+all: build/probe_test build/status_test build/solution_test build/reception_test build/sfrbx_test build/rtk_stat_test
 	./build/probe_test
 	./build/status_test
 	./build/solution_test
 	./build/reception_test
 	./build/sfrbx_test
+	./build/rtk_stat_test
 build/sfrbx_test: sfrbx_test.c ../src/ubx.c ../include/ubx.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -I../include -I../../gnf1/include sfrbx_test.c ../src/ubx.c ../../gnf1/src/gnf1.c -o $@
@@ -22,5 +23,8 @@ build/solution_test: solution_test.c ../src/ubx.c ../include/ubx.h ../../../../c
 build/reception_test: reception_test.c ../src/ubx.c ../include/ubx.h ../../../../common/reception_data.h ../../../../testdata/reception_data_v2.txt
 	@mkdir -p build
 	$(CC) $(CFLAGS) -DGOLDEN='"../../../../testdata/reception_data_v2.txt"' -I../include -I../../gnf1/include reception_test.c ../src/ubx.c ../../gnf1/src/gnf1.c -o $@
+build/rtk_stat_test: rtk_stat_test.c ../src/rtk_stat.c ../include/rtk_stat.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -I../include rtk_stat_test.c ../src/rtk_stat.c -o $@
 clean:
 	rm -rf build

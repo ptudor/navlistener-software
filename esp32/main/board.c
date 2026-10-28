@@ -30,6 +30,7 @@
 #include "hardware_checks.h"
 #include "mcu_identity_core.h"
 #include "receiver.h"
+#include "rtk_stat.h"
 #include "observer_rtc.h"
 #include "rtc_policy.h"
 #include "observer_time.h"
@@ -81,6 +82,11 @@ static bool pwm_ready;
 // The panel's boot sequence (panel_boot.h): the identity from observer_board_manifest, the
 // rest from observer_board_start, before the refresh task that shows it starts.
 static panel_boot_t boot_sequence;
+// The RTK_STAT pin's latest change of state (rtk_stat.h), from the panel refresh task, which
+// samples it for the RTK lamp: RTK_STAT_REPORT | changes << 8 | state, taken by the board
+// task to log; 0 when none waits.
+#define RTK_STAT_REPORT 0x80000000u
+static atomic_uint rtk_stat_report;
 // One wake/command/sleep session with the ATECC at a time: the boot diagnostic and the
 // bench identity read must not interleave their commands.
 static SemaphoreHandle_t crypto_lock;
@@ -635,7 +641,7 @@ static void panel_write(uint8_t status, uint8_t green, uint8_t yellow, unsigned 
 static TaskHandle_t panel_task;
 static void panel_refresh_task(void *arg)
 {
-    (void)arg;unsigned previous=UINT32_MAX,tick=0;bool rtk=false;
+    (void)arg;unsigned previous=UINT32_MAX,tick=0;bool rtk=false;rtk_stat_t rtk_pin={0};
     // The chain readback where the expander is listed: a verification write of the frame the
     // chain already holds, once the first frame is in and every 60 s after.
     const bool readback=expander_listed&&board->panel_status_byte;
@@ -648,9 +654,14 @@ static void panel_refresh_task(void *arg)
         nr_alarm_leds(alarm,(uint64_t)esp_timer_get_time()/1000,&green,&yellow);
         // The panel's status driver, where fitted: RTK follows the receiver's RTK_STAT pin (low
         // while RTK is fixed, toggling while corrections are in use), sampled every 250 ms so a
-        // toggling pin blinks the lamp rather than rewriting the chain at every pass; ATTENTION
-        // is lit while an alarm pattern is active.
-        if(board&&board->rtk_stat>=0&&tick++%10==0)rtk=gpio_get_level(board->rtk_stat)==0;
+        // toggling pin blinks the lamp rather than rewriting the chain at every pass, and the
+        // same samples are the console's RTK_STAT report (rtk_stat.h); ATTENTION is lit while
+        // an alarm pattern is active.
+        if(board&&board->rtk_stat>=0&&tick++%10==0){
+            const bool high=gpio_get_level(board->rtk_stat)!=0;rtk=!high;
+            if(rtk_stat_sample(&rtk_pin,high,esp_timer_get_time()/1000))
+                atomic_store(&rtk_stat_report,RTK_STAT_REPORT|(rtk_pin.window_changes>0xffff?0xffffu:rtk_pin.window_changes)<<8|rtk_pin.state);
+        }
         uint8_t status=board&&board->panel_status_byte?(rtk?PANEL_STATUS_RTK:0)|(alarm?PANEL_STATUS_ATTENTION:0):0;
         panel_lamps_t lamps;
         if(booting&&(booting=panel_boot_lamps(&boot_sequence,(uint32_t)(esp_timer_get_time()/1000-boot_ms),&lamps))){
@@ -1094,6 +1105,18 @@ static void board_stack_report(const char *when)
         ESP_LOGI(TAG, "panel refresh stack minimum free=%u bytes %s",
                  (unsigned)uxTaskGetStackHighWaterMark(panel_task), when);
 }
+// The RTK_STAT pin's state, once per change, from the panel task's report.
+static void rtk_stat_log(void)
+{
+    const unsigned report = atomic_exchange(&rtk_stat_report, 0);
+    if (!report) return;
+    const rtk_stat_state_t state = (rtk_stat_state_t)(report & 0xff);
+    if (state == RTK_STAT_TOGGLING)
+        ESP_LOGI(TAG, "RTK_STAT toggling, %u changes in %u s: %s", (report >> 8) & 0xffffu,
+                 (unsigned)(RTK_STAT_WINDOW_MS / 1000), rtk_stat_meaning(state));
+    else
+        ESP_LOGI(TAG, "RTK_STAT %s: %s", rtk_stat_name(state), rtk_stat_meaning(state));
+}
 static void board_task(void *arg)
 {
     (void)arg;
@@ -1121,6 +1144,7 @@ static void board_task(void *arg)
         if (expander_listed && io_expander_poll() && rails_listed) rail_alert_read(now);
         // The direct line stays low while an alert is latched, whether or not its edge woke us.
         if (rail_alert_direct && gpio_get_level(board->pwr_alert_n) == 0) rail_alert_read(now);
+        rtk_stat_log();
         unsigned requested = atomic_load(&brightness);
         bool brightness_changed = requested != applied_brightness;
         applied_brightness = requested;

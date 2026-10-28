@@ -19,6 +19,9 @@
   for 0, so a board shows the same sweep at every boot and none when its identity was
   not read. The first ten boots, and every tenth after, start with a slow lamp test of
   every LED. The count is kept in NVS (esp32/README.md, Custom-board status LEDs).
+- The ZED/X20 console reports the receiver's RTK_STAT pin, which drives the panel's RTK
+  lamp: high (no carrier-phase solution), low (RTK fixed) or toggling (corrections in use,
+  no fix), one line whenever that changes over 10-second windows.
 - The S3 observer sets up over its WPA2 setup network; Bluetooth is off. BLE
   provisioning beside the setup network exhausted internal RAM, so an
   unprovisioned board reset in a loop. The setup label is now a Wi-Fi network QR

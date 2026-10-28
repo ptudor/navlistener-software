@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "src/ubx.c" "src/ubx_probe.c" "src/gnss_status.c"
+    SRCS "src/ubx.c" "src/ubx_probe.c" "src/gnss_status.c" "src/rtk_stat.c"
     INCLUDE_DIRS "include"
     REQUIRES gnf1
 )

@@ -352,7 +352,12 @@ second, while the wiper filter settles, and a reading at or above
 place. The board saves each applied brightness change, with the trimmer's position,
 in NVS and restores it before enabling PWM on subsequent boots. The ZED/X20's front panel is its only chain: GPIO1 carries a 24-bit frame (status, amber,
 green) whose status byte lights RTK while the receiver's RTK_STAT pin is low and ATTENTION
-while an alarm pattern is active. On that board GPIO14 reads the console port's VBUS and GPIO3
+while an alarm pattern is active. The console names what the RTK lamp shows: the same
+250 ms samples of RTK_STAT (GPIO40), classified over 10-second windows, give one line
+whenever the state changes, beginning with the first window: `RTK_STAT high: no
+carrier-phase solution`, `RTK_STAT low: RTK fixed`, or `RTK_STAT toggling, N changes in
+10 s: corrections received and used, RTK not fixed`, after the receiver's own reading of
+the pin (ZED-X20P integration manual, section 2.4.7). On that board GPIO14 reads the console port's VBUS and GPIO3
 the MCP23008 expander's interrupt (see the next paragraph). The eight-second network configuration-reset
 hold preserves this preference. The dedicated PPS and power LEDs have separate hardware
 paths and are not dimmed. PWM pauses during TLC5916 serial/latch writes because
