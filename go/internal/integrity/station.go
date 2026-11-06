@@ -13,6 +13,7 @@ func init() {
 		staticPositionInfo, stationaryVelocityInfo, motionBoundInfo, positionVelocityInfo, motionKinematicsInfo,
 		clockBiasDriftInfo, clockDriftRateInfo, utcOffsetInfo, ppsRTCPhaseInfo,
 		cn0UniformityInfo, cn0DropInfo, agcInfo, receiverSpoofingInfo, baselineInfo,
+		environmentHealthInfo, environmentChangeInfo,
 	} {
 		checkInfos[info.Name] = info
 	}
@@ -31,10 +32,11 @@ type Station struct {
 	order    []string
 	trackers map[string]*tracker
 
-	pos     *positionChecks
-	clock   clockChecks
-	pps     ppsRTCPhase
-	cn0Drop cn0DropCheck
+	pos         *positionChecks
+	clock       clockChecks
+	pps         ppsRTCPhase
+	cn0Drop     cn0DropCheck
+	environment environmentChecks
 
 	haveFix    bool
 	lastFixOK  bool
@@ -65,7 +67,8 @@ func NewStation(p Profile, station StationProfile) (*Station, error) {
 	}
 	infos = append(infos,
 		clockBiasDriftInfo, clockDriftRateInfo, utcOffsetInfo, ppsRTCPhaseInfo,
-		cn0UniformityInfo, cn0DropInfo, agcInfo, receiverSpoofingInfo)
+		cn0UniformityInfo, cn0DropInfo, agcInfo, receiverSpoofingInfo,
+		environmentHealthInfo, environmentChangeInfo)
 	versions := make(map[string]int, len(infos))
 	for _, info := range infos {
 		s.order = append(s.order, info.Name)
@@ -178,6 +181,14 @@ func (s *Station) ApplyRF(rf RFSample) {
 	s.update(CheckAGC, agc(rf, s.profile.AGC), rf.Received)
 }
 
+// ApplyEnvironment evaluates instrumentation health and station-local environmental
+// change. Both checks are advisory and cannot alter GNSS assurance or spoofing fusion.
+func (s *Station) ApplyEnvironment(sample EnvironmentSample) {
+	health, change := s.environment.evaluate(sample, s.profile.Environment)
+	s.update(CheckEnvironmentHealth, health, sample.Received)
+	s.update(CheckEnvironmentChange, change, sample.Received)
+}
+
 // Assessment is a station's served assurance: the fused state, every check's result,
 // and what produced them. It carries no coordinates.
 type Assessment struct {
@@ -223,6 +234,7 @@ func (s *Station) startSegment(at time.Time, reason string) {
 	s.segment++
 	s.clock = clockChecks{}
 	s.pps = ppsRTCPhase{}
+	s.environment.reset()
 	s.haveFix = false
 }
 
@@ -250,7 +262,7 @@ func (s *Station) Served(name string, now time.Time) (State, bool) {
 	if !ok {
 		return Unavailable, false
 	}
-	t.expire(now, s.profile.StaleAfter, s.profile.Filter)
+	t.expire(now, s.staleAfter(name), s.profile.Filter)
 	return t.served, true
 }
 
@@ -264,7 +276,7 @@ func (s *Station) Fused() Fusion {
 	results := make([]Result, 0, len(s.order))
 	for _, name := range s.order {
 		t := s.trackers[name]
-		results = append(results, Result{Check: name, Domain: t.info.Domain, State: t.served, lowerOnly: t.info.LowerOnly})
+		results = append(results, Result{Check: name, Domain: t.info.Domain, State: t.served, lowerOnly: t.info.LowerOnly, advisory: t.info.Advisory})
 	}
 	return Fuse(results, s.profile.Weights)
 }
@@ -287,7 +299,7 @@ func (s *Station) Assess(now time.Time) Assessment {
 	results := make([]Result, 0, len(s.order))
 	for _, name := range s.order {
 		t := s.trackers[name]
-		t.expire(now, s.profile.StaleAfter, s.profile.Filter)
+		t.expire(now, s.staleAfter(name), s.profile.Filter)
 		results = append(results, t.result())
 	}
 	return Assessment{
@@ -301,6 +313,15 @@ func (s *Station) Assess(now time.Time) Assessment {
 		Checks:       results,
 		Installation: s.station.Installation, Motion: s.station.Motion, Fixed: s.station.Fixed,
 		Segment: s.segment, SegmentID: s.station.SegmentID, Segments: s.segmentHistory(), SurveyReady: s.SurveyCandidate() != nil,
+	}
+}
+
+func (s *Station) staleAfter(name string) time.Duration {
+	switch name {
+	case CheckEnvironmentHealth, CheckEnvironmentChange:
+		return s.profile.Environment.StaleAfter
+	default:
+		return s.profile.StaleAfter
 	}
 }
 

@@ -45,6 +45,7 @@ type Profile struct {
 	AGC                AGCProfile              `json:"agc"`
 	Baseline           BaselineProfile         `json:"baseline"`
 	Neighbour          NeighbourProfile        `json:"neighbour"`
+	Environment        EnvironmentProfile      `json:"environment"`
 }
 
 // NeighbourProfile defines which stations corroborate each other's interference:
@@ -136,6 +137,24 @@ func DefaultProfile() Profile {
 		// high-power one tens of kilometres; 30 km pairs stations one jammer can
 		// plausibly reach without pairing distant regions.
 		Neighbour: NeighbourProfile{RadiusM: 30_000, Window: 2 * time.Minute, LocationMaxAge: 10 * time.Minute},
+		// Environmental departures are advisory context. These conservative
+		// starting bands are explicit in the config hash and must be calibrated
+		// against retained station data before any site-specific tightening.
+		Environment: EnvironmentProfile{
+			StaleAfter:     11 * time.Minute,
+			BaselineWindow: 6 * time.Hour, BaselineMinAge: 20 * time.Minute, BaselineMinSamples: 6,
+			RateMinInterval: 30 * time.Second, RateMaxInterval: 15 * time.Minute,
+			FlatlineAfter: 30 * time.Minute, FlatlineMinSamples: 7,
+			TemperatureChangeC:          EnvironmentalBands{Inconsistent: 8, Unassured: 15},
+			HumidityChangePercent:       EnvironmentalBands{Inconsistent: 20, Unassured: 40},
+			PressureChangePa:            EnvironmentalBands{Inconsistent: 800, Unassured: 1600},
+			TemperatureRateCPerHour:     EnvironmentalBands{Inconsistent: 6, Unassured: 12},
+			HumidityRatePctPerHour:      EnvironmentalBands{Inconsistent: 20, Unassured: 40},
+			PressureRatePaPerHour:       EnvironmentalBands{Inconsistent: 300, Unassured: 600},
+			TemperatureDisagreementC:    EnvironmentalBands{Inconsistent: 5, Unassured: 10},
+			HumidityDisagreementPct:     EnvironmentalBands{Inconsistent: 10, Unassured: 20},
+			DewPointSpreadInconsistentC: 2, DewPointSpreadUnassuredC: 0.5,
+		},
 	}
 }
 
@@ -192,6 +211,19 @@ func (p Profile) Validate() error {
 		positive("neighbour.radius_m", p.Neighbour.RadiusM),
 		positive("neighbour.window", p.Neighbour.Window.Seconds()),
 		positive("neighbour.location_max_age", p.Neighbour.LocationMaxAge.Seconds()),
+		positive("environment.stale_after", p.Environment.StaleAfter.Seconds()),
+		positive("environment.baseline_window", p.Environment.BaselineWindow.Seconds()),
+		positive("environment.baseline_min_age", p.Environment.BaselineMinAge.Seconds()),
+		window("environment.rate", p.Environment.RateMinInterval, p.Environment.RateMaxInterval),
+		positive("environment.flatline_after", p.Environment.FlatlineAfter.Seconds()),
+		bands("environment.temperature_change_c", p.Environment.TemperatureChangeC.Inconsistent, p.Environment.TemperatureChangeC.Unassured),
+		bands("environment.humidity_change_percent", p.Environment.HumidityChangePercent.Inconsistent, p.Environment.HumidityChangePercent.Unassured),
+		bands("environment.pressure_change_pa", p.Environment.PressureChangePa.Inconsistent, p.Environment.PressureChangePa.Unassured),
+		bands("environment.temperature_rate_c_per_hour", p.Environment.TemperatureRateCPerHour.Inconsistent, p.Environment.TemperatureRateCPerHour.Unassured),
+		bands("environment.humidity_rate_percent_per_hour", p.Environment.HumidityRatePctPerHour.Inconsistent, p.Environment.HumidityRatePctPerHour.Unassured),
+		bands("environment.pressure_rate_pa_per_hour", p.Environment.PressureRatePaPerHour.Inconsistent, p.Environment.PressureRatePaPerHour.Unassured),
+		bands("environment.temperature_disagreement_c", p.Environment.TemperatureDisagreementC.Inconsistent, p.Environment.TemperatureDisagreementC.Unassured),
+		bands("environment.humidity_disagreement_percent", p.Environment.HumidityDisagreementPct.Inconsistent, p.Environment.HumidityDisagreementPct.Unassured),
 	}
 	if sp.DriftMinEpochs < 1 {
 		errs = append(errs, fmt.Errorf("static_position.drift_min_epochs must be at least 1"))
@@ -210,6 +242,19 @@ func (p Profile) Validate() error {
 	}
 	if p.AGC.CWSuppress < 0 || p.AGC.CWSuppress > 255 {
 		errs = append(errs, fmt.Errorf("agc.cw_suppress must be within 0..255"))
+	}
+	if p.Environment.BaselineMinSamples < 2 {
+		errs = append(errs, fmt.Errorf("environment.baseline_min_samples must be at least 2"))
+	}
+	if p.Environment.FlatlineMinSamples < 2 {
+		errs = append(errs, fmt.Errorf("environment.flatline_min_samples must be at least 2"))
+	}
+	if p.Environment.BaselineMinAge > p.Environment.BaselineWindow {
+		errs = append(errs, fmt.Errorf("environment.baseline_min_age must not exceed baseline_window"))
+	}
+	if !finite(p.Environment.DewPointSpreadInconsistentC) || !finite(p.Environment.DewPointSpreadUnassuredC) ||
+		p.Environment.DewPointSpreadUnassuredC < 0 || p.Environment.DewPointSpreadInconsistentC < p.Environment.DewPointSpreadUnassuredC {
+		errs = append(errs, fmt.Errorf("environment dew-point spread needs 0 <= unassured <= inconsistent"))
 	}
 	if err := errors.Join(errs...); err != nil {
 		return fmt.Errorf("integrity: %w", err)

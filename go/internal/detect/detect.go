@@ -132,7 +132,10 @@ func (d *Detector) policy(fam tickFamily) dwellPolicy {
 			nominal: map[string]string{"jamming": "ok", "antenna": "ok", "rf_degraded": "ok"}}
 	case familyStationIntegrity:
 		return dwellPolicy{onset: d.debounce, clear: d.debounce,
-			nominal: map[string]string{"spoofing": "ok", "assurance": "assured"}}
+			nominal: map[string]string{
+				"spoofing": "ok", "assurance": "assured",
+				"environment_health": "ok", "environment_change": "normal",
+			}}
 	case familyOrbitReference:
 		return dwellPolicy{onset: d.debounce, clear: d.debounce,
 			nominal: map[string]string{"reference_orbit": "ok", "reference_almanac": "ok"}}

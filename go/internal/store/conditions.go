@@ -22,7 +22,7 @@ type ConditionSnapshot struct {
 //
 // One statement runs under one snapshot, so the cursor and the conditions are
 // consistent without materializing the audience's history first: `latest`
-// touches only the eight condition types (idx_gnss_events_audience_type_time)
+// touches only the condition types (idx_gnss_events_audience_type_time)
 // and the cursor is an index-only aggregate over idx_gnss_events_audience_seq.
 // The previous MATERIALIZED CTE copied every visible row of the audience, raw
 // JSONB included, into a tuplestore per request, which grew with uptime on an
@@ -40,7 +40,8 @@ func (s *Store) CurrentConditions(ctx context.Context, audience string, since ti
    FROM gnss_events
    WHERE audience=$1 AND time >= $2
      AND event_type IN ('station_offline','jamming_detected','spoofing_suspected','station_assurance',
-                        'station_rf_degraded','antenna_fault','capability_signal_lost','capability_impossible')
+	                        'station_rf_degraded','antenna_fault','capability_signal_lost','capability_impossible',
+	                        'environment_sensor_health','environmental_change')
    ORDER BY COALESCE(raw->>'station',sv),event_type,COALESCE(raw->>'gnss',''),COALESCE(raw->>'sig',''),audience_seq DESC
  ), bounded AS (SELECT * FROM latest ORDER BY audience_seq LIMIT $3)
  SELECT (SELECT COALESCE(max(audience_seq),0) FROM gnss_events WHERE audience=$1 AND time >= $2),

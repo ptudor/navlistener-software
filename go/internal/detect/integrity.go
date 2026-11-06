@@ -33,6 +33,7 @@ func (d *Detector) TickIntegrity(now time.Time, stations map[string]integrity.As
 }
 
 func (d *Detector) detectIntegrity(id string, a integrity.Assessment, emit emitFunc) {
+	d.detectEnvironment(id, a, emit)
 	if physicsAvailable(a) {
 		band, sev := "ok", SevInfo
 		if a.SpoofingIndicated {
@@ -63,6 +64,70 @@ func (d *Detector) detectIntegrity(id string, a integrity.Assessment, emit emitF
 			}
 		})
 	}
+}
+
+func (d *Detector) detectEnvironment(id string, a integrity.Assessment, emit emitFunc) {
+	if health, ok := assessmentCheck(a, integrity.CheckEnvironmentHealth); ok && health.EvaluatedAt != 0 {
+		band, severity := "ok", SevInfo
+		switch health.State {
+		case integrity.Inconsistent:
+			band, severity = "degraded", SevWarning
+		case integrity.Unassured:
+			band, severity = "fault", SevWarning
+		case integrity.Unavailable:
+			band = "unknown"
+			severity = SevWarning
+			if containsReason(health.Reasons, integrity.ReasonStale) {
+				band = "stale"
+			}
+		}
+		emit(id, "environment_health", band, func(old string) Event {
+			return Event{
+				Type: "environment_sensor_health", OldValue: old, NewValue: band, Severity: severity,
+				Message: fmt.Sprintf("station %s environmental sensor health %s", id, band),
+				Params:  assessmentParams(id, a),
+			}
+		})
+	}
+	if change, ok := assessmentCheck(a, integrity.CheckEnvironmentChange); ok && change.EvaluatedAt != 0 {
+		band, severity := "normal", SevInfo
+		switch change.State {
+		case integrity.Inconsistent:
+			band, severity = "changed", SevWarning
+		case integrity.Unassured:
+			band, severity = "severe", SevWarning
+		case integrity.Unavailable:
+			band = "unknown"
+			if containsReason(change.Reasons, integrity.ReasonStale) {
+				severity = SevWarning
+			}
+		}
+		emit(id, "environment_change", band, func(old string) Event {
+			return Event{
+				Type: "environmental_change", OldValue: old, NewValue: band, Severity: severity,
+				Message: fmt.Sprintf("station %s environmental conditions %s", id, band),
+				Params:  assessmentParams(id, a),
+			}
+		})
+	}
+}
+
+func assessmentCheck(a integrity.Assessment, name string) (integrity.Result, bool) {
+	for _, result := range a.Checks {
+		if result.Check == name {
+			return result, true
+		}
+	}
+	return integrity.Result{}, false
+}
+
+func containsReason(reasons []string, want string) bool {
+	for _, reason := range reasons {
+		if reason == want {
+			return true
+		}
+	}
+	return false
 }
 
 // physicsAvailable reports whether any physics-domain check has an available state,

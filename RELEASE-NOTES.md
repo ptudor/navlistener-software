@@ -1,5 +1,12 @@
 # Unreleased
 
+- Environmental telemetry now reaches two station checks instead of stopping at history.
+  `environment_sensor_health` distinguishes invalid, stale, saturated, flatlined, disagreeing
+  and calibration-failed sensors; `environment_change` tracks a station-specific temperature,
+  humidity and local-pressure baseline, magnitude, rate and dew-point spread. Both are advisory:
+  their durable warning events preserve context without changing GNSS assurance or claiming
+  jamming or spoofing. The documented operating profile, filter and recovery state are included
+  in event evidence and the station configuration hash.
 - A collector can send its boards' manufacturer a daily field report: each board
   enrolled under that manufacturer, with the collector's hardware-trust verdict,
   the firmware and update status the board reported, and the hour it was last

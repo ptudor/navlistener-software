@@ -36,6 +36,9 @@ func Fuse(results []Result, weights map[string]float64) Fusion {
 	var sum, sumW float64
 	domains := map[Domain]bool{}
 	for _, r := range results {
+		if r.advisory {
+			continue
+		}
 		if r.State == Unassured {
 			domains[r.Domain] = true
 		}

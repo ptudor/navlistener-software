@@ -20,7 +20,8 @@ whether the evidence indicates spoofing. The design and its upstream provenance 
 | `tracker.go` | The per-check M-of-N filter, warm-up, staleness, and one-sided recovery hold. |
 | `fuse.go` | `Fuse`: the weighted station level and the domain rules, including the spoofing rule. |
 | `profile.go` | `Profile` (operating points and their defaults), `StationProfile` (installation), validation, and `ConfigHash`. |
-| `inputs.go` | The receiver-neutral inputs: `Solution`, `ClockSample`, `ReceiverStatus`, `TimingSample`, `Cn0Fit`, `Cn0Snapshot`, `RFSample`. |
+| `inputs.go` | The receiver-neutral GNSS and RF inputs: `Solution`, `ClockSample`, `ReceiverStatus`, `TimingSample`, `Cn0Fit`, `Cn0Snapshot`, `RFSample`. |
+| `environment.go` | Environmental input, sensor-health checks, dew-point spread, robust station baseline, magnitude/rate checks, and their explicit operating profile. |
 | `position.go` | `static_position`, `stationary_velocity`, `motion_bound`, `position_velocity`. |
 | `clock.go` | `clock_bias_drift`, `clock_drift_rate`. |
 | `timeref.go` | `utc_offset`, `pps_rtc_phase`. |
@@ -65,7 +66,8 @@ is served.
 `Fuse` takes the served results. Every available check takes part in a weighted mean of
 levels, mapped to a state at ±0.5. A **lower-only** check takes part only when it is not
 assured: its assured state is evidence of absence, so it can lower a station but never
-raise one. Then two domain rules apply:
+raise one. An **advisory** check is served and can emit its own event, but never enters
+station assurance or the spoofing quorum. Then two domain rules apply:
 
 - **Unassured needs a second domain.** A station is `unassured` only when a physics domain
   (signal power, position, receiver clock, time reference) is unassured and another domain
@@ -94,6 +96,14 @@ toward it. Checks in one domain share their measurements and count once.
 | `cn0_drop` | RF environment | NAV-SAT | Every signal used 3–5 s earlier and tracked now fell by at least 1 dB, with a median fall of 3 dB (inconsistent) or 6 dB (unassured); at least six signals. Interference evidence, so not a physics domain. Lower-only. |
 | `agc` | RF environment | MON-RF | The jamming classification as a state: collapse, or a departure corroborated by a CW tone, the receiver's jam flag, a simultaneous C/N₀ drop or a neighbouring station's interference (`NeighbourProfile`: 30 km, evidence within two minutes), is unassured; any single sign, or an antenna fault, is inconsistent. Version 2 added the C/N₀ drop corroboration, version 3 the neighbours. Lower-only. |
 | `receiver_spoofing` | receiver verdict | status | The receiver's own spoofing flag. Lower-only. |
+| `environment_sensor_health` | environment, advisory | ObserverDetails environment, barometer, humidity, regulator and RTC-temperature records | Separates sensor faults from measured conditions. It detects not-ready/invalid channels, calibration failure, 0/100 %RH saturation, exact flatline for at least 30 minutes and seven reports, extended pressure range, and enclosure-sensor disagreement over 5/10 °C or 10/20 percentage points RH. Heater-withheld HDC values are not faults. Input is stale after 11 minutes. |
+| `environment_change` | environment, advisory | Valid enclosure temperature, RH and local absolute pressure | A six-hour station median begins after six samples spanning 20 minutes. Absolute 8/15 °C, 20/40 percentage-point RH or 800/1600 Pa departures, and rates of 6/12 °C/h, 20/40 percentage points/h or 300/600 Pa/h, are inconsistent/unassured. Air-temperature minus dew-point spreads at or below 2/0.5 °C are likewise reported, but do not assert condensation. An active heater, invalid instrumentation, or a departure cannot train the baseline. |
+
+The environmental values are conservative initial operating points, not weather-to-attack
+rules. They are part of `Profile`, validation, the configuration hash and every event's
+threshold evidence. The global three-of-four filter and five-minute recovery hold apply after
+the raw evaluation. Environmental checks are advisory, so unusual weather or a failed sensor
+cannot change station assurance or count as a spoofing domain.
 
 Duplicate and out-of-order epochs (by GPS time of week, continuous across the week
 rollover) are ignored. For legacy fixed/mobile policies, a receiver-time gap over

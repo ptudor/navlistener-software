@@ -32,7 +32,8 @@ func TestStationCheckOrder(t *testing.T) {
 		names = append(names, r.Check)
 	}
 	want := []string{CheckStaticPosition, CheckStationaryVelocity, CheckPositionVelocity, CheckClockBiasDrift, CheckClockDriftRate,
-		CheckUTCOffset, CheckPPSRTCPhase, CheckCn0Uniformity, CheckCn0Drop, CheckAGC, CheckReceiverSpoofing}
+		CheckUTCOffset, CheckPPSRTCPhase, CheckCn0Uniformity, CheckCn0Drop, CheckAGC, CheckReceiverSpoofing,
+		CheckEnvironmentHealth, CheckEnvironmentChange}
 	if !slices.Equal(names, want) {
 		t.Fatalf("checks = %v, want %v", names, want)
 	}
@@ -64,6 +65,9 @@ func TestStationHealthyIsAssured(t *testing.T) {
 		t.Fatalf("healthy station = %+v", a)
 	}
 	for _, r := range a.Checks {
+		if r.Check == CheckEnvironmentHealth || r.Check == CheckEnvironmentChange {
+			continue // this fixture supplies no board-environment report
+		}
 		if r.State != Assured {
 			t.Errorf("%s = %s (%v)", r.Check, r.State, r.Reasons)
 		}
@@ -115,6 +119,9 @@ func TestStationStaleInputs(t *testing.T) {
 		t.Fatalf("after input stopped = %+v", a.Fusion)
 	}
 	for _, r := range a.Checks {
+		if r.EvaluatedAt == 0 {
+			continue // no input was ever supplied for this optional advisory check
+		}
 		if r.State != Unavailable || !slices.Contains(r.Reasons, ReasonStale) {
 			t.Errorf("%s = %s %v, want unavailable/stale", r.Check, r.State, r.Reasons)
 		}

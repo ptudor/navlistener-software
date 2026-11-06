@@ -18,6 +18,7 @@ import (
 // as durable evidence (docs/proposals/STATION-ASSURANCE.md §7, item 2.1).
 var EvidenceEventTypes = []string{
 	"spoofing_suspected", "station_assurance", "jamming_detected", "station_rf_degraded", "antenna_fault",
+	"environment_sensor_health", "environmental_change",
 }
 
 // EvidencePolicy bounds evidence capture.

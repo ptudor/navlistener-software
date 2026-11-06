@@ -114,6 +114,67 @@ func TestSingleDomainIsNotSpoofing(t *testing.T) {
 	}
 }
 
+func environmentalAssessment(health, change integrity.Result) integrity.Assessment {
+	a := healthy
+	a.Checks = append(append([]integrity.Result(nil), healthy.Checks...), health, change)
+	return a
+}
+
+func environmentResult(name string, state integrity.State, at int64, reasons ...string) integrity.Result {
+	return integrity.Result{Check: name, Version: 1, Domain: integrity.DomainEnvironment, State: state, Candidate: state,
+		EvaluatedAt: at, Metrics: map[string]float64{"value": 1}, Thresholds: map[string]float64{"band": 2}, Reasons: reasons}
+}
+
+func TestEnvironmentalEventsAreAdvisory(t *testing.T) {
+	d := New(0)
+	t0 := time.Unix(1_800_000_000, 0)
+	normal := environmentalAssessment(
+		environmentResult(integrity.CheckEnvironmentHealth, integrity.Assured, t0.Unix()),
+		environmentResult(integrity.CheckEnvironmentChange, integrity.Assured, t0.Unix()))
+	changed := environmentalAssessment(
+		environmentResult(integrity.CheckEnvironmentHealth, integrity.Inconsistent, t0.Add(15*time.Second).Unix(), integrity.ReasonSensorDisagreement),
+		environmentResult(integrity.CheckEnvironmentChange, integrity.Unassured, t0.Add(15*time.Second).Unix(), integrity.ReasonHumidityChange))
+	d.TickIntegrity(t0, one("s", normal))
+	d.TickIntegrity(t0.Add(15*time.Second), one("s", changed))
+	events := d.TickIntegrity(t0.Add(15*time.Second+DebounceDuration), one("s", changed))
+	health, ok := find(events, "environment_sensor_health")
+	if !ok || health.OldValue != "ok" || health.NewValue != "degraded" || health.Severity != SevWarning {
+		t.Fatalf("environment sensor event = %+v (ok=%v)", health, ok)
+	}
+	change, ok := find(events, "environmental_change")
+	if !ok || change.OldValue != "normal" || change.NewValue != "severe" || change.Severity != SevWarning {
+		t.Fatalf("environment change event = %+v (ok=%v)", change, ok)
+	}
+	if _, ok := find(events, "spoofing_suspected"); ok {
+		t.Fatalf("environmental advisory raised spoofing: %+v", events)
+	}
+	if _, ok := find(events, "station_assurance"); ok {
+		t.Fatalf("environmental advisory changed station assurance: %+v", events)
+	}
+}
+
+func TestEnvironmentalStaleIsNotRecovery(t *testing.T) {
+	d := New(0)
+	t0 := time.Unix(1_800_000_000, 0)
+	normal := environmentalAssessment(
+		environmentResult(integrity.CheckEnvironmentHealth, integrity.Assured, t0.Unix()),
+		environmentResult(integrity.CheckEnvironmentChange, integrity.Assured, t0.Unix()))
+	stale := environmentalAssessment(
+		environmentResult(integrity.CheckEnvironmentHealth, integrity.Unavailable, t0.Add(time.Minute).Unix(), integrity.ReasonStale),
+		environmentResult(integrity.CheckEnvironmentChange, integrity.Unavailable, t0.Add(time.Minute).Unix(), integrity.ReasonStale))
+	d.TickIntegrity(t0, one("s", normal))
+	d.TickIntegrity(t0.Add(time.Minute), one("s", stale))
+	events := d.TickIntegrity(t0.Add(time.Minute+DebounceDuration), one("s", stale))
+	event, ok := find(events, "environment_sensor_health")
+	if !ok || event.OldValue != "ok" || event.NewValue != "stale" || event.Severity != SevWarning {
+		t.Fatalf("stale environment event = %+v (ok=%v)", event, ok)
+	}
+	change, ok := find(events, "environmental_change")
+	if !ok || change.OldValue != "normal" || change.NewValue != "unknown" || change.Severity != SevWarning {
+		t.Fatalf("unknown environment-change event = %+v (ok=%v)", change, ok)
+	}
+}
+
 // TestIntegrityColdStart: a station already spoofed when first assessed raises both
 // events from unknown, like the station RF events.
 func TestIntegrityColdStart(t *testing.T) {

@@ -25,6 +25,11 @@ func TestProfileValidateRejects(t *testing.T) {
 		"no neighbour window": func(p *Profile) { p.Neighbour.Window = 0 },
 		"no location age":     func(p *Profile) { p.Neighbour.LocationMaxAge = 0 },
 		"baseline bands":      func(p *Profile) { p.Baseline.Bands.Unassured.Min = 1 },
+		"environment stale":   func(p *Profile) { p.Environment.StaleAfter = 0 },
+		"environment samples": func(p *Profile) { p.Environment.BaselineMinSamples = 1 },
+		"environment age":     func(p *Profile) { p.Environment.BaselineMinAge = 7 * time.Hour },
+		"environment bands":   func(p *Profile) { p.Environment.HumidityChangePercent.Unassured = 1 },
+		"dew point bands":     func(p *Profile) { p.Environment.DewPointSpreadUnassuredC = 3 },
 	}
 	for name, mutate := range cases {
 		p := DefaultProfile()
@@ -79,6 +84,9 @@ func TestConfigHash(t *testing.T) {
 	p2 := DefaultProfile()
 	p2.Filter.M = 2
 	changed["profile threshold"] = ConfigHash(p2, station, checks)
+	p3 := DefaultProfile()
+	p3.Environment.HumidityChangePercent.Inconsistent++
+	changed["environment threshold"] = ConfigHash(p3, station, checks)
 	moved := *station.Position
 	moved.HeightM += 0.01
 	changed["surveyed position"] = ConfigHash(p, StationProfile{Mode: ModeFixed, Position: &moved}, checks)

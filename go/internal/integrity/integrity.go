@@ -15,7 +15,7 @@ import "time"
 
 // EngineVersion identifies the filter, hysteresis and fusion rules. It changes
 // whenever a change could alter a served state for the same inputs and profile.
-const EngineVersion = 1
+const EngineVersion = 2
 
 // State is an assurance level (the PNT Integrity library's four levels).
 type State string
@@ -89,6 +89,9 @@ const (
 	DomainRFEnvironment Domain = "rf_environment"
 	// DomainReceiverVerdict: the receiver's own spoofing indication.
 	DomainReceiverVerdict Domain = "receiver_verdict"
+	// DomainEnvironment: sensor health and environmental departures. These checks
+	// are operator context, not independent spoofing evidence.
+	DomainEnvironment Domain = "environment"
 )
 
 // Physics reports whether the domain is an independent physical consistency test
@@ -110,6 +113,9 @@ type Info struct {
 	// it: its assured state is evidence of absence only. The PNT Integrity
 	// library calls this disallowing positive weighting.
 	LowerOnly bool
+	// Advisory checks are served and generate their own events but do not enter
+	// station assurance or spoofing fusion.
+	Advisory bool
 }
 
 // Verdict is one raw evaluation of a check, before filtering and hysteresis.
@@ -143,6 +149,7 @@ type Result struct {
 	Thresholds      map[string]float64 `json:"thresholds,omitempty"`
 	Reasons         []string           `json:"reasons,omitempty"`
 	lowerOnly       bool
+	advisory        bool
 }
 
 // unix converts an instant to the feed's Unix seconds.

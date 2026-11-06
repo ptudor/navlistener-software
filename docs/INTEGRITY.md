@@ -68,6 +68,11 @@ consumer align to it.
 | **Observer offline** | station unseen `> 300 s` (`ObserverOfflineThreshold`) | warn (`station_offline`) | operator-actionable; shorter than SV silence. Wired per regression fix (regression fix defined it but nothing emitted it): classified from the unfiltered caps ∪ rf liveness map, so a dark station stays observable indefinitely. The crit escalation tier is reserved until a second threshold is defined |
 | **Fresh-receiver window** | `≤ 60 s` (`FreshReceiverThreshold`) | — | a receiver's vote only counts if it saw the SV this recently |
 | **Debounce** | `60 s` (`DebounceDuration`) | — | provisional state must persist this long to confirm |
+| **Environmental baseline** | six samples spanning ≥20 min, rolling six-hour median; environment input stale after 11 min | advisory only | station-specific; invalid, heated, or anomalous reports do not train it |
+| **Environmental magnitude** | 8/15 °C, 20/40 percentage points RH, 800/1600 Pa | warning event at inconsistent/unassured | transport pacing is separate; these values are carried in the profile hash and event evidence |
+| **Environmental rate** | 6/12 °C/h, 20/40 percentage points RH/h, 300/600 Pa/h over 30 s–15 min | warning event at inconsistent/unassured | evaluated beside magnitude so gradual and sudden changes are both visible |
+| **Environmental sensor health** | exact flatline ≥30 min and ≥7 reports; enclosure-sensor spread 5/10 °C or 10/20 percentage points RH; invalid, faulted, extended-range and 0/100 %RH rail states | warning | heater-withheld HDC values are intentional unknowns, not faults |
+| **Dew-point spread** | air temperature minus calculated dew point ≤2/0.5 °C | warning environmental event | proximity to saturation at the sensor, not proof of surface condensation, clouds, RF interference or an attack |
 
 > **Dead-band note.** intsat's `thresholds.go` also defines `OrbitDiscoWarningThreshold = 5.0`
 > and `TimeDiscoWarningThreshold = 5.0` ("emphasis" middle bands, a galmonmon inheritance), but
@@ -223,6 +228,8 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `jamming_detected` | station AGC departure corroborated by CW, the receiver's jam flag, a simultaneous C/N₀ drop or a neighbouring station's own corroborated interference (`params.neighbours` names the nearest eight, `params.neighbour_count` the total), or a near-total AGC collapse, confirms jamming (`DEFENSE-PNT.md §2`, `§4`) | 1, → 2 on severe/full-lock-loss evidence; 0 on clear |
 | `spoofing_suspected` | ≥2 independent station physics domains are unassured together, or one with the receiver's own spoofing flag (`DEFENSE-PNT.md §3–4`); see §8 | 2; 0 on clear |
 | `station_assurance` | a station's fused integrity state changes among `assured`, `inconsistent` and `unassured`; carries every check's evidence ([proposal](proposals/STATION-ASSURANCE.md)) | 2 unassured, 1 inconsistent, 0 assured |
+| `environment_sensor_health` | environmental instrumentation changes among `ok`, `degraded`, `fault`, `stale` and `unknown`; includes validity, disagreement, saturation, flatline and calibration evidence | 1 on degradation/fault/stale/unknown; 0 on recovery |
+| `environmental_change` | the station-specific temperature, RH, pressure, rate or dew-point-spread check changes among `normal`, `changed`, `severe` and `unknown` after filtering | 1 on changed/severe or stale unknown; 0 on recovery. Advisory only; never an attack classification |
 | `station_rf_degraded` | one station RF metric departs its baseline, or every signal's C/N₀ drops with a quiet front end; early warning, not an attack claim | 1; 0 on clear |
 | `antenna_fault` | receiver antenna status reports open/short or equivalent confirmed fault | 1; 0 on clear |
 | `capability_signal_lost` | a demonstrated `(gnssId,sigId)` is unseen past `CapSignalLostAfter` while its station remains alive | 1 |
@@ -337,6 +344,8 @@ signatures miss.
 > reports — one that sends only NAV-SAT and MON-RF has signal power alone and cannot reach the
 > quorum — and its integrity assessment says which are available. A single domain is a
 > degradation signal, not an attack claim, and surfaces as `station_assurance` `inconsistent`.
+> Environmental sensor-health and change checks are explicitly advisory and do not enter this
+> count, the fused score or `unassured_domains`.
 > The daemon exports `navlistener_spoof_gates_wired` and `navlistener_spoof_gate_quorum` gauges
 > (alert on `wired < quorum`). The per-SV plausibility gates above (`wn_mismatch`, discos,
 > envelopes) fire independently of the quorum.

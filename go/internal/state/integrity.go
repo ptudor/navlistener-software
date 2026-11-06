@@ -302,17 +302,21 @@ func degradedState(s integrity.State) bool {
 	return s == integrity.Inconsistent || s == integrity.Unassured
 }
 
-// integrityBoard folds an accepted board report: its pulse timing, and the
-// receiver's spoofing state when no epoch-rate status block is arriving. The caller
-// holds rfMu.
+// integrityBoard folds an accepted board report: environmental instrumentation,
+// pulse timing, and the receiver's spoofing state when no epoch-rate status block is
+// arriving. The caller holds rfMu.
 func (s *Store) integrityBoard(f *ingest.RawFrame, recv time.Time) {
 	d := f.Details
-	if d.Timing == nil && d.Receiver == nil {
+	environment, hasEnvironment := integrityEnvironment(d, recv)
+	if !hasEnvironment && d.Timing == nil && d.Receiver == nil {
 		return
 	}
 	st := s.integrityFor(f.Source, recv)
 	if st == nil {
 		return
+	}
+	if hasEnvironment {
+		st.eval.ApplyEnvironment(environment)
 	}
 	if t := d.Timing; t != nil {
 		st.eval.ApplyTiming(integrity.TimingSample{
@@ -323,6 +327,87 @@ func (s *Store) integrityBoard(f *ingest.RawFrame, recv time.Time) {
 	if r := d.Receiver; r != nil && recv.Sub(st.lastStatus) > statusPreferredFor {
 		st.eval.ApplyStatus(integrity.ReceiverStatus{Received: recv, SpoofState: int(r.Spoofing)})
 	}
+}
+
+// integrityEnvironment maps every environmental or hardware-temperature channel
+// without collapsing its identity or physical location. An ObserverDetails record
+// containing none of these channels is not an environmental sample: separately
+// paced timing/network records must not refresh environmental staleness.
+func integrityEnvironment(d *ingest.ObserverDetails, recv time.Time) (integrity.EnvironmentSample, bool) {
+	sample := integrity.EnvironmentSample{Received: recv, UptimeMS: d.UptimeMS}
+	if d.Heater != nil {
+		sample.HeaterActive = d.Heater.State != "normal"
+	}
+	if e := d.Environment; e != nil {
+		mcp := integrity.EnvironmentalReading{Name: "mcp9808", Location: integrity.SensorEnclosure,
+			ExpectedTemperature: true, Ready: e.ReadyMask&1 != 0, TemperatureC: e.MCP9808C}
+		sample.Readings = append(sample.Readings, mcp)
+
+		hdcExpected := d.HumiditySensor == "hdc2080" || d.HumiditySensor == "hdc2022" ||
+			d.HumiditySensor == "conflicting" || e.ReadyMask&2 != 0 || e.HDC2080C != nil || e.HumidityPercent != nil
+		if hdcExpected {
+			sample.Readings = append(sample.Readings, integrity.EnvironmentalReading{
+				Name: "hdc", Location: integrity.SensorEnclosure, ExpectedTemperature: true, ExpectedHumidity: true,
+				Ready: e.ReadyMask&2 != 0, Fault: d.HumiditySensor == "conflicting",
+				TemperatureC: e.HDC2080C, HumidityPercent: e.HumidityPercent,
+			})
+		}
+
+		pressureExpected := d.PressureSensor == "bmp388_bmp384" || d.PressureSensor == "bmp580" ||
+			d.PressureSensor == "bmp581" || d.PressureSensor == "conflicting" || e.ReadyMask&4 != 0 ||
+			e.BMP3C != nil || e.PressurePa != nil
+		if pressureExpected {
+			name := d.PressureSensor
+			if name == "" || name == "conflicting" {
+				name = "bosch_barometer"
+			}
+			sample.Readings = append(sample.Readings, integrity.EnvironmentalReading{
+				Name: name, Location: integrity.SensorEnclosure, ExpectedTemperature: true, ExpectedPressure: true,
+				Ready: e.ReadyMask&4 != 0, Fault: d.PressureSensor == "conflicting",
+				TemperatureC: e.BMP3C, PressurePa: uint32Float(e.PressurePa),
+			})
+		}
+	}
+	if b := d.Barometer; b != nil {
+		sample.Readings = append(sample.Readings, integrity.EnvironmentalReading{
+			Name: "ms5607", Location: integrity.SensorEnclosure, ExpectedTemperature: true, ExpectedPressure: true,
+			Ready: b.State == "ready", Fault: b.State == "calibration_rejected", ExtendedPressure: b.ExtendedRange,
+			TemperatureC: b.TemperatureC, PressurePa: uint32Float(b.PressurePa),
+		})
+	}
+	if h := d.SHT3x; h != nil {
+		sample.Readings = append(sample.Readings, integrity.EnvironmentalReading{
+			Name: "sht3x", Location: integrity.SensorEnclosure, ExpectedTemperature: true, ExpectedHumidity: true,
+			Ready: h.State == "ready", TemperatureC: h.TemperatureC, HumidityPercent: h.HumidityPercent,
+		})
+	}
+	if h := d.HIH8121; h != nil {
+		sample.Readings = append(sample.Readings, integrity.EnvironmentalReading{
+			Name: "hih8121", Location: integrity.SensorEnclosure, ExpectedTemperature: true, ExpectedHumidity: true,
+			Ready: h.State == "answering" && h.Status == "fresh", TemperatureC: h.TemperatureC, HumidityPercent: h.HumidityPercent,
+		})
+	}
+	if r := d.Regulator; r != nil {
+		sample.Readings = append(sample.Readings, integrity.EnvironmentalReading{
+			Name: "regulator_spreader", Location: integrity.SensorRegulator, ExpectedTemperature: true,
+			Ready: r.State == "ready", TemperatureC: r.SpreaderC,
+		})
+	}
+	if r := d.RTCTemperature; r != nil {
+		sample.Readings = append(sample.Readings, integrity.EnvironmentalReading{
+			Name: "rtc", Location: integrity.SensorRTC, ExpectedTemperature: true,
+			Ready: r.State == "answering", TemperatureC: r.TemperatureC,
+		})
+	}
+	return sample, len(sample.Readings) > 0 || d.Heater != nil
+}
+
+func uint32Float(value *uint32) *float64 {
+	if value == nil {
+		return nil
+	}
+	v := float64(*value)
+	return &v
 }
 
 // FeedStationIntegrity returns each station's assessment as of now, evicting

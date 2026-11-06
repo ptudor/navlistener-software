@@ -133,7 +133,7 @@ func (t *tracker) expire(now time.Time, staleAfter time.Duration, f FilterPolicy
 func (t *tracker) result() Result {
 	r := Result{
 		Check: t.info.Name, Version: t.info.Version, Domain: t.info.Domain,
-		State: t.served, Candidate: t.candidate, lowerOnly: t.info.LowerOnly,
+		State: t.served, Candidate: t.candidate, lowerOnly: t.info.LowerOnly, advisory: t.info.Advisory,
 		Metrics:    maps.Clone(t.last.Metrics),
 		Thresholds: maps.Clone(t.last.Thresholds),
 		Reasons:    slices.Clone(t.last.Reasons),
