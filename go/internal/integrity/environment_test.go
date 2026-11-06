@@ -74,6 +74,28 @@ func TestEnvironmentGradualChangeAccumulatesAgainstMedian(t *testing.T) {
 	}
 }
 
+func TestEnvironmentSlowChangeUsesPersistentReference(t *testing.T) {
+	var checks environmentChecks
+	p := testEnvironmentProfile()
+	p.BaselineWindow = 2 * time.Hour
+	p.PersistenceWindow = 24 * time.Hour
+	p.PersistenceMinAge = 12 * time.Hour
+	p.HumidityRatePctPerHour = EnvironmentalBands{Inconsistent: 1000, Unassured: 2000}
+	var change Verdict
+	for hour := 0; hour <= 24; hour++ {
+		humidity := 20 + 75*float64(hour)/24
+		_, change = checks.evaluate(environmentAt(t0.Add(time.Duration(hour)*time.Hour), uint64(hour)*3_600_000, 22, humidity, 101325), p)
+	}
+	if change.State != Unassured || !slices.Contains(change.Reasons, ReasonHumiditySustained) {
+		t.Fatalf("slow persistent humidity rise = %+v", change)
+	}
+	if got := change.Metrics["humidity_sustained_delta_percent"]; got < 40 {
+		t.Fatalf("sustained humidity delta = %g", got)
+	}
+	t.Logf("environment_change=%s reason=%s sustained_delta=%.1f",
+		change.State, ReasonHumiditySustained, change.Metrics["humidity_sustained_delta_percent"])
+}
+
 func TestEnvironmentHealthFailureModes(t *testing.T) {
 	var checks environmentChecks
 	p := testEnvironmentProfile()
@@ -111,6 +133,7 @@ func TestEnvironmentFlatlineAndReset(t *testing.T) {
 	if health.State != Assured || change.State != Unavailable || !slices.Contains(change.Reasons, ReasonEnvironmentWarmup) {
 		t.Fatalf("post-restart = health %+v change %+v", health, change)
 	}
+	t.Logf("post_restart_health=%s change=%s reason=%s", health.State, change.State, ReasonEnvironmentWarmup)
 }
 
 func TestHumidityHeaterWithholdsHDCWithoutSensorFault(t *testing.T) {

@@ -2,7 +2,91 @@
 
 Date: 2026-11-06
 
-## Verdict
+## Remediated verdict
+
+Environmental readings now reach the integrity engine. NavListen detects and retains
+instrument failures and station-local environmental departures, compares qualified pressure
+changes across surveyed neighbours, and can use one uncertainty-bounded barometric model as
+lower-only corroboration of GNSS vertical movement. Raw temperature, RH, and ordinary weather
+remain advisory and cannot themselves claim jamming or spoofing.
+
+| Result | Status after remediation |
+|---|---|
+| Works now | Per-sensor validity and location survive ingestion; sensor-health, magnitude, rate, 24-hour sustained change, dew-point proximity, baseline freeze, filter, recovery hold, staleness, regional pressure, and qualified barometric-height checks produce explainable results. Events are persisted, streamed, included in current conditions and evidence bundles, and visible in Integrity Station. |
+| Collected but intentionally not fused | Enclosure temperature/RH, regulator heat-spreader temperature, RTC oscillator temperature, heater activity, and unqualified pressure remain telemetry or advisory context. They do not become independent GNSS votes. |
+| Still limited | The evaluator's 24-hour baseline and pressure windows are memory-resident and restart cold even though raw reports remain in the historian. Reports have one snapshot timestamp rather than per-conversion timestamps. Regional pressure can identify a local residual but cannot by itself diagnose weather, a vent transient, enclosure effects, or a plausible sensor fault. The native app shows separate histories and event-time assessment evidence but does not yet provide one aligned multi-series environment/clock/reception/RF timeline. Field characterization is still required before enabling any barometer policy. |
+
+The default environmental limits and all new barometric operating points are listed in
+[`docs/INTEGRITY.md`](INTEGRITY.md), validated in `Profile`, included in the station configuration
+hash, and copied into assessment/event threshold evidence. Barometric fusion is off unless an
+operator explicitly qualifies one surveyed fixed station's exact vented sensor and installed
+relative uncertainty. This avoids silently treating the presence of telemetry as calibration.
+
+### Current end-to-end traceability
+
+| Stage | Current implementation and behavior |
+|---|---|
+| Sensor measurement and firmware reporting | Manifest selection, forced conversions, cleared invalid samples, about-30-second acquisition, report pacing, units, and ready/valid masks remain at `esp32/main/board.c:252-287,940-1072`, `esp32/components/environment/src/env_sensors.c:103-164`, and `esp32/components/observer_report/src/observer_report.c:25-78`. Firmware pacing thresholds remain transport controls, not anomaly thresholds. |
+| Transport and collector parsing | ObserverDetails remains a typed authenticated GNF1 spool record. Main values decode as nullable °C, %RH, and Pa at `go/internal/ingest/observer_details.go:13-73,175-207`; MS5607 state, calibration rejection, validity, and extended range remain explicit at `go/internal/ingest/observer_max.go:5-13,82-110`. |
+| Storage and history | Every transmitted snapshot retains receipt time, optional sample time, boot session, sequence, raw bytes, and decoded fields in `observer_samples` (`go/internal/store/schema.sql:381-450`; `go/internal/store/observer_history.go:57-190`). Null stays unknown. History records paced reports, not every conversion. |
+| Integrity handoff | `integrityBoard` now maps main, separate barometer, SHT3x, HIH8121, regulator, RTC, and heater state without merging physical locations, then advances both environment and pressure checks (`go/internal/state/integrity.go:309-408`). |
+| Sensor health and local behavior | `EnvironmentSample`, location classes, baselines, rates, persistent reference, dew point, flatline, disagreement, fault, saturation, heater exclusion, reboot reset, and freeze logic are in `go/internal/integrity/environment.go:10-138,163-471`. The default profile and documented limits are in `go/internal/integrity/profile.go:64-175`. |
+| Regional pressure | The state layer retains a bounded qualified pressure window and builds a median log-pressure tendency from distance-bounded, time-aligned surveyed neighbours at `go/internal/state/integrity_pressure.go:10-165`. Log changes remove constant elevation and sensor-offset differences before comparison. |
+| Barometric physics and GNSS assessment | Explicit sensor/vent/uncertainty qualification, synchronized GNSS heights, virtual temperature, hypsometric conversion, regional residual, uncertainty propagation, and ambiguity handling are at `go/internal/integrity/barometric.go:9-149,167-208,244-394`. Registration and fusion handoff are at `go/internal/integrity/station.go:61-83,114-123,191-206`. |
+| Events, APIs, and evidence | `environment_sensor_health`, `environmental_change`, `regional_pressure_anomaly`, and `barometric_height_consistency` are classified with unknown preserved at `go/internal/detect/integrity.go:34-162`. Current conditions include all four (`go/internal/store/conditions.go:30-48`), and event evidence captures RF/solution and board samples (`go/internal/store/evidence.go:17-23,76-169`). They use the existing `/gnss/api/events`, `/gnss/events`, `/gnss/api/v2/observers`, `/gnss/api/v2/observer-samples`, and `/gnss/api/v2/event-evidence` interfaces. |
+| Native operator view | Integrity Station decodes every environmental component at `swift/IntegrityStation/Models/StationBoard.swift:79-301`, exposes distinct history metrics at `swift/IntegrityStation/Models/SensorHistory.swift:3-65`, and labels each source in `swift/IntegrityStation/Views/BoardTelemetryView.swift:223-307`. Environmental and pressure events are station conditions and appear in the Events and station-detail views through `swift/IntegrityStation/Models/GNSSAPIEvent.swift:63-112`. |
+
+### Current scenario results
+
+The focused fixtures use a one-of-one filter to expose the classifier result immediately. The
+shipped profile applies three-of-four filtering, a five-minute recovery hold, and the detector's
+60-second transition debounce. The state, reasons, metrics, and thresholds shown below are the
+same fields served in `integrity.checks` and event `params`.
+
+| Scenario | Actual fixture result | Operator-visible result |
+|---|---|---|
+| 1. RH 20→95 % suddenly | `environment_change=unassured`; the fixture reports a 74.8-point RH departure and a 16,326 Pa pressure departure with magnitude and rate reasons. At ordinary enclosure temperature, 95 %RH also approaches the dew point. Sensor health remains separate when the value is valid. | After filtering/debounce, `environmental_change: normal→severe`. No `station_assurance` or `spoofing_suspected` event. |
+| 1. RH 20→95 % over 24 h | `environment_change=unassured`, reason `humidity_sustained_change`, and a 71.9-point retained-reference departure even with fast-rate detection disabled; the older reference freezes once anomalous. | The same advisory `environmental_change` event. RH does not imply clouds, interference, or an attack. |
+| 2. Target pressure changes while two neighbours are stable | `regional_pressure=unassured`, reason `regional_pressure_departure`, with a 175.26 m pressure-equivalent residual; with stable GNSS height, `barometric_height=assured`, reason `no_significant_gnss_height_change`; `spoofing=false`. | `regional_pressure_anomaly: coherent→severe`; no spoofing event. The result says local residual, not whether its cause is weather, venting, enclosure pressure, or a plausible sensor fault. |
+| 3. All three elevations change by the same pressure ratio | `regional_pressure=assured`, residual −0.04 m; `barometric_height=assured`; `spoofing=false`. | No warning transition. With fewer than two fresh qualified neighbours, both checks are `unavailable` with `insufficient_pressure_neighbours`, producing visible `unknown`, never zero or coherent. Regionally incoherent samples likewise leave both checks unknown. |
+| 4. Surveyed station GNSS height moves +100 m while regional-corrected pressure is stable | `static_position=unassured` and `barometric_height=unassured`, reason `barometric_height_divergence`; the position and barometric-position domains meet the two-domain quorum, so `spoofing=true`. | `barometric_height_consistency: consistent→diverged`, `station_assurance`, and `spoofing_suspected`. Without explicit barometer qualification or adequate neighbours, the barometric result is unavailable and cannot supply the second domain. |
+| 4. Real +100 m vertical movement with the matching pressure ratio | Barometric divergence is `assured`; the local pressure residual is environmental context, not a GNSS accusation. A fixed station's surveyed-position policy can still report real displacement because the installation declaration says it must not move. | No barometric-divergence warning. The position event remains independently correct for a physically displaced fixed antenna. |
+| 5. Environment changes with clock, reception, or heating | Each sensor retains its physical identity; regulator and RTC package temperatures do not train the enclosure baseline. Every environmental event carries the contemporaneous station assessment, and the evidence bundle retains board, RF, receiver-solution, and timing samples around confirmation. No causal score is invented. | Event row, current station assurance checks, raw sensor histories, event API/SSE, and private event-evidence API. A single aligned native multi-series timeline remains future work. |
+| 6. Invalid, faulted, saturated, disagreeing, or flatlined sensor | Results become `inconsistent` or `unassured` with explicit reasons such as `environment_sensor_invalid`, `environment_sensor_fault`, `environment_sensor_saturated`, `environment_sensor_disagreement`, or `environment_sensor_flatline`. Exact flatline defaults to at least 30 minutes and seven reports. | `environment_sensor_health: ok→degraded/fault`. Values remain nullable telemetry; no zero substitution. |
+| 6. Reboot, stop, stale, and recovery | Session/uptime rollback clears baseline, flatline, and pressure windows; change returns `unavailable` with `environment_baseline_warming_up`. After 11 minutes without environment input, health/change and configured pressure checks are immediately `unavailable/stale`. Returning healthy input must still complete the prior five-minute recovery debt. | `environment_sensor_health` reports `stale` or `unknown`, environmental/pressure events report `unknown`, and only a completed held recovery emits the normal/ok transition. Missing input never clears an issue. |
+
+The barometric conversion uses relative pressure change,
+`Δz = -(R_d T_v / g) ln(p₂/p₁)`, after subtracting the regional log-pressure change.
+The implementation follows NOAA's [hypsometric-equation note](https://www.aoml.noaa.gov/ftp/hrd/annane/prelim_notes/hypsometric_equation.pdf).
+Its uncertainty includes the configured installed pressure term at both endpoints, neighbour
+uncertainty and spread, GNSS vertical accuracy at both endpoints, and a 3 m model floor. It does
+not claim absolute barometric altitude, sea-level pressure, or datum conversion. Manufacturer
+limits for supported parts remain inputs to site qualification, including the
+[BMP581 data sheet](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmp581-ds004.pdf)
+and [MS5607 product specification](https://www.te.com/en/product-MS560702BA03-50.html).
+
+### Remaining prioritized work
+
+1. Validate the documented defaults against representative field data, publish calibration
+   provenance, and characterize each enabled vent/enclosure installation. Keep barometric
+   qualification disabled until that work is complete.
+2. Rehydrate environmental and pressure evaluator windows from retained accepted samples after
+   collector restart, without allowing old or cross-session faults to become recovery evidence.
+3. Add one native aligned timeline for environmental channels, heater activity, clock, reception,
+   RF, GNSS checks, and event markers. Present temporal correlation without assigning cause.
+4. Add per-conversion sensor timestamps if firmware/hardware timing supports them, and separately
+   account for vent response and enclosure lag instead of relying only on report receipt time.
+5. After field validation, consider model-based diagnosis for vent/enclosure transients versus
+   sensor faults. Do not split correlated temperature, RH, and pressure terms into extra fusion
+   votes.
+
+## Original audit snapshot before remediation
+
+The remainder preserves the evidence and failing outputs observed before the implementation
+work. In this historical section, “current” means the pre-remediation state captured by the
+initial audit, not the repository state described above.
+
+### Original verdict
 
 NavListen measures, transports, validates, retains, and privately displays environmental telemetry. It does not currently detect environmental anomalies, model station-specific environmental behavior, compare environmental conditions across stations, diagnose most sensor-health failures, or use pressure, temperature, or humidity in station integrity fusion.
 

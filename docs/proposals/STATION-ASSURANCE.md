@@ -187,10 +187,16 @@ their symmetric dwell.
 `spoofing_suspected` counts independent evidence domains, not checks. Checks in
 one domain share their underlying measurements and count once, as the two C/N₀
 fits already do. The physics domains are signal power, position, receiver
-clock and time reference. A domain counts when any of its checks is `unassured`.
+clock, time reference and, for an explicitly qualified surveyed fixed installation,
+barometric position. A domain counts when any of its checks is `unassured`.
 The event is raised when at least two physics domains agree, or when one does and
 the receiver's own spoofing state is 2 or 3. The quorum of two is unchanged; the
 receiver flag alone never raises the event.
+
+Barometric position shares the receiver's GNSS height observation with the position
+domain but tests it against an independent pressure-derived displacement model. It is
+lower-only and unavailable unless regional pressure is coherent; environmental sensor
+health, local change, and regional pressure remain advisory and do not add votes.
 
 The event's parameters list the agreeing domains, each check's state, measured
 values, thresholds and version, the station profile, and the configuration hash.

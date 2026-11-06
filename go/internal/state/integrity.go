@@ -66,6 +66,10 @@ type integrityStation struct {
 	// never served.
 	fix   integrity.Surveyed
 	fixAt time.Time
+	// pressure retains qualified, station-local samples for the regional
+	// tendency comparison. It is bounded by the barometric profile.
+	pressure        []integrity.PressureObservation
+	pressureSession string
 }
 
 // StationConfigHash is the configuration hash a station's assessments carry under
@@ -308,6 +312,7 @@ func degradedState(s integrity.State) bool {
 func (s *Store) integrityBoard(f *ingest.RawFrame, recv time.Time) {
 	d := f.Details
 	environment, hasEnvironment := integrityEnvironment(d, recv)
+	environment.Session = f.Session
 	if !hasEnvironment && d.Timing == nil && d.Receiver == nil {
 		return
 	}
@@ -316,7 +321,8 @@ func (s *Store) integrityBoard(f *ingest.RawFrame, recv time.Time) {
 		return
 	}
 	if hasEnvironment {
-		st.eval.ApplyEnvironment(environment)
+		health := st.eval.ApplyEnvironment(environment)
+		s.integrityPressure(f.Source, st, environment, health)
 	}
 	if t := d.Timing; t != nil {
 		st.eval.ApplyTiming(integrity.TimingSample{

@@ -89,9 +89,11 @@ neighbouring station's interference (`StationRF.Neighbours`, named in the event)
 it; alone, each is a degradation. Station liveness comes separately from `TickStationLiveness` → `station_offline`.
 
 **Station integrity** (`TickIntegrity`): `spoofing_suspected`, `station_assurance`,
-`environment_sensor_health`, and `environmental_change`, from each station's assessment. All
-carry the whole assessment as evidence. Environmental checks are advisory: their events make
-the context visible without altering assurance or producing an attack classification.
+`environment_sensor_health`, `environmental_change`, `regional_pressure_anomaly`, and
+`barometric_height_consistency`, from each station's assessment. All carry the whole assessment
+as evidence. Environmental checks are advisory: their events make the context visible without
+altering assurance or producing an attack classification. Barometric height is a lower-only
+physics check and exists only for an explicitly qualified installation.
 
 **Capability** (`TickCapabilities`): `capability_impossible`, `capability_signal_lost`.
 
@@ -161,9 +163,11 @@ in `internal/state`; this only classifies and debounces.
 
 `TickIntegrity` reads each station's assessment from `internal/integrity`, which has already
 filtered every check, held its recoveries and fused the result. `spoofing_suspected` follows the
-assessment's spoofing indication and `station_assurance` its fused state. The two environmental
-events follow their advisory check states, preserve unavailable input as `unknown`, and use
-warning severity for a departure, fault, or stale sensor input and info on recovery. A station with no
+assessment's spoofing indication and `station_assurance` its fused state. The environmental and
+regional-pressure events follow their advisory check states, preserve unavailable input as
+`unknown`, and use warning severity for a departure, fault, incoherent context, or stale sensor
+input and info on recovery. `barometric_height_consistency` reports `consistent`, `inconsistent`,
+`diverged`, or `unknown`; only its qualified inconsistency enters fusion. A station with no
 available physics check holds its spoofing machine, and an unavailable fused state holds the
 assurance machine, so a lack of input is never a recovery. Because the checks hold recoveries
 themselves, this family clears after the ordinary debounce rather than `StationClearDwell`.

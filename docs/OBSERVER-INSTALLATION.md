@@ -115,6 +115,48 @@ When a reception site exists, its position must agree and `power_model_epoch`
 must equal `reference.site_id`. Use a new value at a new site, including a return
 to the same coordinates, so a previous deployment's power history is not reused.
 
+## Qualifying pressure for a fixed site
+
+Pressure telemetry alone does not enable GNSS corroboration. A surveyed fixed
+installation may opt in only after its pressure path has been checked:
+
+```toml
+[[integrity.station]]
+observer = "mast-observer"
+mode = "fixed"
+position = [35.0, 140.0, 50.0]
+[integrity.station.barometer]
+sensor = "bmp581"
+vented = true
+relative_uncertainty_pa = 50
+```
+
+The number is an example, not a production recommendation. Measure an installed
+relative uncertainty that covers sensor repeatability, temperature dependence,
+board and enclosure heating, vent lag, mounting stress, aging, and calibration.
+Set `vented = true` only when the enclosure gives the sensor a characterized path
+to outside pressure without direct water ingress or airflow artifacts. Name the
+exact channel the board reports; the collector does not fall back to a different
+barometer.
+
+The check never converts one absolute pressure reading into surveyed altitude.
+It compares 30-minute log-pressure changes, subtracts a robust tendency from at
+least two fresh surveyed neighbours, and then applies the hypsometric relation to
+the residual. This cancels constant elevation and sensor-offset differences before
+stations are compared. It does not remove changing calibration, vent effects, or
+weather too local for the neighbour model. Missing, stale, or regionally incoherent
+neighbours make the result unavailable.
+
+Enclosure temperature and RH adjust virtual temperature but are not treated as
+outdoor ambient measurements or extra independent votes. GNSS ellipsoid height is
+compared only as a change, avoiding an unsupported pressure/orthometric/ellipsoid
+datum conversion. The result carries GNSS vertical accuracy plus pressure,
+regional-spread, and model uncertainty. A local pressure departure makes a
+simultaneous GNSS mismatch ambiguous; it cannot on its own claim jamming or
+spoofing. See NOAA's [hypsometric-equation note](https://www.aoml.noaa.gov/ftp/hrd/annane/prelim_notes/hypsometric_equation.pdf)
+for the physical relation and the sensor manufacturer's installed-device limits
+before qualifying a site.
+
 ## Candidate surveys and explicit acceptance
 
 An optional `[integrity.station.survey]` takes `duration = "10m"`,

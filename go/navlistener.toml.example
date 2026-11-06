@@ -292,6 +292,14 @@ ack_interval = "1s"
 # observer = "mast-observer"
 # mode = "fixed"
 # position = [35.0, 140.0, 50.0] # replace: latitude degrees, longitude degrees, height m
+# # Optional barometric corroboration requires a surveyed fixed site, the exact
+# # reported sensor, and an installation-qualified outdoor pressure path. This
+# # uncertainty is illustrative; characterize the sensor, board heating, vent,
+# # mounting and calibration at the installed site before enabling it.
+# [integrity.station.barometer]
+# sensor = "bmp581" # bmp388_bmp384 | bmp580 | bmp581 | ms5607
+# vented = true
+# relative_uncertainty_pa = 50
 #
 # [[integrity.station]]
 # observer = "vehicle-observer"

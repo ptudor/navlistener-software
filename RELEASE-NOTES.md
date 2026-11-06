@@ -1,12 +1,26 @@
 # Unreleased
 
+- Surveyed fixed stations can opt one characterized, vented pressure sensor into regional
+  weather context and barometric GNSS-height corroboration. The collector compares 30-minute
+  log-pressure tendencies from at least two qualified neighbours within 100 km, exposes missing,
+  stale or incoherent context as unknown, and emits `regional_pressure_anomaly` and
+  `barometric_height_consistency`. Only an uncertainty-bounded height divergence while regional
+  pressure is coherent contributes one lower-only physics domain; local pressure changes and
+  ordinary weather do not claim jamming or spoofing. The initial operating points are documented
+  in `docs/INTEGRITY.md`, carried in the configuration hash, and require explicit
+  `[integrity.station.barometer]` installation qualification.
 - Environmental telemetry now reaches two station checks instead of stopping at history.
   `environment_sensor_health` distinguishes invalid, stale, saturated, flatlined, disagreeing
   and calibration-failed sensors; `environment_change` tracks a station-specific temperature,
-  humidity and local-pressure baseline, magnitude, rate and dew-point spread. Both are advisory:
+  humidity and local-pressure baseline, magnitude, rate, 24-hour sustained change and dew-point
+  spread. Both are advisory:
   their durable warning events preserve context without changing GNSS assurance or claiming
   jamming or spoofing. The documented operating profile, filter and recovery state are included
   in event evidence and the station configuration hash.
+- Integrity Station now decodes and displays the main environment, separately qualified
+  barometer, SHT3x, HIH8121, humidity-heater, regulator, and RTC-temperature records. Sensor
+  history keeps each physical temperature and humidity channel separate and labels enclosure,
+  regulator, and oscillator readings without implying outdoor ambient conditions.
 - A collector can send its boards' manufacturer a daily field report: each board
   enrolled under that manufacturer, with the collector's hardware-trust verdict,
   the firmware and update status the board reported, and the hour it was last

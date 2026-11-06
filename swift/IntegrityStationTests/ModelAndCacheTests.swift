@@ -62,6 +62,28 @@ func stationEventUsesOpaqueSubjectAndServerClassifiedState() throws {
 }
 
 @Test
+func environmentalEventsRemainVisibleStationConditions() throws {
+    let states = [
+        ("environment_sensor_health", "fault", true),
+        ("environment_sensor_health", "ok", false),
+        ("environmental_change", "unknown", true),
+        ("environmental_change", "normal", false),
+        ("regional_pressure_anomaly", "severe", true),
+        ("regional_pressure_anomaly", "coherent", false),
+        ("barometric_height_consistency", "diverged", true),
+        ("barometric_height_consistency", "consistent", false),
+    ]
+    for (index, state) in states.enumerated() {
+        let event = try JSONDecoder().decode(GNSSAPIEvent.self, from: Data("""
+        {"id":\(index + 1),"time":"2026-11-06T12:00:00Z","sv":"roof","type":"\(state.0)",
+         "new_value":"\(state.1)","severity":1,"params":{"station":"roof"}}
+        """.utf8))
+        #expect(event.stationID == "roof")
+        #expect(event.isActiveStationCondition == state.2, "\(state.0) \(state.1)")
+    }
+}
+
+@Test
 func collectorEndpointAcceptsOnlyHTTPCollectors() throws {
     let base = try #require(URL(string: "https://collector.invalid/site"))
     #expect(try CollectorEndpoint.url(baseURL: base, path: "/gnss/api/v2/observers").absoluteString

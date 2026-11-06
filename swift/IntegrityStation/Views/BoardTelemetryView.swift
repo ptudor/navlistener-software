@@ -12,10 +12,10 @@ struct BoardTelemetryView: View {
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), alignment: .top)], spacing: 14) {
                 if let sample = board.latest {
-                    if let environment = sample.details?.environment {
+                    if let details = sample.details, details.hasEnvironmentalTelemetry {
                         InstrumentCard("board.environment.title", systemImage: "thermometer.medium") {
                             freshness(sample, stale: board.stale)
-                            EnvironmentReadings(environment: environment)
+                            EnvironmentReadings(details: details)
                             note("board.environment.note")
                         }
                     }
@@ -221,15 +221,88 @@ struct BoardTelemetryView: View {
 }
 
 private struct EnvironmentReadings: View {
-    let environment: BoardEnvironment
+    let details: BoardDetails?
+    let environment: BoardEnvironment?
+
+    init(details: BoardDetails) {
+        self.details = details
+        environment = details.environment
+    }
+
+    init(environment: BoardEnvironment) {
+        details = nil
+        self.environment = environment
+    }
 
     var body: some View {
-        MetricRow(label: "board.environment.mcp", value: BoardFormat.measurement(environment.mcp9808C, unit: "°C"))
-        MetricRow(label: "board.environment.hdc", value: BoardFormat.measurement(environment.hdc2080C, unit: "°C"))
-        MetricRow(label: "board.environment.bmp", value: BoardFormat.measurement(environment.bmp388BMP384C, unit: "°C"))
-        MetricRow(label: "board.environment.humidity", value: BoardFormat.measurement(environment.humidityPercent, unit: "% RH"))
-        // Pascals, as served (`pressure_pa`) and as the history and portal
-        // screens show the same quantity.
-        MetricRow(label: "board.environment.pressure", value: BoardFormat.measurement(environment.pressurePa.map { Double($0) }, unit: "Pa"))
+        if let sensor = details?.humiditySensor {
+            MetricRow(label: "board.environment.humidity_sensor", value: BoardFormat.status(sensor), monospaced: true)
+        }
+        if let sensor = details?.pressureSensor {
+            MetricRow(label: "board.environment.pressure_sensor", value: BoardFormat.status(sensor), monospaced: true)
+        }
+        if let environment {
+            MetricRow(label: "board.environment.mcp", value: BoardFormat.measurement(environment.mcp9808C, unit: "°C"))
+            MetricRow(label: "board.environment.hdc", value: BoardFormat.measurement(environment.hdc2080C, unit: "°C"))
+            MetricRow(label: "board.environment.bmp", value: BoardFormat.measurement(environment.bmp388BMP384C, unit: "°C"))
+            MetricRow(label: "board.environment.humidity", value: BoardFormat.measurement(environment.humidityPercent, unit: "% RH"))
+            // Pascals, as served (`pressure_pa`) and as the history and portal
+            // screens show the same quantity.
+            MetricRow(label: "board.environment.pressure", value: BoardFormat.measurement(environment.pressurePa.map { Double($0) }, unit: "Pa"))
+        }
+        if let barometer = details?.barometer {
+            DisclosureGroup("board.environment.barometer") {
+                MetricRow(label: "board.environment.state", value: BoardFormat.status(barometer.state))
+                MetricRow(label: "board.environment.barometer_temperature", value: BoardFormat.measurement(barometer.temperatureC, unit: "°C"))
+                MetricRow(label: "board.environment.pressure", value: BoardFormat.measurement(barometer.pressurePa.map(Double.init), unit: "Pa"))
+                MetricRow(label: "board.environment.extended_range", value: BoardFormat.flag(barometer.extendedRange))
+            }
+        }
+        if let sensor = details?.sht3x {
+            humiditySensor(sensor, title: "board.environment.sht3x")
+        }
+        if let sensor = details?.hih8121 {
+            humiditySensor(sensor, title: "board.environment.hih8121")
+        }
+        if let heater = details?.humidityHeater {
+            DisclosureGroup("board.environment.heater") {
+                MetricRow(label: "board.environment.state", value: BoardFormat.status(heater.state))
+                MetricRow(label: "board.environment.heater_runs", value: BoardFormat.count(heater.runsSinceBoot))
+                MetricRow(label: "board.environment.high_humidity_95", value: StationFormat.uptime(seconds: heater.atLeast95Seconds.map(Double.init)))
+                MetricRow(label: "board.environment.high_humidity_98", value: StationFormat.uptime(seconds: heater.atLeast98Seconds.map(Double.init)))
+                MetricRow(label: "board.environment.condensing_streak", value: StationFormat.uptime(seconds: heater.condensingSeconds.map(Double.init)))
+                if let run = heater.latestRun {
+                    MetricRow(label: "board.environment.heater_stop", value: BoardFormat.status(run.stopReason))
+                    MetricRow(label: "board.environment.heater_before", value: BoardFormat.measurement(run.humidityBeforePercent, unit: "% RH"))
+                    MetricRow(label: "board.environment.heater_after", value: BoardFormat.measurement(run.humidityAtStopPercent, unit: "% RH"))
+                }
+            }
+        }
+        if let regulator = details?.regulator {
+            DisclosureGroup("board.environment.regulator") {
+                MetricRow(label: "board.environment.state", value: BoardFormat.status(regulator.state))
+                MetricRow(label: "board.environment.regulator_temperature", value: BoardFormat.measurement(regulator.spreaderC, unit: "°C"))
+                MetricRow(label: "board.environment.regulator_peak", value: BoardFormat.measurement(regulator.peakC, unit: "°C"))
+                MetricRow(label: "board.environment.throttle_level", value: BoardFormat.count(regulator.throttleLevel))
+                MetricRow(label: "board.environment.throttled", value: StationFormat.uptime(seconds: regulator.throttledSeconds.map(Double.init)))
+            }
+        }
+        if let rtc = details?.rtcTemperature {
+            DisclosureGroup("board.environment.rtc_temperature") {
+                MetricRow(label: "board.environment.state", value: BoardFormat.status(rtc.state))
+                MetricRow(label: "board.environment.rtc_temperature", value: BoardFormat.measurement(rtc.temperatureC, unit: "°C"))
+            }
+        }
+    }
+
+    private func humiditySensor(_ sensor: BoardExtraHumidity, title: LocalizedStringKey) -> some View {
+        DisclosureGroup(title) {
+            MetricRow(label: "board.environment.state", value: BoardFormat.status(sensor.state))
+            if let status = sensor.status {
+                MetricRow(label: "board.environment.sample_status", value: BoardFormat.status(status))
+            }
+            MetricRow(label: "board.environment.sensor_temperature", value: BoardFormat.measurement(sensor.temperatureC, unit: "°C"))
+            MetricRow(label: "board.environment.humidity", value: BoardFormat.measurement(sensor.humidityPercent, unit: "% RH"))
+        }
     }
 }

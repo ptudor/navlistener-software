@@ -334,6 +334,14 @@ pair is added to both installations. `distance_m` defaults to the distance betwe
 surveyed positions and, when both are given, must agree with it within a metre. A station
 belongs to at most one pair, and a pair needs no other installation.
 
+`[integrity.station.barometer]` opts a surveyed fixed station into regional-pressure and
+barometric-height checks. It must name the exact reported channel (`bmp388_bmp384`, `bmp580`,
+`bmp581`, or `ms5607`), set `vented = true` only after the installed pressure path has been
+qualified, and provide `relative_uncertainty_pa`. That uncertainty covers the installed
+channel's repeatability, temperature behavior, vent response, mounting, and calibration; it is
+not merely a data-sheet typical value. Omission disables both pressure checks. The collector
+does not infer qualification from the presence of telemetry.
+
 ### The two identity validators
 
 ```go

@@ -165,6 +165,10 @@ func (s StationProfile) Clone() StationProfile {
 		v := *s.Baseline
 		s.Baseline = &v
 	}
+	if s.Barometer != nil {
+		v := *s.Barometer
+		s.Barometer = &v
+	}
 	if s.Survey != nil {
 		v := *s.Survey
 		s.Survey = &v

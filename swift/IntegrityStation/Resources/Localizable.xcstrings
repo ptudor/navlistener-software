@@ -1451,12 +1451,84 @@
         }
       }
     },
+    "board.environment.barometer": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Qualified barometer" } } }
+    },
+    "board.environment.barometer_temperature": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Barometer temperature" } } }
+    },
+    "board.environment.condensing_streak": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Near-saturation streak" } } }
+    },
+    "board.environment.extended_range": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Outside full-accuracy range" } } }
+    },
+    "board.environment.heater": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Humidity-sensor heater" } } }
+    },
+    "board.environment.heater_after": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Humidity at heater stop" } } }
+    },
+    "board.environment.heater_before": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Humidity before heater" } } }
+    },
+    "board.environment.heater_runs": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Heater runs this boot" } } }
+    },
+    "board.environment.heater_stop": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Latest stop reason" } } }
+    },
+    "board.environment.high_humidity_95": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Time at or above 95% RH" } } }
+    },
+    "board.environment.high_humidity_98": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Time at or above 98% RH" } } }
+    },
+    "board.environment.hih8121": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "HIH8121 enclosure sensor" } } }
+    },
+    "board.environment.humidity_sensor": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Configured humidity sensor" } } }
+    },
+    "board.environment.pressure_sensor": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Configured pressure sensor" } } }
+    },
+    "board.environment.regulator": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Regulator thermal state" } } }
+    },
+    "board.environment.regulator_peak": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Regulator peak temperature" } } }
+    },
+    "board.environment.regulator_temperature": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Regulator spreader temperature" } } }
+    },
+    "board.environment.rtc_temperature": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "RTC oscillator temperature" } } }
+    },
+    "board.environment.sample_status": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Sample status" } } }
+    },
+    "board.environment.sensor_temperature": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Enclosure temperature" } } }
+    },
+    "board.environment.sht3x": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "SHT3x enclosure sensor" } } }
+    },
+    "board.environment.state": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Sensor state" } } }
+    },
+    "board.environment.throttle_level": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Thermal throttle level" } } }
+    },
+    "board.environment.throttled": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Time thermally throttled" } } }
+    },
     "board.environment.bmp": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "BMP388/BMP384 temperature"
+            "value": "Enclosure barometer temperature"
           }
         }
       }
@@ -1466,7 +1538,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "HDC2080 temperature"
+            "value": "Enclosure HDC temperature"
           }
         }
       }
@@ -1486,7 +1558,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "MCP9808 temperature"
+            "value": "Enclosure MCP temperature"
           }
         }
       }
@@ -1496,7 +1568,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Temperatures come from separate sensors. Pressure has no sea-level correction. A dash means no valid measurement."
+            "value": "Enclosure sensors describe conditions at the board, not outdoor ambient air. Pressure is local absolute pressure with no sea-level correction. Heater-active and invalid values remain unavailable; a dash is not zero."
           }
         }
       }
@@ -3236,10 +3308,37 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Board temperature"
+            "value": "Enclosure MCP temperature"
           }
         }
       }
+    },
+    "history.hdc_temperature": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Enclosure HDC temperature" } } }
+    },
+    "history.barometer_temperature": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Enclosure barometer temperature" } } }
+    },
+    "history.sht3x_temperature": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "SHT3x enclosure temperature" } } }
+    },
+    "history.sht3x_humidity": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "SHT3x relative humidity" } } }
+    },
+    "history.hih8121_temperature": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "HIH8121 enclosure temperature" } } }
+    },
+    "history.hih8121_humidity": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "HIH8121 relative humidity" } } }
+    },
+    "history.regulator_temperature": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Regulator spreader temperature" } } }
+    },
+    "history.regulator_peak_temperature": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Regulator peak temperature" } } }
+    },
+    "history.rtc_temperature": {
+      "localizations": { "en": { "stringUnit": { "state": "translated", "value": "RTC oscillator temperature" } } }
     },
     "history.humidity": {
       "localizations": {

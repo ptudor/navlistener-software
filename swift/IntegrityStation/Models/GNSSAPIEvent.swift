@@ -70,6 +70,10 @@ extension GNSSAPIEvent {
         "antenna_fault",
         "capability_signal_lost",
         "capability_impossible",
+        "environment_sensor_health",
+        "environmental_change",
+        "regional_pressure_anomaly",
+        "barometric_height_consistency",
     ]
 
     var stationID: String? {
@@ -91,6 +95,10 @@ extension GNSSAPIEvent {
         case "antenna_fault": newValue == "fault"
         case "capability_signal_lost": newValue == "lost"
         case "capability_impossible": newValue == "impossible"
+        case "environment_sensor_health": newValue != "ok"
+        case "environmental_change": newValue != "normal"
+        case "regional_pressure_anomaly": newValue != "coherent"
+        case "barometric_height_consistency": newValue != "consistent"
         default: nil
         }
     }

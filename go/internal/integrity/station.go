@@ -13,7 +13,7 @@ func init() {
 		staticPositionInfo, stationaryVelocityInfo, motionBoundInfo, positionVelocityInfo, motionKinematicsInfo,
 		clockBiasDriftInfo, clockDriftRateInfo, utcOffsetInfo, ppsRTCPhaseInfo,
 		cn0UniformityInfo, cn0DropInfo, agcInfo, receiverSpoofingInfo, baselineInfo,
-		environmentHealthInfo, environmentChangeInfo,
+		environmentHealthInfo, environmentChangeInfo, regionalPressureInfo, barometricHeightInfo,
 	} {
 		checkInfos[info.Name] = info
 	}
@@ -37,6 +37,7 @@ type Station struct {
 	pps         ppsRTCPhase
 	cn0Drop     cn0DropCheck
 	environment environmentChecks
+	barometric  barometricChecks
 
 	haveFix    bool
 	lastFixOK  bool
@@ -69,6 +70,9 @@ func NewStation(p Profile, station StationProfile) (*Station, error) {
 		clockBiasDriftInfo, clockDriftRateInfo, utcOffsetInfo, ppsRTCPhaseInfo,
 		cn0UniformityInfo, cn0DropInfo, agcInfo, receiverSpoofingInfo,
 		environmentHealthInfo, environmentChangeInfo)
+	if station.Barometer != nil {
+		infos = append(infos, regionalPressureInfo, barometricHeightInfo)
+	}
 	versions := make(map[string]int, len(infos))
 	for _, info := range infos {
 		s.order = append(s.order, info.Name)
@@ -110,6 +114,9 @@ func (s *Station) ApplySolution(sol Solution) bool {
 		s.survey.Apply(sol)
 	}
 	s.haveFix, s.lastFixOK, s.lastFixAt = true, sol.FixOK && !sol.InvalidLLH, sol.Received
+	if s.station.Barometer != nil {
+		s.barometric.observeSolution(sol, s.profile.Barometric)
+	}
 	for name, v := range s.pos.evaluate(sol, s.profile) {
 		s.update(name, v, sol.Received)
 	}
@@ -183,10 +190,19 @@ func (s *Station) ApplyRF(rf RFSample) {
 
 // ApplyEnvironment evaluates instrumentation health and station-local environmental
 // change. Both checks are advisory and cannot alter GNSS assurance or spoofing fusion.
-func (s *Station) ApplyEnvironment(sample EnvironmentSample) {
+func (s *Station) ApplyEnvironment(sample EnvironmentSample) State {
 	health, change := s.environment.evaluate(sample, s.profile.Environment)
 	s.update(CheckEnvironmentHealth, health, sample.Received)
 	s.update(CheckEnvironmentChange, change, sample.Received)
+	return health.State
+}
+
+// ApplyPressure evaluates regional pressure and barometric GNSS-height
+// consistency after the caller has assembled time-aligned fleet context.
+func (s *Station) ApplyPressure(sample PressureSample) {
+	regional, barometric := s.barometric.evaluate(sample, s.profile.Barometric)
+	s.update(CheckRegionalPressure, regional, sample.Received)
+	s.update(CheckBarometricHeight, barometric, sample.Received)
 }
 
 // Assessment is a station's served assurance: the fused state, every check's result,
@@ -235,6 +251,7 @@ func (s *Station) startSegment(at time.Time, reason string) {
 	s.clock = clockChecks{}
 	s.pps = ppsRTCPhase{}
 	s.environment.reset()
+	s.barometric.reset()
 	s.haveFix = false
 }
 
@@ -318,7 +335,7 @@ func (s *Station) Assess(now time.Time) Assessment {
 
 func (s *Station) staleAfter(name string) time.Duration {
 	switch name {
-	case CheckEnvironmentHealth, CheckEnvironmentChange:
+	case CheckEnvironmentHealth, CheckEnvironmentChange, CheckRegionalPressure, CheckBarometricHeight:
 		return s.profile.Environment.StaleAfter
 	default:
 		return s.profile.StaleAfter

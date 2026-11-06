@@ -41,7 +41,8 @@ func (s *Store) CurrentConditions(ctx context.Context, audience string, since ti
    WHERE audience=$1 AND time >= $2
      AND event_type IN ('station_offline','jamming_detected','spoofing_suspected','station_assurance',
 	                        'station_rf_degraded','antenna_fault','capability_signal_lost','capability_impossible',
-	                        'environment_sensor_health','environmental_change')
+	                        'environment_sensor_health','environmental_change','regional_pressure_anomaly',
+	                        'barometric_height_consistency')
    ORDER BY COALESCE(raw->>'station',sv),event_type,COALESCE(raw->>'gnss',''),COALESCE(raw->>'sig',''),audience_seq DESC
  ), bounded AS (SELECT * FROM latest ORDER BY audience_seq LIMIT $3)
  SELECT (SELECT COALESCE(max(audience_seq),0) FROM gnss_events WHERE audience=$1 AND time >= $2),

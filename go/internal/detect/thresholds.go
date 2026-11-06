@@ -158,7 +158,7 @@ const (
 	// the domains its receiver reports; its assessment shows which. BUMP THIS CONSTANT
 	// with every physics domain integrity wires — TestWiredSpoofGatesMatchesIntegrity
 	// enforces the pairing.
-	WiredSpoofGates = 4
+	WiredSpoofGates = 5
 
 	// XSigDivergenceMeters is the position-disagreement bound for the
 	// Galileo cross-signal agreement check (I/NAV E##@0 vs F/NAV E##@3). This is

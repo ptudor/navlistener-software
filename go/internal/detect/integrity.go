@@ -34,6 +34,7 @@ func (d *Detector) TickIntegrity(now time.Time, stations map[string]integrity.As
 
 func (d *Detector) detectIntegrity(id string, a integrity.Assessment, emit emitFunc) {
 	d.detectEnvironment(id, a, emit)
+	d.detectPressure(id, a, emit)
 	if physicsAvailable(a) {
 		band, sev := "ok", SevInfo
 		if a.SpoofingIndicated {
@@ -60,6 +61,56 @@ func (d *Detector) detectIntegrity(id string, a integrity.Assessment, emit emitF
 			return Event{
 				Type: "station_assurance", OldValue: old, NewValue: state, Severity: sev,
 				Message: fmt.Sprintf("station %s assurance %s (unassured: %s)", id, state, domainList(a.UnassuredDomains)),
+				Params:  assessmentParams(id, a),
+			}
+		})
+	}
+}
+
+func (d *Detector) detectPressure(id string, a integrity.Assessment, emit emitFunc) {
+	if regional, ok := assessmentCheck(a, integrity.CheckRegionalPressure); ok && regional.EvaluatedAt != 0 {
+		band, severity := "coherent", SevInfo
+		switch regional.State {
+		case integrity.Inconsistent:
+			band, severity = "local_change", SevWarning
+		case integrity.Unassured:
+			band, severity = "severe", SevWarning
+		case integrity.Unavailable:
+			band = "unknown"
+			if containsReason(regional.Reasons, integrity.ReasonRegionalPressureIncoherent) ||
+				containsReason(regional.Reasons, integrity.ReasonPressureSensorUnhealthy) ||
+				containsReason(regional.Reasons, integrity.ReasonStale) {
+				severity = SevWarning
+			}
+		}
+		emit(id, "regional_pressure", band, func(old string) Event {
+			return Event{
+				Type: "regional_pressure_anomaly", OldValue: old, NewValue: band, Severity: severity,
+				Message: fmt.Sprintf("station %s regional pressure comparison %s", id, band),
+				Params:  assessmentParams(id, a),
+			}
+		})
+	}
+	if barometric, ok := assessmentCheck(a, integrity.CheckBarometricHeight); ok && barometric.EvaluatedAt != 0 {
+		band, severity := "consistent", SevInfo
+		switch barometric.State {
+		case integrity.Inconsistent:
+			band, severity = "inconsistent", SevWarning
+		case integrity.Unassured:
+			band, severity = "diverged", SevWarning
+		case integrity.Unavailable:
+			band = "unknown"
+			if containsReason(barometric.Reasons, integrity.ReasonLocalPressureAmbiguous) ||
+				containsReason(barometric.Reasons, integrity.ReasonPressureSensorUnhealthy) ||
+				containsReason(barometric.Reasons, integrity.ReasonRegionalPressureIncoherent) ||
+				containsReason(barometric.Reasons, integrity.ReasonStale) {
+				severity = SevWarning
+			}
+		}
+		emit(id, "barometric_height", band, func(old string) Event {
+			return Event{
+				Type: "barometric_height_consistency", OldValue: old, NewValue: band, Severity: severity,
+				Message: fmt.Sprintf("station %s barometric height comparison %s", id, band),
 				Params:  assessmentParams(id, a),
 			}
 		})
@@ -154,14 +205,14 @@ func domainList(domains []integrity.Domain) string {
 
 // assessmentParams flattens an assessment into event parameters: plain maps and
 // slices, so the event pipeline's sanitizer can walk every number. Unavailable checks
-// are named, not detailed.
+// retain their reasons and any last metrics as well as the compatibility name list;
+// unknown must remain explainable rather than looking like an empty normal result.
 func assessmentParams(id string, a integrity.Assessment) map[string]any {
 	checks := make([]any, 0, len(a.Checks))
 	var unavailable []any
 	for _, r := range a.Checks {
 		if r.State == integrity.Unavailable {
 			unavailable = append(unavailable, r.Check)
-			continue
 		}
 		check := map[string]any{
 			"check": r.Check, "version": r.Version, "domain": string(r.Domain),

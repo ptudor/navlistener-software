@@ -1,19 +1,39 @@
 import Foundation
 
 enum SensorMetric: String, CaseIterable, Identifiable, Sendable {
-    case temperature, humidity, pressure, phase, networkRSSI, networkDisconnects, networkConnections
+    case temperature, hdcTemperature, humidity, pressure, barometerTemperature
+    case sht3xTemperature, sht3xHumidity, hih8121Temperature, hih8121Humidity
+    case regulatorTemperature, regulatorPeakTemperature, rtcTemperature
+    case phase, networkRSSI, networkDisconnects, networkConnections
     var id: String { rawValue }
     var kind: String {
         switch self { case .phase: "timing"; case .networkRSSI, .networkDisconnects, .networkConnections: "network"; default: "environment" }
     }
     var unit: String {
-        switch self { case .temperature: "°C"; case .humidity: "%"; case .pressure: "Pa"; case .phase: "ns"; case .networkRSSI: "dBm"; case .networkDisconnects, .networkConnections: "" }
+        switch self {
+        case .temperature, .hdcTemperature, .barometerTemperature, .sht3xTemperature,
+             .hih8121Temperature, .regulatorTemperature, .regulatorPeakTemperature, .rtcTemperature: "°C"
+        case .humidity, .sht3xHumidity, .hih8121Humidity: "% RH"
+        case .pressure: "Pa"
+        case .phase: "ns"
+        case .networkRSSI: "dBm"
+        case .networkDisconnects, .networkConnections: ""
+        }
     }
     var title: String {
         switch self {
         case .temperature: String(localized: "history.temperature")
+        case .hdcTemperature: String(localized: "history.hdc_temperature")
         case .humidity: String(localized: "history.humidity")
         case .pressure: String(localized: "history.pressure")
+        case .barometerTemperature: String(localized: "history.barometer_temperature")
+        case .sht3xTemperature: String(localized: "history.sht3x_temperature")
+        case .sht3xHumidity: String(localized: "history.sht3x_humidity")
+        case .hih8121Temperature: String(localized: "history.hih8121_temperature")
+        case .hih8121Humidity: String(localized: "history.hih8121_humidity")
+        case .regulatorTemperature: String(localized: "history.regulator_temperature")
+        case .regulatorPeakTemperature: String(localized: "history.regulator_peak_temperature")
+        case .rtcTemperature: String(localized: "history.rtc_temperature")
         case .phase: String(localized: "history.phase")
         case .networkRSSI: String(localized: "network.rssi")
         case .networkDisconnects: String(localized: "network.wifi_drops")
@@ -24,8 +44,17 @@ enum SensorMetric: String, CaseIterable, Identifiable, Sendable {
     func value(in sample: SensorHistorySample) -> Double? {
         let value: Double? = switch self {
         case .temperature: sample.details?.environment?.mcp9808C
+        case .hdcTemperature: sample.details?.environment?.hdc2080C
         case .humidity: sample.details?.environment?.humidityPercent
-        case .pressure: sample.details?.environment?.pressurePa.map(Double.init)
+        case .pressure: sample.details?.environment?.pressurePa.map(Double.init) ?? sample.details?.barometer?.pressurePa.map(Double.init)
+        case .barometerTemperature: sample.details?.barometer?.temperatureC ?? sample.details?.environment?.bmp388BMP384C
+        case .sht3xTemperature: sample.details?.sht3x?.temperatureC
+        case .sht3xHumidity: sample.details?.sht3x?.humidityPercent
+        case .hih8121Temperature: sample.details?.hih8121?.temperatureC
+        case .hih8121Humidity: sample.details?.hih8121?.humidityPercent
+        case .regulatorTemperature: sample.details?.regulator?.spreaderC
+        case .regulatorPeakTemperature: sample.details?.regulator?.peakC
+        case .rtcTemperature: sample.details?.rtcTemperature?.temperatureC
         case .phase: sample.details?.timing?.rtcMinusGNSSPhaseNS
         case .networkRSSI: sample.details?.network?.wifi?.rssiDBM.map(Double.init)
         case .networkDisconnects: sample.details?.network?.counters?["wifi_disconnects"].map(Double.init)

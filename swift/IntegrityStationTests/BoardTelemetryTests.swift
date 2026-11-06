@@ -13,6 +13,16 @@ enum BoardFixture {
             "version":1,"reason":4,"uptime_ms":120000,"event_count":2,
             "environment":{"ready_mask":7,"mcp9808_c":0,"hdc2080_c":null,
               "bmp388_bmp384_c":23.5,"humidity_percent":null,"pressure_pa":100123},
+            "humidity_sensor":"hdc2080","pressure_sensor":"bmp581",
+            "humidity_heater":{"state":"recovering","trusted_utc":true,"last_run_readable":true,
+              "runs_since_boot":2,"humidity_at_least_95_s":60,"humidity_at_least_98_s":12,
+              "condensing_streak_s":0},
+            "barometer":{"state":"ready","temperature_c":24.25,"pressure_pa":100125,"extended_range":false},
+            "sht3x":{"state":"ready","temperature_c":24.1,"humidity_percent":48.5},
+            "hih8121":{"state":"answering","status":"fresh","temperature_c":24.3,"humidity_percent":49.1},
+            "regulator":{"state":"ready","spreader_c":61.5,"peak_c":67.25,"throttle_level":2,
+              "wifi_tx_cap_dbm":15,"throttle_changes":3,"throttled_s":90,"throttle_c":65,"full_c":80,"release_c":60},
+            "rtc_temperature":{"state":"answering","temperature_c":25.25},
             "rtc":{"flags":31,"unix_seconds":1789387200,"sampled_uptime_ms":119000},
             "atecc":{"checked_uptime_ms":123,"revision":"00006002","config_lock":"locked",
               "data_lock":"unlocked","rng_screening":"repeating_output"},
@@ -50,6 +60,14 @@ enum BoardFixture {
     #expect(board.latest?.details?.environment?.hdc2080C == nil)
     #expect(board.latest?.details?.environment?.humidityPercent == nil)
     #expect(board.latest?.details?.environment?.pressurePa == 100123)
+    #expect(board.latest?.details?.humiditySensor == "hdc2080")
+    #expect(board.latest?.details?.pressureSensor == "bmp581")
+    #expect(board.latest?.details?.humidityHeater?.state == "recovering")
+    #expect(board.latest?.details?.barometer?.pressurePa == 100125)
+    #expect(board.latest?.details?.sht3x?.humidityPercent == 48.5)
+    #expect(board.latest?.details?.hih8121?.status == "fresh")
+    #expect(board.latest?.details?.regulator?.spreaderC == 61.5)
+    #expect(board.latest?.details?.rtcTemperature?.temperatureC == 25.25)
     #expect(board.latest?.details?.resources?.spoolDroppedRecords == UInt64.max)
     #expect(board.timing?.details?.timing?.rtcMinusGNSSPhaseNS == -125)
     #expect(board.timing?.details?.timing?.gnss?.validHardwarePulses == 9007199254740993)

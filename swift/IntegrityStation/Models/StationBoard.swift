@@ -76,7 +76,10 @@ struct BoardInterference: Codable, Sendable {
     let snapshot: BoardSample?
 }
 
-struct BoardDetails: Codable, Sendable {
+// Keep this immutable snapshot indirect. BoardDetails is embedded in every
+// BoardSample and StationBoard contains several samples; inlining the complete
+// telemetry schema can exhaust a decoder worker thread's stack.
+final class BoardDetails: Codable, Sendable {
     let version: UInt8?
     let reason: UInt8?
     let uptimeMS: UInt64?
@@ -85,6 +88,14 @@ struct BoardDetails: Codable, Sendable {
     let eventFlags: UInt8?
     let eventStates: UInt8?
     let environment: BoardEnvironment?
+    let humidityHeater: BoardHumidityHeater?
+    let barometer: BoardBarometer?
+    let humiditySensor: String?
+    let pressureSensor: String?
+    let regulator: BoardRegulator?
+    let sht3x: BoardExtraHumidity?
+    let hih8121: BoardExtraHumidity?
+    let rtcTemperature: BoardRTCTemperature?
     let rtc: BoardRTC?
     let atecc: BoardATECC?
     let eeprom: BoardEEPROM?
@@ -92,19 +103,28 @@ struct BoardDetails: Codable, Sendable {
     let receiver: BoardReceiver?
     let firmware: String?
     let timing: BoardTiming?
-    var update: BoardUpdate? = nil
-    var reception: ReceptionAssessment? = nil
-    var receptionEvent: ReceptionAssessment? = nil
-    var network: BoardNetwork? = nil
+    let update: BoardUpdate?
+    let reception: ReceptionAssessment?
+    let receptionEvent: ReceptionAssessment?
+    let network: BoardNetwork?
 
     enum CodingKeys: String, CodingKey {
-        case version, reason, environment, rtc, atecc, eeprom, resources, receiver, firmware, timing, update, reception, network
+        case version, reason, environment, barometer, regulator, sht3x, hih8121, rtc, atecc, eeprom, resources, receiver, firmware, timing, update, reception, network
+        case humidityHeater = "humidity_heater"
+        case humiditySensor = "humidity_sensor"
+        case pressureSensor = "pressure_sensor"
+        case rtcTemperature = "rtc_temperature"
         case receptionEvent = "reception_event"
         case uptimeMS = "uptime_ms"
         case eventCount = "event_count"
         case eventUptimeMS = "event_uptime_ms"
         case eventFlags = "event_flags"
         case eventStates = "event_states"
+    }
+
+    var hasEnvironmentalTelemetry: Bool {
+        environment != nil || humidityHeater != nil || barometer != nil || regulator != nil ||
+            sht3x != nil || hih8121 != nil || rtcTemperature != nil
     }
 }
 
@@ -160,6 +180,123 @@ struct BoardEnvironment: Codable, Sendable {
         case bmp388BMP384C = "bmp388_bmp384_c"
         case humidityPercent = "humidity_percent"
         case pressurePa = "pressure_pa"
+    }
+}
+
+struct BoardBarometer: Codable, Sendable {
+    let state: String?
+    let temperatureC: Double?
+    let pressurePa: UInt32?
+    let extendedRange: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case temperatureC = "temperature_c"
+        case pressurePa = "pressure_pa"
+        case extendedRange = "extended_range"
+    }
+}
+
+struct BoardExtraHumidity: Codable, Sendable {
+    let state: String?
+    let status: String?
+    let temperatureC: Double?
+    let humidityPercent: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case state, status
+        case temperatureC = "temperature_c"
+        case humidityPercent = "humidity_percent"
+    }
+}
+
+struct BoardRegulator: Codable, Sendable {
+    let state: String?
+    let spreaderC: Double?
+    let peakC: Double?
+    let throttleLevel: UInt8?
+    let wifiTXCapDBM: Double?
+    let throttleChanges: UInt32?
+    let throttledSeconds: UInt32?
+    let throttleC: Double?
+    let fullC: Double?
+    let releaseC: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case spreaderC = "spreader_c"
+        case peakC = "peak_c"
+        case throttleLevel = "throttle_level"
+        case wifiTXCapDBM = "wifi_tx_cap_dbm"
+        case throttleChanges = "throttle_changes"
+        case throttledSeconds = "throttled_s"
+        case throttleC = "throttle_c"
+        case fullC = "full_c"
+        case releaseC = "release_c"
+    }
+}
+
+struct BoardRTCTemperature: Codable, Sendable {
+    let state: String?
+    let temperatureC: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case temperatureC = "temperature_c"
+    }
+}
+
+struct BoardHumidityHeater: Codable, Sendable {
+    let state: String?
+    let trustedUTC: Bool?
+    let lastRunReadable: Bool?
+    let runsSinceBoot: UInt8?
+    let atLeast95Seconds: UInt32?
+    let atLeast98Seconds: UInt32?
+    let condensingSeconds: UInt32?
+    let lastRunUnixSeconds: UInt64?
+    let latestRun: BoardHeaterRun?
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case trustedUTC = "trusted_utc"
+        case lastRunReadable = "last_run_readable"
+        case runsSinceBoot = "runs_since_boot"
+        case atLeast95Seconds = "humidity_at_least_95_s"
+        case atLeast98Seconds = "humidity_at_least_98_s"
+        case condensingSeconds = "condensing_streak_s"
+        case lastRunUnixSeconds = "last_run_unix_seconds"
+        case latestRun = "latest_run"
+    }
+}
+
+struct BoardHeaterRun: Codable, Sendable {
+    let startUptimeMS: UInt64?
+    let onMS: UInt32?
+    let recoveryMS: UInt32?
+    let stopReason: String?
+    let humidityBeforePercent: Double?
+    let humidityAtStopPercent: Double?
+    let hdc2080BeforeC: Double?
+    let hdc2080PeakC: Double?
+    let hdc2080EndC: Double?
+    let mcp9808BeforeC: Double?
+    let mcp9808PeakC: Double?
+    let mcp9808EndC: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case startUptimeMS = "start_uptime_ms"
+        case onMS = "on_ms"
+        case recoveryMS = "recovery_ms"
+        case stopReason = "stop_reason"
+        case humidityBeforePercent = "humidity_before_percent"
+        case humidityAtStopPercent = "humidity_at_stop_percent"
+        case hdc2080BeforeC = "hdc2080_before_c"
+        case hdc2080PeakC = "hdc2080_peak_c"
+        case hdc2080EndC = "hdc2080_end_c"
+        case mcp9808BeforeC = "mcp9808_before_c"
+        case mcp9808PeakC = "mcp9808_peak_c"
+        case mcp9808EndC = "mcp9808_end_c"
     }
 }
 

@@ -44,6 +44,7 @@ type IntegrityStation struct {
 	Installation integrity.Installation       `toml:"installation"`
 	Motion       *IntegrityMotion             `toml:"motion"`
 	Fixed        integrity.FixedPolicy        `toml:"fixed"`
+	Barometer    *integrity.BarometerPolicy   `toml:"barometer"`
 	Reference    *integrity.ReferenceEvidence `toml:"reference"`
 	Survey       *IntegritySurvey             `toml:"survey"`
 	SegmentID    string                       `toml:"segment_id"`
@@ -95,7 +96,7 @@ func (c *Config) finalizeIntegrity() error {
 				return fmt.Errorf("integrity %s: mode conflicts with installation", s.Observer)
 			}
 		}
-		sp.Fixed, sp.Reference, sp.SegmentID = s.Fixed, s.Reference, s.SegmentID
+		sp.Fixed, sp.Barometer, sp.Reference, sp.SegmentID = s.Fixed, s.Barometer, s.Reference, s.SegmentID
 		if m := s.Motion; m != nil {
 			for _, x := range []struct {
 				from *float64

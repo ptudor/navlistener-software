@@ -15,7 +15,7 @@ import "time"
 
 // EngineVersion identifies the filter, hysteresis and fusion rules. It changes
 // whenever a change could alter a served state for the same inputs and profile.
-const EngineVersion = 2
+const EngineVersion = 3
 
 // State is an assurance level (the PNT Integrity library's four levels).
 type State string
@@ -92,13 +92,16 @@ const (
 	// DomainEnvironment: sensor health and environmental departures. These checks
 	// are operator context, not independent spoofing evidence.
 	DomainEnvironment Domain = "environment"
+	// DomainBarometricPosition: pressure-derived vertical change, corrected by
+	// regional pressure and compared with the receiver's GNSS height change.
+	DomainBarometricPosition Domain = "barometric_position"
 )
 
 // Physics reports whether the domain is an independent physical consistency test
 // that counts toward the spoofing quorum.
 func (d Domain) Physics() bool {
 	switch d {
-	case DomainSignalPower, DomainPosition, DomainReceiverClock, DomainTimeReference:
+	case DomainSignalPower, DomainPosition, DomainReceiverClock, DomainTimeReference, DomainBarometricPosition:
 		return true
 	}
 	return false
@@ -116,6 +119,10 @@ type Info struct {
 	// Advisory checks are served and generate their own events but do not enter
 	// station assurance or spoofing fusion.
 	Advisory bool
+	// UnknownImmediate makes unavailable or stale input visible at once instead
+	// of retaining a prior degraded state through the recovery hold. A prior
+	// fault is still remembered and must earn its recovery after input returns.
+	UnknownImmediate bool
 }
 
 // Verdict is one raw evaluation of a check, before filtering and hysteresis.

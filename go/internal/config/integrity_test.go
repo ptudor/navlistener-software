@@ -83,20 +83,48 @@ position = [37.4219, -122.0841, 12.5]
 	}
 }
 
+func TestIntegrityStationBarometerQualification(t *testing.T) {
+	cfg, err := loadBody(t, receptionSite+`
+[[integrity.station]]
+observer = "roof"
+mode = "fixed"
+
+[integrity.station.barometer]
+sensor = "bmp581"
+vented = true
+relative_uncertainty_pa = 10
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	barometer := cfg.IntegrityStations()["roof"].Barometer
+	if barometer == nil || barometer.Sensor != "bmp581" || !barometer.Vented || barometer.RelativeUncertaintyPa != 10 {
+		t.Fatalf("barometer = %+v", barometer)
+	}
+	barometer.RelativeUncertaintyPa = 999
+	if cfg.IntegrityStations()["roof"].Barometer.RelativeUncertaintyPa != 10 {
+		t.Fatal("IntegrityStations shares the barometer policy")
+	}
+}
+
 func TestIntegrityStationRejects(t *testing.T) {
 	for name, tc := range map[string]struct{ body, want string }{
-		"mode":           {"[[integrity.station]]\nobserver = \"a\"\nmode = \"airborne\"\n", "mode must be"},
-		"missing mode":   {"[[integrity.station]]\nobserver = \"a\"\n", "mode must be"},
-		"observer":       {"[[integrity.station]]\nobserver = \"a b\"\nmode = \"fixed\"\n", "invalid observer"},
-		"duplicate":      {"[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\n[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\n", "duplicate"},
-		"fixed speed":    {"[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\nmax_speed_mps = 5\n", "only to a mobile"},
-		"mobile speed":   {"[[integrity.station]]\nobserver = \"a\"\nmode = \"mobile\"\n", "needs max_speed_mps"},
-		"mobile survey":  {"[[integrity.station]]\nobserver = \"a\"\nmode = \"mobile\"\nmax_speed_mps = 5\nposition = [1, 2, 3]\n", "no surveyed position"},
-		"short position": {"[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\nposition = [1, 2]\n", "requires latitude"},
-		"latitude":       {"[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\nposition = [91, 2, 3]\n", "out of range"},
-		"two positions":  {receptionSite + "[[integrity.station]]\nobserver = \"roof\"\nmode = \"fixed\"\nposition = [37.4219, -122.0841, 13]\n", "in one place"},
-		"mobile site":    {receptionSite + "[[integrity.station]]\nobserver = \"roof\"\nmode = \"mobile\"\nmax_speed_mps = 5\n", "fixed site"},
-		"unknown field":  {"[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\nspeed = 5\n", "strict mode"},
+		"mode":                  {"[[integrity.station]]\nobserver = \"a\"\nmode = \"airborne\"\n", "mode must be"},
+		"missing mode":          {"[[integrity.station]]\nobserver = \"a\"\n", "mode must be"},
+		"observer":              {"[[integrity.station]]\nobserver = \"a b\"\nmode = \"fixed\"\n", "invalid observer"},
+		"duplicate":             {"[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\n[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\n", "duplicate"},
+		"fixed speed":           {"[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\nmax_speed_mps = 5\n", "only to a mobile"},
+		"mobile speed":          {"[[integrity.station]]\nobserver = \"a\"\nmode = \"mobile\"\n", "needs max_speed_mps"},
+		"mobile survey":         {"[[integrity.station]]\nobserver = \"a\"\nmode = \"mobile\"\nmax_speed_mps = 5\nposition = [1, 2, 3]\n", "no surveyed position"},
+		"short position":        {"[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\nposition = [1, 2]\n", "requires latitude"},
+		"latitude":              {"[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\nposition = [91, 2, 3]\n", "out of range"},
+		"two positions":         {receptionSite + "[[integrity.station]]\nobserver = \"roof\"\nmode = \"fixed\"\nposition = [37.4219, -122.0841, 13]\n", "in one place"},
+		"mobile site":           {receptionSite + "[[integrity.station]]\nobserver = \"roof\"\nmode = \"mobile\"\nmax_speed_mps = 5\n", "fixed site"},
+		"unknown field":         {"[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\nspeed = 5\n", "strict mode"},
+		"barometer unsurveyed":  {"[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\n[integrity.station.barometer]\nsensor = \"bmp581\"\nvented = true\nrelative_uncertainty_pa = 10\n", "surveyed fixed"},
+		"barometer unvented":    {"[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\nposition = [1, 2, 3]\n[integrity.station.barometer]\nsensor = \"bmp581\"\nrelative_uncertainty_pa = 10\n", "vented"},
+		"barometer sensor":      {"[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\nposition = [1, 2, 3]\n[integrity.station.barometer]\nsensor = \"unknown\"\nvented = true\nrelative_uncertainty_pa = 10\n", "barometer sensor"},
+		"barometer uncertainty": {"[[integrity.station]]\nobserver = \"a\"\nmode = \"fixed\"\nposition = [1, 2, 3]\n[integrity.station.barometer]\nsensor = \"bmp581\"\nvented = true\n", "relative_uncertainty_pa"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := loadBody(t, tc.body)

@@ -17,8 +17,8 @@ const (
 )
 
 var (
-	environmentHealthInfo = Info{Name: CheckEnvironmentHealth, Version: 1, Domain: DomainEnvironment, Advisory: true}
-	environmentChangeInfo = Info{Name: CheckEnvironmentChange, Version: 1, Domain: DomainEnvironment, Advisory: true}
+	environmentHealthInfo = Info{Name: CheckEnvironmentHealth, Version: 1, Domain: DomainEnvironment, Advisory: true, UnknownImmediate: true}
+	environmentChangeInfo = Info{Name: CheckEnvironmentChange, Version: 1, Domain: DomainEnvironment, Advisory: true, UnknownImmediate: true}
 )
 
 const (
@@ -39,6 +39,9 @@ const (
 	ReasonTemperatureRate      = "temperature_rate"
 	ReasonHumidityRate         = "humidity_rate"
 	ReasonPressureRate         = "pressure_rate"
+	ReasonTemperatureSustained = "temperature_sustained_change"
+	ReasonHumiditySustained    = "humidity_sustained_change"
+	ReasonPressureSustained    = "pressure_sustained_change"
 	ReasonDewPointSpread       = "low_dew_point_spread"
 )
 
@@ -80,6 +83,7 @@ type EnvironmentalReading struct {
 // from training or clearing an environmental baseline.
 type EnvironmentSample struct {
 	Received     time.Time
+	Session      string
 	UptimeMS     uint64
 	Readings     []EnvironmentalReading
 	HeaterActive bool
@@ -111,6 +115,8 @@ type EnvironmentProfile struct {
 	BaselineWindow     time.Duration `json:"baseline_window_ns"`
 	BaselineMinAge     time.Duration `json:"baseline_min_age_ns"`
 	BaselineMinSamples int           `json:"baseline_min_samples"`
+	PersistenceWindow  time.Duration `json:"persistence_window_ns"`
+	PersistenceMinAge  time.Duration `json:"persistence_min_age_ns"`
 	RateMinInterval    time.Duration `json:"rate_min_interval_ns"`
 	RateMaxInterval    time.Duration `json:"rate_max_interval_ns"`
 	FlatlineAfter      time.Duration `json:"flatline_after_ns"`
@@ -150,17 +156,23 @@ type environmentChecks struct {
 	flatlines  map[string]flatlineState
 	haveUptime bool
 	uptimeMS   uint64
+	session    string
+	anomalous  bool
 }
 
 func (e *environmentChecks) reset() {
 	e.history = nil
 	e.previous = nil
 	e.flatlines = nil
+	e.anomalous = false
 }
 
 func (e *environmentChecks) evaluate(sample EnvironmentSample, prof EnvironmentProfile) (Verdict, Verdict) {
-	if e.haveUptime && sample.UptimeMS < e.uptimeMS {
+	if e.session != "" && sample.Session != "" && sample.Session != e.session || e.haveUptime && sample.UptimeMS < e.uptimeMS {
 		e.reset()
+	}
+	if sample.Session != "" {
+		e.session = sample.Session
 	}
 	e.haveUptime, e.uptimeMS = true, sample.UptimeMS
 	health := e.health(sample, prof)
@@ -382,10 +394,15 @@ func (e *environmentChecks) change(current environmentPoint, sample EnvironmentS
 	}
 	instantDegraded := v.State != Assured
 
-	e.prune(current.at.Add(-prof.BaselineWindow))
-	ready := len(e.history) >= prof.BaselineMinSamples && current.at.Sub(e.history[0].at) >= prof.BaselineMinAge
+	if !e.anomalous {
+		e.prune(current.at.Add(-prof.PersistenceWindow))
+	}
+	baselineHistory := historyAfter(e.history, current.at.Add(-prof.BaselineWindow))
+	ready := len(baselineHistory) >= prof.BaselineMinSamples && current.at.Sub(baselineHistory[0].at) >= prof.BaselineMinAge
+	persistentHistory := historyBefore(e.history, current.at.Add(-prof.PersistenceMinAge))
+	persistent := len(persistentHistory) >= prof.BaselineMinSamples
 	if ready {
-		baseline := aggregateHistory(e.history)
+		baseline := aggregateHistory(baselineHistory)
 		compareChange(&v, current.hasTemperature && baseline.hasTemperature, math.Abs(current.temperature-baseline.temperature), "temperature_delta_c", prof.TemperatureChangeC, ReasonTemperatureChange)
 		compareChange(&v, current.hasHumidity && baseline.hasHumidity, math.Abs(current.humidity-baseline.humidity), "humidity_delta_percent", prof.HumidityChangePercent, ReasonHumidityChange)
 		compareChange(&v, current.hasPressure && baseline.hasPressure, math.Abs(current.pressure-baseline.pressure), "pressure_delta_pa", prof.PressureChangePa, ReasonPressureChange)
@@ -398,7 +415,23 @@ func (e *environmentChecks) change(current environmentPoint, sample EnvironmentS
 		if baseline.hasPressure {
 			v.Metrics["pressure_baseline_pa"] = baseline.pressure
 		}
-	} else {
+	}
+	if persistent {
+		baseline := aggregateHistory(persistentHistory)
+		compareChange(&v, current.hasTemperature && baseline.hasTemperature, math.Abs(current.temperature-baseline.temperature), "temperature_sustained_delta_c", prof.TemperatureChangeC, ReasonTemperatureSustained)
+		compareChange(&v, current.hasHumidity && baseline.hasHumidity, math.Abs(current.humidity-baseline.humidity), "humidity_sustained_delta_percent", prof.HumidityChangePercent, ReasonHumiditySustained)
+		compareChange(&v, current.hasPressure && baseline.hasPressure, math.Abs(current.pressure-baseline.pressure), "pressure_sustained_delta_pa", prof.PressureChangePa, ReasonPressureSustained)
+		if baseline.hasTemperature {
+			v.Metrics["temperature_persistent_baseline_c"] = baseline.temperature
+		}
+		if baseline.hasHumidity {
+			v.Metrics["humidity_persistent_baseline_percent"] = baseline.humidity
+		}
+		if baseline.hasPressure {
+			v.Metrics["pressure_persistent_baseline_pa"] = baseline.pressure
+		}
+	}
+	if !ready && !persistent {
 		if !instantDegraded {
 			v.State = Unavailable
 		}
@@ -419,8 +452,21 @@ func (e *environmentChecks) change(current environmentPoint, sample EnvironmentS
 	e.previous = &copy
 	// Invalid instrumentation, deliberate heater activity, or an environmental
 	// departure cannot train the reference that will judge the next report.
-	if health == Assured && !sample.HeaterActive && (ready && v.State == Assured || !ready && !instantDegraded) {
-		e.history = append(e.history, current)
+	if health == Assured && !sample.HeaterActive {
+		switch v.State {
+		case Inconsistent, Unassured:
+			e.anomalous = true
+		case Assured:
+			e.anomalous = false
+			e.prune(current.at.Add(-prof.PersistenceWindow))
+			e.history = append(e.history, current)
+		case Unavailable:
+			if !instantDegraded {
+				e.anomalous = false
+				e.prune(current.at.Add(-prof.PersistenceWindow))
+				e.history = append(e.history, current)
+			}
+		}
 	}
 	return v
 }
@@ -442,6 +488,22 @@ func (e *environmentChecks) prune(cutoff time.Time) {
 		i++
 	}
 	e.history = e.history[i:]
+}
+
+func historyAfter(history []environmentPoint, cutoff time.Time) []environmentPoint {
+	i := 0
+	for i < len(history) && history[i].at.Before(cutoff) {
+		i++
+	}
+	return history[i:]
+}
+
+func historyBefore(history []environmentPoint, cutoff time.Time) []environmentPoint {
+	i := 0
+	for i < len(history) && !history[i].at.After(cutoff) {
+		i++
+	}
+	return history[:i]
 }
 
 func aggregateHistory(history []environmentPoint) environmentPoint {

@@ -173,6 +173,62 @@ func TestEnvironmentalStaleIsNotRecovery(t *testing.T) {
 	if !ok || change.OldValue != "normal" || change.NewValue != "unknown" || change.Severity != SevWarning {
 		t.Fatalf("unknown environment-change event = %+v (ok=%v)", change, ok)
 	}
+	checks, ok := change.Params["checks"].([]any)
+	if !ok || !slices.ContainsFunc(checks, func(value any) bool {
+		check, ok := value.(map[string]any)
+		reasons, _ := check["reasons"].([]any)
+		return ok && check["check"] == integrity.CheckEnvironmentChange && check["state"] == string(integrity.Unavailable) &&
+			slices.Contains(reasons, any(integrity.ReasonStale))
+	}) {
+		t.Fatalf("unknown event lost its cause: %+v", change.Params)
+	}
+}
+
+func pressureAssessment(regional, barometric integrity.Result) integrity.Assessment {
+	a := healthy
+	a.Checks = append(append([]integrity.Result(nil), healthy.Checks...), regional, barometric)
+	return a
+}
+
+func TestPressureEventsDistinguishLocalAndGNSSDivergence(t *testing.T) {
+	d := New(0)
+	t0 := time.Unix(1_800_000_000, 0)
+	result := func(name string, domain integrity.Domain, state integrity.State, at time.Time, reasons ...string) integrity.Result {
+		return integrity.Result{Check: name, Version: 1, Domain: domain, State: state, Candidate: state,
+			EvaluatedAt: at.Unix(), Metrics: map[string]float64{"pressure_neighbour_count": 2}, Reasons: reasons}
+	}
+	normal := pressureAssessment(
+		result(integrity.CheckRegionalPressure, integrity.DomainEnvironment, integrity.Assured, t0),
+		result(integrity.CheckBarometricHeight, integrity.DomainBarometricPosition, integrity.Assured, t0))
+	local := pressureAssessment(
+		result(integrity.CheckRegionalPressure, integrity.DomainEnvironment, integrity.Unassured, t0.Add(time.Minute), integrity.ReasonRegionalPressureDeparture),
+		result(integrity.CheckBarometricHeight, integrity.DomainBarometricPosition, integrity.Unavailable, t0.Add(time.Minute), integrity.ReasonLocalPressureAmbiguous))
+	d.TickIntegrity(t0, one("s", normal))
+	d.TickIntegrity(t0.Add(time.Minute), one("s", local))
+	events := d.TickIntegrity(t0.Add(time.Minute+DebounceDuration), one("s", local))
+	regional, ok := find(events, "regional_pressure_anomaly")
+	if !ok || regional.OldValue != "coherent" || regional.NewValue != "severe" || regional.Severity != SevWarning {
+		t.Fatalf("regional pressure event = %+v (ok=%v)", regional, ok)
+	}
+	barometric, ok := find(events, "barometric_height_consistency")
+	if !ok || barometric.OldValue != "consistent" || barometric.NewValue != "unknown" || barometric.Severity != SevWarning {
+		t.Fatalf("ambiguous barometric event = %+v (ok=%v)", barometric, ok)
+	}
+	if _, ok := find(events, "spoofing_suspected"); ok {
+		t.Fatalf("local pressure anomaly raised spoofing: %+v", events)
+	}
+	t.Logf("local events: regional=%s barometric=%s spoofing_event=false", regional.NewValue, barometric.NewValue)
+
+	diverged := pressureAssessment(
+		result(integrity.CheckRegionalPressure, integrity.DomainEnvironment, integrity.Assured, t0.Add(3*time.Minute)),
+		result(integrity.CheckBarometricHeight, integrity.DomainBarometricPosition, integrity.Unassured, t0.Add(3*time.Minute), integrity.ReasonBarometricHeightDivergence))
+	d.TickIntegrity(t0.Add(3*time.Minute), one("s", diverged))
+	events = d.TickIntegrity(t0.Add(3*time.Minute+DebounceDuration), one("s", diverged))
+	barometric, ok = find(events, "barometric_height_consistency")
+	if !ok || barometric.NewValue != "diverged" || barometric.Severity != SevWarning {
+		t.Fatalf("barometric divergence event = %+v (ok=%v)", barometric, ok)
+	}
+	t.Logf("GNSS divergence event: %s=%s", barometric.Type, barometric.NewValue)
 }
 
 // TestIntegrityColdStart: a station already spoofed when first assessed raises both

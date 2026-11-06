@@ -28,6 +28,10 @@ type tracker struct {
 	recovering    bool
 	recoverySince time.Time
 	recoveryFloor State
+	// unavailableFloor remembers a degraded state hidden by an immediate unknown
+	// so valid input cannot turn a fault into an instant recovery.
+	unavailableFloor     State
+	haveUnavailableFloor bool
 
 	last   Verdict
 	lastAt time.Time
@@ -92,6 +96,27 @@ func filterWindow(window []State, m int) State {
 // check that has merely been unavailable recovers at once: nothing was found wrong.
 func (t *tracker) hold(now time.Time, period time.Duration) {
 	c := t.candidate
+	if t.info.UnknownImmediate && c == Unavailable {
+		if t.seen && t.served.rank() < Unavailable.rank() {
+			t.unavailableFloor, t.haveUnavailableFloor = t.served, true
+		}
+		if !t.seen || t.served != Unavailable {
+			t.served, t.since = Unavailable, now
+		}
+		t.recovering = false
+		return
+	}
+	if t.info.UnknownImmediate && t.served == Unavailable && t.haveUnavailableFloor {
+		floor := t.unavailableFloor
+		t.haveUnavailableFloor = false
+		if c.rank() <= floor.rank() {
+			t.served, t.since, t.recovering = c, now, false
+			return
+		}
+		t.served, t.since = floor, now
+		t.recovering, t.recoverySince, t.recoveryFloor = true, now, c
+		return
+	}
 	switch {
 	case !t.seen:
 		t.served, t.since = c, now

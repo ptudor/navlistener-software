@@ -68,11 +68,13 @@ consumer align to it.
 | **Observer offline** | station unseen `> 300 s` (`ObserverOfflineThreshold`) | warn (`station_offline`) | operator-actionable; shorter than SV silence. Wired per regression fix (regression fix defined it but nothing emitted it): classified from the unfiltered caps ∪ rf liveness map, so a dark station stays observable indefinitely. The crit escalation tier is reserved until a second threshold is defined |
 | **Fresh-receiver window** | `≤ 60 s` (`FreshReceiverThreshold`) | — | a receiver's vote only counts if it saw the SV this recently |
 | **Debounce** | `60 s` (`DebounceDuration`) | — | provisional state must persist this long to confirm |
-| **Environmental baseline** | six samples spanning ≥20 min, rolling six-hour median; environment input stale after 11 min | advisory only | station-specific; invalid, heated, or anomalous reports do not train it |
+| **Environmental baseline** | six samples spanning ≥20 min, rolling six-hour median; a 24-hour retained reference uses samples ≥12 h old; environment input stale after 11 min | advisory only | station-specific; invalid, heated, or anomalous reports do not train it, and reference learning freezes during a departure |
 | **Environmental magnitude** | 8/15 °C, 20/40 percentage points RH, 800/1600 Pa | warning event at inconsistent/unassured | transport pacing is separate; these values are carried in the profile hash and event evidence |
 | **Environmental rate** | 6/12 °C/h, 20/40 percentage points RH/h, 300/600 Pa/h over 30 s–15 min | warning event at inconsistent/unassured | evaluated beside magnitude so gradual and sudden changes are both visible |
 | **Environmental sensor health** | exact flatline ≥30 min and ≥7 reports; enclosure-sensor spread 5/10 °C or 10/20 percentage points RH; invalid, faulted, extended-range and 0/100 %RH rail states | warning | heater-withheld HDC values are intentional unknowns, not faults |
 | **Dew-point spread** | air temperature minus calculated dew point ≤2/0.5 °C | warning environmental event | proximity to saturation at the sensor, not proof of surface condensation, clouds, RF interference or an attack |
+| **Regional pressure residual** | 30 min log-pressure tendency; ≥2 qualified surveyed neighbours within 100 km; endpoints ≤11 min apart; regional spread ≤10 m pressure-equivalent; local residual 5/15 m | advisory warning at inconsistent/unassured | compares changes, not raw pressures, so station elevation and constant offset cancel; missing, stale or incoherent neighbours are unknown |
+| **Barometric height consistency** | pressure and GNSS endpoints synchronized within 5 s; movement and divergence use 3σ/6σ, clamped to 10–50 m and 30–150 m; 3 m model floor | lower-only barometric-position physics domain | opt-in for one explicitly qualified vented sensor at a surveyed fixed station; pressure, regional spread, model, and GNSS vertical uncertainty are combined |
 
 > **Dead-band note.** intsat's `thresholds.go` also defines `OrbitDiscoWarningThreshold = 5.0`
 > and `TimeDiscoWarningThreshold = 5.0` ("emphasis" middle bands, a galmonmon inheritance), but
@@ -230,6 +232,8 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `station_assurance` | a station's fused integrity state changes among `assured`, `inconsistent` and `unassured`; carries every check's evidence ([proposal](proposals/STATION-ASSURANCE.md)) | 2 unassured, 1 inconsistent, 0 assured |
 | `environment_sensor_health` | environmental instrumentation changes among `ok`, `degraded`, `fault`, `stale` and `unknown`; includes validity, disagreement, saturation, flatline and calibration evidence | 1 on degradation/fault/stale/unknown; 0 on recovery |
 | `environmental_change` | the station-specific temperature, RH, pressure, rate or dew-point-spread check changes among `normal`, `changed`, `severe` and `unknown` after filtering | 1 on changed/severe or stale unknown; 0 on recovery. Advisory only; never an attack classification |
+| `regional_pressure_anomaly` | a qualified station's pressure tendency changes among `coherent`, `local_change`, `severe` and `unknown` relative to fresh surveyed neighbours | 1 on local/severe, incoherent, sensor-fault or stale context; 0 on coherent. Advisory only |
+| `barometric_height_consistency` | regional-weather-corrected barometric height and synchronized GNSS height change among `consistent`, `inconsistent`, `diverged` and `unknown` | 1 on inconsistent/diverged or ambiguous/fault/stale context; 0 on consistent. Only qualified inconsistency enters fusion |
 | `station_rf_degraded` | one station RF metric departs its baseline, or every signal's C/N₀ drops with a quiet front end; early warning, not an attack claim | 1; 0 on clear |
 | `antenna_fault` | receiver antenna status reports open/short or equivalent confirmed fault | 1; 0 on clear |
 | `capability_signal_lost` | a demonstrated `(gnssId,sigId)` is unseen past `CapSignalLostAfter` while its station remains alive | 1 |
@@ -339,13 +343,16 @@ signatures miss.
 
 > **Fusion coverage.** The station-level *fusion* (`spoofing_suspected`) requires
 > `SpoofGateQuorum` (2) independent physics domains unassured together, or one with the
-> receiver's own spoofing flag. Four domains are wired (`WiredSpoofGates = 4`): signal power,
-> position, receiver clock and time reference. A station contributes the domains its receiver
+> receiver's own spoofing flag. Five domains are wired (`WiredSpoofGates = 5`): signal power,
+> position, receiver clock, time reference and qualified barometric position. A station contributes the domains its receiver
 > reports — one that sends only NAV-SAT and MON-RF has signal power alone and cannot reach the
 > quorum — and its integrity assessment says which are available. A single domain is a
 > degradation signal, not an attack claim, and surfaces as `station_assurance` `inconsistent`.
-> Environmental sensor-health and change checks are explicitly advisory and do not enter this
-> count, the fused score or `unassured_domains`.
+> Environmental sensor-health, change and regional-pressure checks are explicitly advisory and
+> do not enter this count, the fused score or `unassured_domains`. Barometric position can enter
+> only after explicit installation qualification and a coherent regional comparison. It shares
+> the GNSS height observation with static position, but adds an independent pressure-derived
+> displacement model; temperature, RH and multiple pressure channels do not add extra votes.
 > The daemon exports `navlistener_spoof_gates_wired` and `navlistener_spoof_gate_quorum` gauges
 > (alert on `wired < quorum`). The per-SV plausibility gates above (`wn_mismatch`, discos,
 > envelopes) fire independently of the quorum.
@@ -385,8 +392,9 @@ synchronized access to shared state:
 **Scope :** this table maps the core per-SV integrity signals to their primary feed
 fields; it is deliberately **not** the full event vocabulary. The authoritative, complete event
 list — including `ura_alert`, `wn_mismatch`, `leap_mismatch`, `bds_integrity_flag`,
-`position_unknown`, `xsig_divergence`, the two capability events, the four station-RF events
-and `station_assurance` — is §5's table, which is kept matched to the shipped `Type:` literals.
+`position_unknown`, `xsig_divergence`, the two capability events, the station-RF and
+environmental events, and `station_assurance` — is §5's table, which is kept matched to the
+shipped `Type:` literals.
 
 Field names and event vocabulary are defined once, in `docs/OUTPUT.md`; the integrity layer
 emits to that standard and consumers read it from there.

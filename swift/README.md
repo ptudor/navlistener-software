@@ -34,8 +34,10 @@ disagreement remains explicit. See [reception rules](../docs/RECEPTION.md).
 
 The latest receiver interference context shows its transition report and the
 preceding report from the same boot. A separate **Sensor history** card reads the
-private historian API for temperature, humidity, absolute pressure and RTC/GNSS
-phase over one hour through seven days. Charts break at missing readings, long
+private historian API for each enclosure temperature/RH channel, qualified and
+main absolute pressure, regulator temperature, RTC oscillator temperature, and
+RTC/GNSS phase over one hour through seven days. Distinct physical sensors are
+not averaged or relabeled as outdoor ambient conditions. Charts break at missing readings, long
 receipt gaps and reboots; individual samples retain source UTC and verification.
 History is bounded by collector startup/current audience policy, even when older
 rows remain stored. It does not read the device's local journal.

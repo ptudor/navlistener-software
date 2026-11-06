@@ -3,10 +3,12 @@
 **Status: RF monitoring, jamming detection, stationary received-power history and
 station integrity checks implemented.** MON-RF/MON-HW, reception telemetry, the
 receiver's own solution (telemetry `0x03`) and the board's pulse timing feed the
-station detectors. Four independent physics domains are wired against the quorum of
-two, so `spoofing_suspected` can be confirmed (§3) at stations whose receivers report
-more than one of them. Doppler, cross-constellation and measured-ionosphere gates,
-SEC-SIG transport and the hardware tiers remain planned.
+station detectors. Five independent physics domains are wired against the quorum of
+two; the fifth, barometric position, is available only at surveyed fixed stations whose
+installed pressure path is explicitly qualified and has coherent regional context.
+`spoofing_suspected` can therefore be confirmed (§3) only where at least two applicable
+domains agree. Doppler, cross-constellation and measured-ionosphere gates, SEC-SIG
+transport and the hardware tiers remain planned.
 
 This document describes how `navlistener` uses receiver telemetry for RF monitoring
 and the planned **jamming and spoofing defense layer** for the fleet. This is
@@ -224,18 +226,23 @@ rule identifies what is wired today, consistent with `docs/INTEGRITY.md §8`.
 the measurements they share — and a domain counts once however many of its checks agree, so two
 views of one measurement cannot make a quorum. A confirmed `spoofing_suspected` event requires
 **≥2 independent physics domains** unassured at one station (signal power, position, receiver
-clock, time reference), or one together with the receiver's own spoofing flag, held for the
-debounce window. A *neighbouring* station seeing the same anomaly on the same SVs would be
+clock, time reference, or a qualified barometric-position consistency check), or one together
+with the receiver's own spoofing flag, held for the debounce window. A *neighbouring* station
+seeing the same anomaly on the same SVs would be
 stronger corroboration still, since a genuine broadcast is identical for every receiver in view;
 that input is planned. This mirrors the broadcast-agreement logic in `docs/INTEGRITY.md §6`.
 Interference evidence (AGC, CW) does not count toward the quorum: jamming is not spoofing.
 
-> **As-built status.** Four physics domains are wired (`WiredSpoofGates = 4`): signal power
-> (C/N₀ vs elevation), position, receiver clock and time reference, evaluated by the station
-> integrity checks in `go/internal/integrity` ([proposal](proposals/STATION-ASSURANCE.md)).
+> **As-built status.** Five physics domains are wired (`WiredSpoofGates = 5`): signal power
+> (C/N₀ vs elevation), position, receiver clock, time reference and qualified barometric
+> position, evaluated by the station integrity checks in `go/internal/integrity`
+> ([proposal](proposals/STATION-ASSURANCE.md)).
 > Which domains a station contributes depends on what its receiver reports: a station that sends
 > only NAV-SAT and MON-RF has the signal-power domain alone and cannot reach the quorum. Each
-> station's integrity assessment shows its available checks. Doppler-vs-ephemeris needs RAWX on
+> station's integrity assessment shows its available checks. Barometric position is lower-only,
+> opt-in, and unavailable without synchronized GNSS height and fresh, coherent pressure from at
+> least two qualified surveyed neighbours; ordinary weather and sensor-health checks are advisory.
+> Doppler-vs-ephemeris needs RAWX on
 > the push path, cross-constellation contradiction needs the coherence detector, measured-iono
 > needs the residual evaluator, and SEC-SIG ingest is not yet transported. The
 > `navlistener_spoof_gates_wired` / `navlistener_spoof_gate_quorum` gauges publish the wiring.

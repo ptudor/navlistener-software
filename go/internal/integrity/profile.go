@@ -46,6 +46,7 @@ type Profile struct {
 	Baseline           BaselineProfile         `json:"baseline"`
 	Neighbour          NeighbourProfile        `json:"neighbour"`
 	Environment        EnvironmentProfile      `json:"environment"`
+	Barometric         BarometricProfile       `json:"barometric"`
 }
 
 // NeighbourProfile defines which stations corroborate each other's interference:
@@ -143,6 +144,7 @@ func DefaultProfile() Profile {
 		Environment: EnvironmentProfile{
 			StaleAfter:     11 * time.Minute,
 			BaselineWindow: 6 * time.Hour, BaselineMinAge: 20 * time.Minute, BaselineMinSamples: 6,
+			PersistenceWindow: 24 * time.Hour, PersistenceMinAge: 12 * time.Hour,
 			RateMinInterval: 30 * time.Second, RateMaxInterval: 15 * time.Minute,
 			FlatlineAfter: 30 * time.Minute, FlatlineMinSamples: 7,
 			TemperatureChangeC:          EnvironmentalBands{Inconsistent: 8, Unassured: 15},
@@ -154,6 +156,20 @@ func DefaultProfile() Profile {
 			TemperatureDisagreementC:    EnvironmentalBands{Inconsistent: 5, Unassured: 10},
 			HumidityDisagreementPct:     EnvironmentalBands{Inconsistent: 10, Unassured: 20},
 			DewPointSpreadInconsistentC: 2, DewPointSpreadUnassuredC: 0.5,
+		},
+		Barometric: BarometricProfile{
+			Window: 30 * time.Minute, MaxTimeSkew: 6 * time.Minute, SampleMaxAge: 11 * time.Minute,
+			SolutionMaxSkew: 5 * time.Second, RadiusM: 100_000, MinNeighbours: 2,
+			MaxRegionalSpreadM: 10, ModelUncertaintyM: 3,
+			RegionalDepartureM: EnvironmentalBands{Inconsistent: 5, Unassured: 15},
+			Movement: ScaledBands{
+				Inconsistent: ScaledBand{Sigmas: 3, Min: 10, Max: 50},
+				Unassured:    ScaledBand{Sigmas: 6, Min: 30, Max: 150},
+			},
+			Divergence: ScaledBands{
+				Inconsistent: ScaledBand{Sigmas: 3, Min: 10, Max: 50},
+				Unassured:    ScaledBand{Sigmas: 6, Min: 30, Max: 150},
+			},
 		},
 	}
 }
@@ -214,6 +230,8 @@ func (p Profile) Validate() error {
 		positive("environment.stale_after", p.Environment.StaleAfter.Seconds()),
 		positive("environment.baseline_window", p.Environment.BaselineWindow.Seconds()),
 		positive("environment.baseline_min_age", p.Environment.BaselineMinAge.Seconds()),
+		positive("environment.persistence_window", p.Environment.PersistenceWindow.Seconds()),
+		positive("environment.persistence_min_age", p.Environment.PersistenceMinAge.Seconds()),
 		window("environment.rate", p.Environment.RateMinInterval, p.Environment.RateMaxInterval),
 		positive("environment.flatline_after", p.Environment.FlatlineAfter.Seconds()),
 		bands("environment.temperature_change_c", p.Environment.TemperatureChangeC.Inconsistent, p.Environment.TemperatureChangeC.Unassured),
@@ -224,6 +242,16 @@ func (p Profile) Validate() error {
 		bands("environment.pressure_rate_pa_per_hour", p.Environment.PressureRatePaPerHour.Inconsistent, p.Environment.PressureRatePaPerHour.Unassured),
 		bands("environment.temperature_disagreement_c", p.Environment.TemperatureDisagreementC.Inconsistent, p.Environment.TemperatureDisagreementC.Unassured),
 		bands("environment.humidity_disagreement_percent", p.Environment.HumidityDisagreementPct.Inconsistent, p.Environment.HumidityDisagreementPct.Unassured),
+		positive("barometric.window", p.Barometric.Window.Seconds()),
+		nonNegative("barometric.max_time_skew", p.Barometric.MaxTimeSkew.Seconds()),
+		positive("barometric.sample_max_age", p.Barometric.SampleMaxAge.Seconds()),
+		positive("barometric.solution_max_skew", p.Barometric.SolutionMaxSkew.Seconds()),
+		positive("barometric.radius_m", p.Barometric.RadiusM),
+		positive("barometric.max_regional_spread_m", p.Barometric.MaxRegionalSpreadM),
+		nonNegative("barometric.model_uncertainty_m", p.Barometric.ModelUncertaintyM),
+		bands("barometric.regional_departure_m", p.Barometric.RegionalDepartureM.Inconsistent, p.Barometric.RegionalDepartureM.Unassured),
+		p.Barometric.Movement.validate("barometric.movement"),
+		p.Barometric.Divergence.validate("barometric.divergence"),
 	}
 	if sp.DriftMinEpochs < 1 {
 		errs = append(errs, fmt.Errorf("static_position.drift_min_epochs must be at least 1"))
@@ -252,9 +280,16 @@ func (p Profile) Validate() error {
 	if p.Environment.BaselineMinAge > p.Environment.BaselineWindow {
 		errs = append(errs, fmt.Errorf("environment.baseline_min_age must not exceed baseline_window"))
 	}
+	if p.Environment.PersistenceMinAge < p.Environment.BaselineWindow || p.Environment.PersistenceMinAge > p.Environment.PersistenceWindow ||
+		p.Environment.PersistenceWindow < p.Environment.BaselineWindow {
+		errs = append(errs, fmt.Errorf("environment persistence needs baseline_window <= persistence_min_age <= persistence_window"))
+	}
 	if !finite(p.Environment.DewPointSpreadInconsistentC) || !finite(p.Environment.DewPointSpreadUnassuredC) ||
 		p.Environment.DewPointSpreadUnassuredC < 0 || p.Environment.DewPointSpreadInconsistentC < p.Environment.DewPointSpreadUnassuredC {
 		errs = append(errs, fmt.Errorf("environment dew-point spread needs 0 <= unassured <= inconsistent"))
+	}
+	if p.Barometric.MinNeighbours < 1 {
+		errs = append(errs, fmt.Errorf("barometric.min_neighbours must be at least 1"))
 	}
 	if err := errors.Join(errs...); err != nil {
 		return fmt.Errorf("integrity: %w", err)
@@ -342,6 +377,9 @@ type StationProfile struct {
 	SegmentID string `json:"segment_id,omitempty"`
 	// Baseline pairs the station with a co-located partner, for any mode.
 	Baseline *Baseline `json:"baseline,omitempty"`
+	// Barometer explicitly qualifies one vented pressure channel for regional
+	// context and GNSS-height corroboration. It is disabled when nil.
+	Barometer *BarometerPolicy `json:"barometer,omitempty"`
 }
 
 // Validate rejects an installation profile the checks cannot apply.
@@ -372,7 +410,17 @@ func (s StationProfile) Validate() error {
 		return fmt.Errorf("integrity: a maximum speed applies only to a mobile station")
 	}
 	if s.Baseline != nil {
-		return s.Baseline.validate()
+		if err := s.Baseline.validate(); err != nil {
+			return err
+		}
+	}
+	if s.Barometer != nil {
+		if s.Mode != ModeFixed || s.Position == nil {
+			return fmt.Errorf("integrity: a barometer policy requires a surveyed fixed station")
+		}
+		if err := s.Barometer.validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

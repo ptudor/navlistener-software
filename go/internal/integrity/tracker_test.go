@@ -199,3 +199,23 @@ func TestTrackerExpireHoldsDegradedState(t *testing.T) {
 	}
 	checkEvidence(r)
 }
+
+func TestTrackerUnknownImmediatePreservesRecoveryDebt(t *testing.T) {
+	info := testInfo
+	info.UnknownImmediate = true
+	filter := FilterPolicy{M: 1, N: 1, RecoveryHold: 5 * time.Minute}
+	tr := newTracker(info)
+	tr.update(Verdict{State: Unassured, Reasons: []string{"fault"}}, t0, filter)
+	tr.update(Verdict{State: Unavailable, Reasons: []string{ReasonStale}}, t0.Add(time.Minute), filter)
+	if r := tr.result(); r.State != Unavailable || r.Candidate != Unavailable || !slices.Contains(r.Reasons, ReasonStale) {
+		t.Fatalf("missing input did not become unknown immediately: %+v", r)
+	}
+	tr.update(Verdict{State: Assured}, t0.Add(2*time.Minute), filter)
+	if r := tr.result(); r.State != Unassured || r.Candidate != Assured || r.RecoveringSince == nil {
+		t.Fatalf("returning input erased the prior fault: %+v", r)
+	}
+	tr.update(Verdict{State: Assured}, t0.Add(7*time.Minute), filter)
+	if r := tr.result(); r.State != Assured || r.RecoveringSince != nil {
+		t.Fatalf("clean recovery hold did not clear the fault: %+v", r)
+	}
+}

@@ -41,6 +41,31 @@ private func historyPage(_ changes: [String: Any] = [:]) throws -> SensorHistory
     #expect(page.samples[0].hardwareTrust == "trusted")
 }
 
+@Test func historyKeepsEnvironmentalSensorsSeparate() throws {
+    let details: [String: Any] = [
+        "environment": ["mcp9808_c": 22.0, "hdc2080_c": 22.5, "humidity_percent": 41.0],
+        "barometer": ["state": "ready", "temperature_c": 23.0, "pressure_pa": 100123],
+        "sht3x": ["state": "ready", "temperature_c": 21.5, "humidity_percent": 42.0],
+        "hih8121": ["state": "answering", "status": "fresh", "temperature_c": 21.75, "humidity_percent": 43.0],
+        "regulator": ["state": "ready", "spreader_c": 60.0, "peak_c": 66.0],
+        "rtc_temperature": ["state": "answering", "temperature_c": 24.25]
+    ]
+    let page = try historyPage(["samples": [["received_at": "2026-09-30T11:00:00Z", "details": details]]])
+    let sample = page.samples[0]
+    #expect(SensorMetric.temperature.value(in: sample) == 22)
+    #expect(SensorMetric.hdcTemperature.value(in: sample) == 22.5)
+    #expect(SensorMetric.humidity.value(in: sample) == 41)
+    #expect(SensorMetric.pressure.value(in: sample) == 100123)
+    #expect(SensorMetric.barometerTemperature.value(in: sample) == 23)
+    #expect(SensorMetric.sht3xTemperature.value(in: sample) == 21.5)
+    #expect(SensorMetric.sht3xHumidity.value(in: sample) == 42)
+    #expect(SensorMetric.hih8121Temperature.value(in: sample) == 21.75)
+    #expect(SensorMetric.hih8121Humidity.value(in: sample) == 43)
+    #expect(SensorMetric.regulatorTemperature.value(in: sample) == 60)
+    #expect(SensorMetric.regulatorPeakTemperature.value(in: sample) == 66)
+    #expect(SensorMetric.rtcTemperature.value(in: sample) == 24.25)
+}
+
 @Test func historyRejectsInvalidBoundariesAndContinuations() throws {
     let request = try historyRequest()
     // A minor schema bump is additive and accepted; another major is not.

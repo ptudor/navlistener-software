@@ -15,21 +15,25 @@ func TestDefaultProfileValid(t *testing.T) {
 
 func TestProfileValidateRejects(t *testing.T) {
 	cases := map[string]func(*Profile){
-		"m above n":           func(p *Profile) { p.Filter.M = 5 },
-		"zero n":              func(p *Profile) { p.Filter.N, p.Filter.M = 0, 0 },
-		"negative hold":       func(p *Profile) { p.Filter.RecoveryHold = -time.Second },
-		"zero stale bound":    func(p *Profile) { p.StaleAfter = 0 },
-		"negative weight":     func(p *Profile) { p.Weights = map[string]float64{"a": -1} },
-		"not-a-number weight": func(p *Profile) { p.Weights = map[string]float64{"a": math.NaN()} },
-		"no neighbour radius": func(p *Profile) { p.Neighbour.RadiusM = 0 },
-		"no neighbour window": func(p *Profile) { p.Neighbour.Window = 0 },
-		"no location age":     func(p *Profile) { p.Neighbour.LocationMaxAge = 0 },
-		"baseline bands":      func(p *Profile) { p.Baseline.Bands.Unassured.Min = 1 },
-		"environment stale":   func(p *Profile) { p.Environment.StaleAfter = 0 },
-		"environment samples": func(p *Profile) { p.Environment.BaselineMinSamples = 1 },
-		"environment age":     func(p *Profile) { p.Environment.BaselineMinAge = 7 * time.Hour },
-		"environment bands":   func(p *Profile) { p.Environment.HumidityChangePercent.Unassured = 1 },
-		"dew point bands":     func(p *Profile) { p.Environment.DewPointSpreadUnassuredC = 3 },
+		"m above n":               func(p *Profile) { p.Filter.M = 5 },
+		"zero n":                  func(p *Profile) { p.Filter.N, p.Filter.M = 0, 0 },
+		"negative hold":           func(p *Profile) { p.Filter.RecoveryHold = -time.Second },
+		"zero stale bound":        func(p *Profile) { p.StaleAfter = 0 },
+		"negative weight":         func(p *Profile) { p.Weights = map[string]float64{"a": -1} },
+		"not-a-number weight":     func(p *Profile) { p.Weights = map[string]float64{"a": math.NaN()} },
+		"no neighbour radius":     func(p *Profile) { p.Neighbour.RadiusM = 0 },
+		"no neighbour window":     func(p *Profile) { p.Neighbour.Window = 0 },
+		"no location age":         func(p *Profile) { p.Neighbour.LocationMaxAge = 0 },
+		"baseline bands":          func(p *Profile) { p.Baseline.Bands.Unassured.Min = 1 },
+		"environment stale":       func(p *Profile) { p.Environment.StaleAfter = 0 },
+		"environment samples":     func(p *Profile) { p.Environment.BaselineMinSamples = 1 },
+		"environment age":         func(p *Profile) { p.Environment.BaselineMinAge = 7 * time.Hour },
+		"environment persistence": func(p *Profile) { p.Environment.PersistenceMinAge = time.Hour },
+		"environment bands":       func(p *Profile) { p.Environment.HumidityChangePercent.Unassured = 1 },
+		"dew point bands":         func(p *Profile) { p.Environment.DewPointSpreadUnassuredC = 3 },
+		"barometric window":       func(p *Profile) { p.Barometric.Window = 0 },
+		"barometric neighbours":   func(p *Profile) { p.Barometric.MinNeighbours = 0 },
+		"barometric bands":        func(p *Profile) { p.Barometric.Divergence.Unassured.Min = 1 },
 	}
 	for name, mutate := range cases {
 		p := DefaultProfile()
@@ -47,6 +51,8 @@ func TestStationProfileValidate(t *testing.T) {
 		{Mode: ModeFixed, Position: &Surveyed{LatDeg: 37.4, LonDeg: -122.1, HeightM: 12}},
 		{Mode: ModeMobile, MaxSpeedMPS: 30},
 		{Mode: ModeMobile},
+		{Mode: ModeFixed, Position: &Surveyed{LatDeg: 37.4, LonDeg: -122.1, HeightM: 12},
+			Barometer: &BarometerPolicy{Sensor: "bmp581", Vented: true, RelativeUncertaintyPa: 10}},
 	}
 	for _, s := range good {
 		if err := s.Validate(); err != nil {
@@ -61,6 +67,9 @@ func TestStationProfileValidate(t *testing.T) {
 		{Mode: ModeMobile, Position: &Surveyed{}},
 		{Mode: ModeFixed, MaxSpeedMPS: 5},
 		{Mode: ModeMobile, MaxSpeedMPS: -1},
+		{Mode: ModeFixed, Barometer: &BarometerPolicy{Sensor: "bmp581", Vented: true, RelativeUncertaintyPa: 10}},
+		{Mode: ModeFixed, Position: &Surveyed{}, Barometer: &BarometerPolicy{Sensor: "bmp581", RelativeUncertaintyPa: 10}},
+		{Mode: ModeFixed, Position: &Surveyed{}, Barometer: &BarometerPolicy{Sensor: "wrong", Vented: true, RelativeUncertaintyPa: 10}},
 	}
 	for _, s := range bad {
 		if s.Validate() == nil {
@@ -87,11 +96,17 @@ func TestConfigHash(t *testing.T) {
 	p3 := DefaultProfile()
 	p3.Environment.HumidityChangePercent.Inconsistent++
 	changed["environment threshold"] = ConfigHash(p3, station, checks)
+	p4 := DefaultProfile()
+	p4.Barometric.Window++
+	changed["barometric threshold"] = ConfigHash(p4, station, checks)
 	moved := *station.Position
 	moved.HeightM += 0.01
 	changed["surveyed position"] = ConfigHash(p, StationProfile{Mode: ModeFixed, Position: &moved}, checks)
 	changed["check version"] = ConfigHash(p, station, map[string]int{"a": 1, "b": 3})
 	changed["station mode"] = ConfigHash(p, StationProfile{Mode: ModeMobile}, checks)
+	withBarometer := station.Clone()
+	withBarometer.Barometer = &BarometerPolicy{Sensor: "bmp581", Vented: true, RelativeUncertaintyPa: 10}
+	changed["barometer qualification"] = ConfigHash(p, withBarometer, checks)
 	for what, h := range changed {
 		if h == base {
 			t.Errorf("hash unchanged by a different %s", what)

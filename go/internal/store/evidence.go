@@ -19,6 +19,7 @@ import (
 var EvidenceEventTypes = []string{
 	"spoofing_suspected", "station_assurance", "jamming_detected", "station_rf_degraded", "antenna_fault",
 	"environment_sensor_health", "environmental_change",
+	"regional_pressure_anomaly", "barometric_height_consistency",
 }
 
 // EvidencePolicy bounds evidence capture.

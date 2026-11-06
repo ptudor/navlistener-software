@@ -234,9 +234,14 @@ behind it, `since`, `recovering_since` while a recovery is held, `evaluated_at`,
 and the latest `metrics`, `thresholds` and `reasons`. It carries offsets from a
 surveyed position, never coordinates. Public views exclude it, as they exclude
 board telemetry, because it is evaluated from the receiver's own solution and
-the board's pulse timing. `environment_sensor_health` and `environment_change` are
-advisory checks in the same list. They retain unknown/stale state and emit their own events,
-but do not enter the fused station score, `unassured_domains` or spoofing quorum.
+the board's pulse timing. `environment_sensor_health`, `environment_change`, and
+`regional_pressure` are advisory checks in the same list. They retain unknown/stale state and
+emit their own events, but do not enter the fused station score, `unassured_domains` or
+spoofing quorum. A configured `barometric_height` check is lower-only physical evidence: it
+can lower assurance only when a synchronized GNSS height change diverges from an
+uncertainty-bounded, regional-weather-corrected pressure change. Its metrics expose pressure
+endpoints, interval, neighbour count/age/distance, regional spread, GNSS change and combined
+uncertainty. Missing or incoherent context remains `unavailable`.
 
 Implemented board telemetry adds optional `board` to authorized operator,
 organization and collection observer rows. `board.latest.details.environment`
@@ -498,7 +503,8 @@ this section is the wire shape only.
 
 **Station event evidence.** For `spoofing_suspected`, `station_assurance`, `jamming_detected`,
 `station_rf_degraded`, `antenna_fault`, `environment_sensor_health` and
-`environmental_change`, the collector captures the station's stored inputs
+`environmental_change`, `regional_pressure_anomaly` and `barometric_height_consistency`, the
+collector captures the station's stored inputs
 from ten minutes before to one minute after the confirmation: its `rf_samples` (NAV-SAT, MON-RF
 and receiver solutions) and `observer_samples` (board timing and environment), scoped to the
 event's audience. Capture runs about a minute after the event, once per event, and survives
