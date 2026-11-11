@@ -55,6 +55,184 @@ Events and captured event evidence have no retention policy. They are the durabl
 record explaining an integrity transition. Do not add retention to them merely to
 make their policy table look symmetrical.
 
+## Capacity and availability posture
+
+### Growth has explicit bounds
+
+The raw evidence tables do not grow forever: production retention drops their
+chunks after 365 days, and feed snapshots expire after 90 days. Confirmed events
+and their captured evidence are intentionally retention-less and therefore need
+continued size monitoring, although their present growth is much smaller than the
+raw and RF streams.
+
+There is no implemented cold archive or compact long-term decoded ephemeris
+history today. If the product must retain replayable observations beyond one
+year, build and verify that export before the first raw chunks reach retention.
+The backup receivers' seven-daily/four-weekly snapshot policy is disaster
+recovery, not a substitute for a historical observation archive.
+
+### Use 250 MB per client per day for first-pass planning
+
+For present-day budgeting, count one production client at approximately **250 MB
+of live database growth per day**. Here, a client means one station/feeder with a
+message cadence and receiver-telemetry mix broadly like the 2026-11-11 reference
+installation. The number deliberately rounds above the measured average so an
+operator can estimate capacity without reconstructing every table and index.
+
+The useful first approximation is:
+
+```text
+live database = 250 MB × clients × retained days
+```
+
+At a 365-day raw-evidence horizon, that is about 91 GB per similar client before
+adding filesystem snapshots, WAL retention, operating-system data and free-space
+headroom. TimescaleDB and filesystem compression can reduce physical allocation,
+but capacity planning must not depend on an unmeasured future compression ratio.
+Re-measure after changing receiver message rates, adding high-cadence telemetry,
+or deploying a materially different station profile.
+
+This estimate is not feeder-spool consumption, network traffic or daily backup
+transfer size. Those have different framing, compression and retention behavior.
+
+### Separate observation growth from backup churn
+
+The reference database generated about 18 GB of logical WAL in the seven days
+preceding the measurement, while its current physical database reference grew by
+roughly 160–180 MB per day. Neither number is the daily backup-stream size. The
+WAL statistic is cumulative and includes segments PostgreSQL later recycled;
+`pg_wal` occupied only about 79 MiB at the measurement instant.
+
+The backup system sends recursive ZFS incrementals with `zfs send -c`, so blocks
+that changed between snapshots travel in their compressed on-disk form. This is
+changed-block replication, not a copy of only the files or rows that made the
+live database larger. See the OpenZFS
+[send and receive description](https://openzfs.github.io/openzfs-docs/Basic%20Concepts/Operations/Send%20and%20Receive.html).
+
+Six consecutive 24-hour compressed-send estimates from the reference backup
+receiver, ending 2026-11-10, separated the two dominant datasets:
+
+| Dataset | Daily range | Daily mean | What the measurement includes |
+|---|---:|---:|---|
+| Host root | 1.16–1.72 GiB | 1.48 GiB | Operating-system files, application files and caches |
+| PostgreSQL | 0.82–1.01 GiB | 0.87 GiB | New and changed database, index and WAL blocks |
+
+The last pre-exclusion recursive stream was 2,704 MiB (2.64 GiB) by the puller's
+estimate; about 1.60 GiB was the host root, 1.01 GiB was PostgreSQL and 35 MiB
+was the remaining datasets and replication metadata. With two receivers
+independently advancing daily copies of essentially the same source state, that
+design sent approximately 145–160 GiB per 30 days across both backup links. That
+was a backup bandwidth estimate, not retained customer data.
+
+The root-dataset cost has a concrete, non-database cause. Its file-level snapshot
+diff was dominated by `/var/cache/rpki-client`, a regenerable validation cache
+that occupied 3.18 GiB and was refreshed daily. Its size and rewrite cadence are
+consistent with most of the 1.48 GiB average compressed root stream. This cache
+is useful to its producer but does not need historical disaster-recovery copies.
+
+Production removed that churn on 2026-11-11. The warm cache moved to the
+dedicated `zroot/rpki-cache` dataset. The forced backup command now removes that
+dataset's just-created backup snapshot and uses OpenZFS `-X` to omit the subtree
+from the recursive stream, as documented by FreeBSD's
+[`zfs-send(8)`](https://man.freebsd.org/cgi/man.cgi?query=zfs-send&sektion=8).
+OpenZFS also needs `-s` because that snapshot is deliberately missing, so the
+wrapper first proves that every non-cache dataset has the target tag and that no
+excluded snapshot remains. This keeps the stream resumable and fail-closed: the
+cache consumes no new source-snapshot, wire or receiver-snapshot space, while an
+unrelated missing dataset stops the backup.
+
+Both live transition runs passed GUID-for-GUID verification and moved their
+holds. The 13.7-hour navbk62 transition estimated 654 MiB and completed in 31
+seconds; the 3.7-day navbk61 transition estimated 1,745 MiB and completed in 175
+seconds. These unequal windows prove the exclusion path but are not a new daily
+steady-state estimate. Re-measure at least seven complete daily intervals before
+replacing the pre-exclusion capacity figure. Legacy receiver snapshots still
+contain the old cache blocks and expire under normal retention.
+
+The PostgreSQL delta is real changed-block churn but is not 0.87 GiB of new
+long-lived observations. New rows and indexes, TimescaleDB chunk compression,
+database maintenance, checkpoints and recycled files can all replace blocks
+without growing the live dataset by the same amount. The snapshot endpoints and
+send estimate do not attribute those bytes precisely enough to label the whole
+delta as WAL. In particular, the current `pg_wal` footprint was much smaller
+than the measured PostgreSQL stream.
+
+The WAL present in a complete, atomic database snapshot is not disposable. It
+lets PostgreSQL recover that running cluster to a consistent state, as the
+existing restore rehearsal demonstrated. Do not omit `pg_wal`, copy only selected
+files from the data directory or otherwise weaken the tested snapshot while
+trying to save wire bytes. PostgreSQL's
+[filesystem-backup guidance](https://www.postgresql.org/docs/17/backup-file.html)
+describes the consistency requirement.
+
+Continue in this order:
+
+1. Record the compressed recursive estimate and per-dataset estimates for each
+   backup run. Alert on both failed runs and unexplained growth.
+2. Keep the cache exclusion narrow. Configuration, credentials, validated RPKI
+   output and every non-regenerable file remain in the recursive stream. The
+   forced command must continue to reject any missing non-cache snapshot.
+3. Rehearse both a database restore and a complete-host restore after material
+   storage changes. The post-exclusion root-clone check confirmed an empty cache
+   mountpoint, retained configuration and output, and the deployed wrapper, but
+   it does not replace the existing PostgreSQL crash-recovery rehearsal.
+4. If database churn becomes the limiting cost as clients are added, evaluate
+   PostgreSQL 17 incremental base backups plus continuous WAL archiving. Compare
+   measured wire bytes, retained bytes, restore time and point-in-time recovery
+   before changing methods. PostgreSQL documents both
+   [incremental base backups and continuous archiving](https://www.postgresql.org/docs/17/continuous-archiving.html);
+   a PostgreSQL-aware method does not make the required WAL chain optional.
+
+The known host-cache efficiency debt is removed without weakening PostgreSQL
+recovery. The remaining database changed-block multiplier is neither a recovery
+failure nor an architectural corner; measure it before deciding whether a
+PostgreSQL-aware backup method would be materially better.
+
+### Brief planned downtime is currently acceptable
+
+The present deployment deliberately uses one PostgreSQL primary with no live
+standby. The operating target accepts up to five minutes of planned database
+downtime per month for updates and reboots. The production feeder's durable ACK
+and persistent spool make that a comfortable maintenance window, provided the
+normal stop-database-start-validation sequence is followed and spool loss
+counters remain zero.
+
+Do not add database HA solely to remove this small accepted maintenance window.
+The next availability step, when justified, is a physical streaming standby plus
+continuous WAL archiving and a rehearsed promotion procedure, not logical
+multi-primary replication. TimescaleDB supports PostgreSQL streaming replication
+and does not recommend ordinary logical replication for hypertables; see its
+[high-availability guidance](https://www.tigerdata.com/docs/deploy/self-hosted/replication-and-ha/about-ha).
+
+This is a reversible staging point, not an architectural dead end. Production
+already runs with `wal_level = replica`; a physical standby can be added without
+changing the historian schema or feeder protocol. Retention and chunk intervals
+are explicit policies, the source rows carry collector identity, and the feeder
+reconnect/replay contract tolerates a controlled promotion window. Adding HA will
+require another host, private replication access, monitoring, routing, fencing
+and a tested runbook, but not a redesign of the stored observation model.
+
+Choices that would create avoidable future constraints are different: ordinary
+logical multi-primary replication of hypertables, arbitrarily splitting
+neighbouring stations between live fusion processes, or moving PostgreSQL onto a
+volume that the backup system does not cover. None of those is part of the
+current deployment.
+
+Revisit that decision when any of these becomes true:
+
+- the acceptable planned outage becomes materially shorter than five minutes;
+- losing acknowledged data since the latest completed backup is unacceptable;
+- measured restore time no longer meets the recovery target;
+- read traffic needs a dedicated replica;
+- maintenance or unplanned database interruptions become frequent; or
+- several active collector processes need a formally owned schema, policy and
+  failover topology.
+
+Physical replication does not make the collector's in-memory fusion state
+multi-primary. Regional environmental context and other neighbour comparisons
+still require the relevant stations to reach the same active collector, or an
+explicit shared/federated fusion design.
+
 ## Why the production settings are larger
 
 The active settings are:
@@ -302,6 +480,10 @@ SELECT extversion AS timescaledb_version
  WHERE extname = 'timescaledb';
 SELECT pg_size_pretty(pg_database_size(current_database())) AS database_size;
 
+SELECT stats_reset, wal_records, wal_fpi,
+       pg_size_pretty(wal_bytes::bigint) AS wal_bytes
+  FROM pg_stat_wal;
+
 SELECT min(ts) AS oldest_frame,
        max(ts) AS newest_frame,
        count(*) AS raw_frames
@@ -316,6 +498,34 @@ SELECT hypertable_name,
  GROUP BY hypertable_name
  ORDER BY hypertable_name;
 ```
+
+On the reference ZFS host, record live allocation separately from snapshot-held
+blocks:
+
+```sh
+zfs get -Hp -o property,value referenced,used,available zroot/postgresql
+zpool list -Hp -o size,alloc,free,cap zroot
+```
+
+Use a dry-run send estimate to measure wire churn between two retained backup
+snapshots. The recursive estimate should reconcile with the puller's logged
+estimate; individual datasets explain the total:
+
+```sh
+zfs send -nvP -c -L -e -s -R -X zroot/rpki-cache -I zroot@<older-tag> zroot@<newer-tag>
+zfs send -nvP -c -L -e -I zroot/ROOT/default@<older-tag> zroot/ROOT/default@<newer-tag>
+zfs send -nvP -c -L -e -I zroot/postgresql@<older-tag> zroot/postgresql@<newer-tag>
+```
+
+The recursive estimate logs an expected warning that the excluded cache's
+target snapshot does not exist. Any other skipped dataset is a backup failure,
+not another harmless warning.
+
+Take these readings on a schedule. A difference between two `referenced` values
+approximates live filesystem growth; `used - referenced` includes space retained
+by snapshots and descendants. Neither is interchangeable with
+`pg_database_size`, which reports PostgreSQL's logical relation footprint rather
+than filesystem compression and snapshot retention.
 
 Revisit the one-day interval if the active chunk's indexes approach 25% of main
 memory, if ingest rate changes materially, or if compression can no longer keep
