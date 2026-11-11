@@ -92,6 +92,8 @@ Persistence requires TimescaleDB when `[store].dsn` is set. Read feeds are enabl
 through `[serve].addr`. See the [collector guide](go/README.md),
 [authorization guide](go/internal/authorization/README.md), and
 [deployment notes](go/deploy/README.md) for installation and access configuration.
+The [database operations guide](DATABASE_OPERATIONS.md) records historian sizing,
+production PostgreSQL tuning, rollout, rollback and comparable health checks.
 
 The collector also serves a [monitoring map](docs/MONITORING-MAP.md) at
 `/gnss/map/`: NASA Earth imagery, live daylight, and audience-scoped observation
