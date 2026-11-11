@@ -422,8 +422,13 @@ require_registry_entry = false
 
 [[manufacturer_authority.product_policy]]
 product = 1
-revision = 258
+revision = 1
 ```
+
+`revision` is the board revision a record names. An observer reports the
+revision its manifest carries, 1 for revision A, and checks its record against
+it, so that is the number to list. The test vectors use 258 (`0x0102`), which
+no board reports.
 
 With `navcontrol`, keep these tables in a separate file named by the collector's
 `authority_file` setting and passed to `navcontrol -authorities`, so both
