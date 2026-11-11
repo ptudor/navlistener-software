@@ -640,7 +640,7 @@ CREATE TABLE nav_frames (
     decoded     JSONB,                  -- normalized projection (ephemeris/almanac params)
     decoder_ver TEXT
 );
-SELECT create_hypertable('nav_frames','ts', chunk_time_interval => INTERVAL '1 hour');
+SELECT create_hypertable('nav_frames','ts', chunk_time_interval => INTERVAL '1 day');
 -- compress_segmentby = 'gnssid', compress_orderby = 'svid, ts DESC'; short raw retention,
 -- long-term lives in per-SV continuous aggregates (ephemeris history).
 

@@ -98,6 +98,15 @@ func TestIntegrationSchemaApplies(t *testing.T) {
 	if toRegclass != "nav_frames_seq_seen" {
 		t.Errorf("nav_frames_seq_seen table not created")
 	}
+	var chunkSeconds int64
+	if err := s.pool.QueryRow(ctx, `SELECT extract(epoch FROM time_interval)::bigint
+		FROM timescaledb_information.dimensions
+		WHERE hypertable_name = 'nav_frames' AND column_name = 'ts'`).Scan(&chunkSeconds); err != nil {
+		t.Fatalf("query nav_frames chunk interval: %v", err)
+	}
+	if chunkSeconds != 24*60*60 {
+		t.Errorf("nav_frames chunk interval = %d seconds, want one day", chunkSeconds)
+	}
 }
 
 // TestIntegrationReplayDedup drives the full regression fix path against a live database: a
@@ -601,8 +610,8 @@ func TestIntegrationEventWriteIdempotent(t *testing.T) {
 
 // TestIntegrationQueryNavFramesAcrossChunks exercises QueryNavFrames against a real
 // hypertable, which is the only place its ordering contract can actually be tested.
-// schema.sql sets chunk_time_interval to 1 hour, and a QA replay window spans many
-// hours, so the rows a replay consumes are physically spread across chunks. A plain
+// schema.sql sets chunk_time_interval to 1 day, and a QA replay window spans many
+// days, so the rows a replay consumes are physically spread across chunks. A plain
 // table — the workaround used while local TimescaleDB was Apache-licensed and could
 // not apply schema.sql — stores them in one heap and would report a total order the
 // hypertable does not owe us.
@@ -626,10 +635,10 @@ func TestIntegrationQueryNavFramesAcrossChunks(t *testing.T) {
 		t.Fatalf("cleanup: %v", err)
 	}
 
-	// Six frames at 90-minute spacing: with a 1-hour chunk interval every frame lands
+	// Six frames at 25-hour spacing: with a 1-day chunk interval every frame lands
 	// in a different chunk, so a correct result cannot come from within-chunk order.
-	base := time.Now().Add(-24 * time.Hour).Truncate(time.Hour)
-	const step = 90 * time.Minute
+	base := time.Now().Add(-6 * 24 * time.Hour).UTC().Truncate(24 * time.Hour)
+	const step = 25 * time.Hour
 	const n = 6
 	rows := make([][]any, 0, n)
 	for i := range n {

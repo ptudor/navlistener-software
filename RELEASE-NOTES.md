@@ -1,5 +1,9 @@
 # Unreleased
 
+- The raw-frame historian now creates one-day rather than one-hour TimescaleDB chunks. Production
+  measurements put a day of active indexes well inside the memory sizing target, while the wider
+  interval avoids thousands of undersized relations and their planner and lock-table overhead.
+  Existing chunks are unchanged; upgrades apply the interval to future chunks only.
 - Surveyed fixed stations can opt one characterized, vented pressure sensor into regional
   weather context and barometric GNSS-height corroboration. The collector compares 30-minute
   log-pressure tendencies from at least two qualified neighbours within 100 km, exposes missing,

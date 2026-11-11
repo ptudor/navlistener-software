@@ -154,7 +154,9 @@ decoder_ver TEXT
 **Why the hypertable dimension is ingest time, not event time:** radio and GNSS data arrives late
 and out of order. A hypertable wants a near-monotonic dimension so chunks stay tight and
 compression works; `received_at` is the semantically interesting clock and gets its own index.
-Chunks are 1 hour.
+Chunks are one day. At the production ingest rate, that keeps the active chunk's indexes within
+the memory sizing target while avoiding thousands of undersized relations over a year of raw
+retention. Upgrades change only the interval used for future chunks.
 
 **Why `raw` and `decoded` both:** `raw` means a decoder fix can re-derive every historical
 ephemeris from stored bytes. `decoded` means the common queries don't have to. `decoder_ver`

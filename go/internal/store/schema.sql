@@ -70,7 +70,11 @@ CREATE TABLE IF NOT EXISTS nav_frames (
 );
 
 SELECT create_hypertable('nav_frames', 'ts',
-    chunk_time_interval => INTERVAL '1 hour', if_not_exists => TRUE);
+    chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
+-- An hour holds only about 50k production rows and creates roughly 8,800
+-- chunks over the 365-day retention window. Wider future chunks reduce
+-- planning and lock-table pressure; existing chunks remain unchanged.
+SELECT set_chunk_time_interval('nav_frames', INTERVAL '1 day');
 
 -- Additive migration for deployments created before audience/provenance
 -- scoping. Every legacy row becomes explicitly private/unassigned; no absence
