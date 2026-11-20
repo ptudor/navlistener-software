@@ -56,6 +56,7 @@ its reply.
 | `scs, COM2, baud115200, bits8, No, bit1, RTS\|CTS` | hardware flow control; on success the ESP32 starts honoring CTS |
 | `sdio, COM2, CMD, SBF` | commands in, SBF out and nothing else on this port |
 | `scst, usec500` | the receiver time within 0.5 ms of GNSS time once FINETIME is set (2.3), which bounds the time accuracy in section 6 |
+| `spps, , , , , , 100` | a 100 ms xPPS pulse in place of the default 5 ms (3.2, `setPPSParameters`), so the board's PPS lamp and the panel's show each pulse, as they do on the u-blox boards. Only the width is named: the interval, polarity, delay, time scale and sync age stay as the receiver has them, and the pulse's leading edge, which carries the time, does not move |
 | `sso, Res1, COM2, PVTGeodetic+ReceiverTime+MeasEpoch+SatVisibility+ReceiverStatus+RFStatus, sec1` | the 1 Hz stream |
 | `sso, Res2, COM2, ReceiverSetup, OnChange` | the receiver's identity, every 60 s and on change |
 | `sso, Res3, COM2, GPSRawCA+GPSRawL2C+GPSRawL5+GLORawCA+GALRawFNAV+GALRawINAV+GEORawL1+BDSRaw+BDSRawB2a+QZSRawL1CA+QZSRawL2C+QZSRawL5, OnChange` | each navigation page as it is decoded (4.2.2), for the collector; a fixed interval would decimate them |
@@ -224,7 +225,8 @@ this rate, under its raw retention.
    an `sbf_header` for this observer, and each rebuilds with `SBFWire`. Navigation page blocks
    (4017 to 4219) arrive within a minute of a fix.
 5. **Time.** With an antenna and a fix, the RTC is set from GNSS (RTC-SERVICE.md), and its
-   second agrees with the receiver's ReceiverTime.
+   second agrees with the receiver's ReceiverTime. The PPS lamp flashes for a tenth of a
+   second each second, and the timing record's GNSS pulse width is near 100 ms.
 6. **Restart.** Resetting the receiver with SW4 is followed by a new configuration within
    about 30 s and no GPIO13 pulse.
 7. **Recovery.** Lift the receiver's TXD2 test point to stop its data. After 30 s the observer

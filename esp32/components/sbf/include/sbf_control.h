@@ -9,6 +9,8 @@
 //   scs, COM2, baud115200, bits8, No, bit1, RTS|CTS   hardware flow control (3.2, setCOMSettings)
 //   sdio, COM2, CMD, SBF                               commands in, SBF out, nothing else
 //   scst, usec500                                      receiver time within 0.5 ms of GNSS time
+//   spps, , , , , , 100                                a 100 ms pulse, long enough for the PPS lamps;
+//                                                      every other xPPS setting stays as the receiver has it
 //   sso, Res1, COM2, PVTGeodetic+ReceiverTime+MeasEpoch+SatVisibility+ReceiverStatus+RFStatus, sec1
 //   sso, Res2, COM2, ReceiverSetup, OnChange           the receiver's identity, every 60 s
 //   gst                                                the constellations it may track

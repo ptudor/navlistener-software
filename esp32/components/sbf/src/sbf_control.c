@@ -6,12 +6,13 @@ static const char *const commands[] = {
     "scs, COM2, baud115200, bits8, No, bit1, RTS|CTS\r",
     "sdio, COM2, CMD, SBF\r",
     "scst, usec500\r",
+    "spps, , , , , , 100\r",
     "sso, Res1, COM2, PVTGeodetic+ReceiverTime+MeasEpoch+SatVisibility+ReceiverStatus+RFStatus, sec1\r",
     "sso, Res2, COM2, ReceiverSetup, OnChange\r",
     "sso, Res3, COM2, GPSRawCA+GPSRawL2C+GPSRawL5+GLORawCA+GALRawFNAV+GALRawINAV+GEORawL1+BDSRaw+BDSRawB2a+QZSRawL1CA+QZSRawL2C+QZSRawL5, OnChange\r",
     "gst\r",
 };
-enum { STEP_FLOW_CONTROL = 0, STEP_TRACKING = 6, STEPS = sizeof commands / sizeof commands[0] };
+enum { STEP_FLOW_CONTROL = 0, STEP_TRACKING = 7, STEPS = sizeof commands / sizeof commands[0] };
 
 bool sbf_control_forwarded(uint16_t number)
 {

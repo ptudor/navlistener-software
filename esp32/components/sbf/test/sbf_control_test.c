@@ -76,6 +76,11 @@ static void configuration_test(void)
     assert(c.state == SBF_CONTROL_RUNNING && rx.sent == steps && c.configurations == 1 && !c.command_errors);
     assert(!strcmp(rx.last, "gst\r") && esp.cts && esp.cts_on == 1);
     assert(c.supported_known && c.supported == 0xef); // GPS SBAS Galileo BeiDou QZSS GLONASS NavIC
+    // The xPPS pulse is widened once per configuration, and only its width is named: the
+    // interval, polarity, delay, time scale and sync age stay as the receiver has them.
+    unsigned pulse_width = 0;
+    for (size_t i = 0; i < steps; i++) pulse_width += !strcmp(list[i], "spps, , , , , , 100\r");
+    assert(pulse_width == 1);
     // SBF keeps it running; 30 s of silence configures again, CTS off first.
     uint8_t b[64];
     size_t n = status_block(b, 100, 0, 0);
