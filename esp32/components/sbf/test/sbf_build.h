@@ -119,6 +119,26 @@ static inline size_t status_block(uint8_t *out, uint32_t uptime, uint32_t rx_sta
     out[29] = 4; out[31] = 140;
     return seal(out, SBF_RECEIVER_STATUS, 1, 32);
 }
+// One AGCState sub-block: FrontEndID's code and antenna, Gain, SampleVar and BlankingStat.
+typedef struct { uint8_t code, antenna; int8_t gain; uint8_t variance, blanked; } agc_build_t;
+// ReceiverStatus with AGCState sub-blocks of sb_length bytes each (4, or more with padding)
+// and the Temperature byte as given. stated is the N the block claims, which a malformed
+// block may set above the count it carries.
+static inline size_t status_block_agc(uint8_t *out, uint32_t uptime, uint8_t ext_error, uint8_t temperature,
+                                      const agc_build_t *agc, unsigned count, unsigned stated, unsigned sb_length)
+{
+    const size_t length = padded(32 + (size_t)count * sb_length);
+    memset(out, 0, length);
+    put32(out + 8, 1000); put16(out + 12, 2392);
+    out[14] = 4; out[15] = ext_error; put32(out + 16, uptime); put32(out + 20, 0x30);
+    out[28] = (uint8_t)stated; out[29] = (uint8_t)sb_length; out[30] = 13; out[31] = temperature;
+    for (unsigned i = 0; i < count; i++) {
+        uint8_t *p = out + 32 + (size_t)i * sb_length;
+        p[0] = (uint8_t)(agc[i].code | agc[i].antenna << 5); p[1] = (uint8_t)agc[i].gain;
+        p[2] = agc[i].variance; p[3] = agc[i].blanked;
+    }
+    return seal(out, SBF_RECEIVER_STATUS, 1, length);
+}
 // ReceiverSetup, revision 3 with ProductName (400 bytes) or revision 0 (272).
 static inline size_t setup_block(uint8_t *out, uint8_t revision, const char *serial, const char *name,
                                  const char *version, const char *product)

@@ -1,5 +1,6 @@
 #include "sbf.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #define PI 3.14159265358979323846
@@ -215,9 +216,64 @@ bool sbf_rf_status(const uint8_t *b, size_t n, sbf_rf_t *o)
 bool sbf_receiver_status(const uint8_t *b, size_t n, sbf_rx_status_t *o)
 {
     if (!block_is(b, n, 28, SBF_RECEIVER_STATUS)) return false;
-    *o = (sbf_rx_status_t){.cpu_load = b[14], .uptime_s = sbf_u32(b + 16), .rx_state = sbf_u32(b + 20),
-                           .rx_error = sbf_u32(b + 24)};
+    *o = (sbf_rx_status_t){.cpu_load = b[14], .ext_error = b[15], .uptime_s = sbf_u32(b + 16),
+                           .rx_state = sbf_u32(b + 20), .rx_error = sbf_u32(b + 24)};
+    // N, SBLength, CmdCount and Temperature (offset 100, zero unknown), then the sub-blocks.
+    if (n < 32) return true;
+    o->temperature_valid = b[31] != 0;
+    o->temperature_c = (int16_t)(b[31] - 100);
+    const unsigned count = b[28], size = b[29];
+    if (size < 4) return true;
+    for (unsigned i = 0; i < count && o->front_ends < SBF_FRONT_ENDS_MAX; i++) {
+        const size_t at = 32 + (size_t)i * size;
+        if (at + size > n) break;
+        const uint8_t *a = b + at;
+        // A gain of -128 is the Do-Not-Use value: the front end's PLL is not locked.
+        o->front_end[o->front_ends++] = (sbf_front_end_t){.code = a[0] & 0x1f, .antenna = a[0] >> 5,
+            .locked = a[1] != 0x80, .gain_db = (int8_t)a[1], .sample_variance = a[2], .blanked_percent = a[3]};
+    }
     return true;
+}
+
+bool sbf_receiver_uptime(const uint8_t *b, size_t n, uint32_t *uptime_s)
+{
+    if (!block_is(b, n, 28, SBF_RECEIVER_STATUS)) return false;
+    *uptime_s = sbf_u32(b + 16);
+    return true;
+}
+
+const char *sbf_front_end_name(uint8_t code)
+{
+    static const char *const names[] = {
+        "GPSL1/E1", "GLOL1", "E6", "GPSL2", "GLOL2", "L5/E5a/B2a", "E5b/B2b", "E5",
+        "L1 combined", "L2 combined", "MSS/L-band", "B1", "B3", "S-band", "B3/E6 combined",
+    };
+    return code < sizeof names / sizeof names[0] ? names[code] : NULL;
+}
+
+size_t sbf_front_ends_text(const sbf_rx_status_t *s, char *out, size_t size)
+{
+    size_t used = 0;
+    if (!size) return 0;
+    out[0] = 0;
+    for (unsigned i = 0; i < s->front_ends; i++) {
+        const sbf_front_end_t *f = &s->front_end[i];
+        char entry[48], antenna[8] = "", unnamed[8];
+        if (f->antenna == 1 || f->antenna == 2) snprintf(antenna, sizeof antenna, "aux%u ", (unsigned)f->antenna);
+        else if (f->antenna) snprintf(antenna, sizeof antenna, "ant%u ", (unsigned)f->antenna);
+        const char *name = sbf_front_end_name(f->code);
+        if (!name) { snprintf(unnamed, sizeof unnamed, "fe%u", (unsigned)f->code); name = unnamed; }
+        int length;
+        if (f->locked)
+            length = snprintf(entry, sizeof entry, "%s%s%s %d/%u/%u", i ? ", " : "", antenna, name, (int)f->gain_db,
+                              (unsigned)f->sample_variance, (unsigned)f->blanked_percent);
+        else
+            length = snprintf(entry, sizeof entry, "%s%s%s unlocked", i ? ", " : "", antenna, name);
+        if (length < 0 || (size_t)length >= sizeof entry || used + (size_t)length >= size) break;
+        memcpy(out + used, entry, (size_t)length + 1);
+        used += (size_t)length;
+    }
+    return used;
 }
 
 // A c1[] field: up to its size, ending at the first zero, printable, trailing spaces trimmed.

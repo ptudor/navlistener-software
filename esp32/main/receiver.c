@@ -374,6 +374,7 @@ static sbf_control_t sbf_ctl;
 static sbf_setup_t sbf_identity;
 static bool sbf_status_known;
 static sbf_rx_status_t sbf_last_status;
+static int64_t sbf_status_ms;
 static void sbf_publish(void)
 {
     taskENTER_CRITICAL(&health_lock);
@@ -394,7 +395,7 @@ static void sbf_on_block(const uint8_t *block, size_t length, void *ctx)
         }
     }
     sbf_setup_t setup;
-    sbf_rx_status_t status;
+    static sbf_rx_status_t status; // static: over a hundred bytes, and this task's stack is 4 KiB
     if (sbf_number(block) == SBF_RECEIVER_SETUP && sbf_receiver_setup(block, length, &setup) &&
         memcmp(&setup, &sbf_identity, sizeof setup)) {
         sbf_identity = setup;
@@ -413,7 +414,24 @@ static void sbf_on_block(const uint8_t *block, size_t length, void *ctx)
                      (unsigned long)status.uptime_s);
         sbf_status_known = true;
         sbf_last_status = status;
+        sbf_status_ms = now;
     }
+}
+// The receiver's own account of its RF input, from the last ReceiverStatus: each front end's
+// AGC gain, sample variance and blanking, then the receiver's temperature and CPU load. A
+// lower gain is more power at the input, so this line shows an antenna arriving or leaving
+// and a noise floor rising. False while no status block is recent enough to speak for now.
+static bool sbf_log_front_ends(int64_t now)
+{
+    static char text[SBF_FRONT_ENDS_TEXT];
+    if (!sbf_status_known || now - sbf_status_ms > 5000) return false;
+    const sbf_rx_status_t *s = &sbf_last_status;
+    char temperature[16] = "unknown", cpu[16] = "unknown";
+    if (s->temperature_valid) snprintf(temperature, sizeof temperature, "%d C", (int)s->temperature_c);
+    if (s->cpu_load != 255) snprintf(cpu, sizeof cpu, "%u%%", (unsigned)s->cpu_load);
+    if (!sbf_front_ends_text(s, text, sizeof text)) snprintf(text, sizeof text, "none reported");
+    ESP_LOGI(TAG, "front ends (gain dB/variance/blanked %%): %s; receiver temperature %s, CPU %s", text, temperature, cpu);
+    return true;
 }
 static void sbf_on_line(const char *line, void *ctx)
 {
@@ -459,7 +477,7 @@ static void sbf_task(void *arg)
 {
     (void)arg;
     uint8_t buf[512];
-    int64_t next_log = 0;
+    int64_t next_log = 0, next_front_ends = 0;
     unsigned configurations = 0;
     sbf_reader_init(sbf_reader, sbf_on_block, sbf_on_line, sbf_on_prompt, NULL);
     sbf_status_init(&sbf_adapter);
@@ -500,6 +518,7 @@ static void sbf_task(void *arg)
                 ESP_LOGI(TAG, "tracked: GPS=%u SBAS=%u GAL=%u BDS=%u QZSS=%u GLO=%u NavIC=%u fix=%s",
                          health.tracked[0], health.tracked[1], health.tracked[2], health.tracked[3], health.tracked[5],
                          health.tracked[6], health.tracked[7], gnss_status_position_fresh(&health, now) ? "valid" : "unavailable");
+            if (now >= next_front_ends && sbf_log_front_ends(now)) next_front_ends = now + 30000;
             next_log = now + 10000;
         }
     }

@@ -92,12 +92,12 @@ void sbf_control_block(sbf_control_t *c, const uint8_t *block, size_t length, in
 {
     c->last_block_ms = now;
     if (c->state == SBF_CONTROL_STARTING) c->deadline = 0;
-    sbf_rx_status_t status;
-    if (sbf_number(block) != SBF_RECEIVER_STATUS || !sbf_receiver_status(block, length, &status)) return;
+    uint32_t uptime_s;
+    if (sbf_number(block) != SBF_RECEIVER_STATUS || !sbf_receiver_uptime(block, length, &uptime_s)) return;
     // An uptime that went back means the receiver restarted and lost the RAM configuration.
-    const bool restarted = c->uptime_known && status.uptime_s < c->uptime_s;
+    const bool restarted = c->uptime_known && uptime_s < c->uptime_s;
     c->uptime_known = true;
-    c->uptime_s = status.uptime_s;
+    c->uptime_s = uptime_s;
     if (restarted && c->state == SBF_CONTROL_RUNNING) configure(c, now);
 }
 

@@ -106,7 +106,7 @@ CRC-checked, and every field is bounds-checked against the block's Length and SB
 | PVTGeodetic | 4007 | A fix: a GNSS solution type (1, 2, 4-8, 10, not 3 "fixed location", which reports entered coordinates) with Error 0 |
 | ReceiverTime | 5914 | The UTC calendar for the RTC, paired with the PVT of the same epoch |
 | RFStatus | 4092 | Jamming and spoofing states and interference events |
-| ReceiverStatus | 4014 | Restart detection; antenna and congestion changes are logged |
+| ReceiverStatus | 4014 | Restart detection; antenna and congestion changes are logged; each front end's AGC gain and the receiver's temperature are logged every 30 s |
 | ReceiverSetup | 5902 | Product, engine, firmware and serial, logged when they change |
 
 **Satellites.** SVIDs map to UBX gnssId and satellite numbers (4.1.9): GLONASS by slot,
@@ -165,6 +165,33 @@ every board:
 and I are GPS, SBAS, Galileo, BeiDou, QZSS, GLONASS and NavIC. Until it arrives, the default
 mask stands.
 
+**Front ends.** ReceiverStatus ends with one AGCState sub-block for each RF front end (4.2):
+the front end's code and antenna, its AGC gain in dB, the normalized variance of its IF samples
+(nominal 100) and the share of samples its pulse blanker removes. Every 30 s the observer logs
+them, in the receiver's order and under the guide's names, with the receiver's own temperature
+and CPU load:
+
+```
+front ends (gain dB/variance/blanked %): L5/E5a/B2a 37/98/1, E5b/B2b 46/104/1, GPSL2 51/107/1,
+GLOL2 50/100/0, B3 51/98/0, E6 51/93/0, GPSL1/E1 40/96/0, GLOL1 44/96/0, B1 42/98/0; receiver
+temperature 27 C, CPU 4%
+```
+
+A front end whose PLL is not locked reads `unlocked` (its gain field is the Do-Not-Use value),
+one on an auxiliary antenna is prefixed `aux1` or `aux2`, and a temperature of zero in the
+block reads `unknown`. The gain is the receiver's measure of the power at its input: it turns
+its gain down as that power rises. The hardware manual (4.2.1) gives the amplification ahead
+of the module as 65 dB less this gain and allows 15 to 50 dB of it on a single-antenna module,
+so a gain between 15 and 50 dB is in range and one at 15 dB is at the limit. The line above is
+an L1 and L5 antenna in a quiet place: the L2, B3 and E6 front ends, which that antenna does
+not pass, show the least power. On the same unit a noisy bench lowered every gain by about
+8 dB, and no satellite was tracked there. A gain that falls with no change of antenna is
+therefore noise or interference arriving, and one that rises is an antenna, its amplifier or
+its cable giving less. ReceiverStatus's ACTIVEANTENNA bit, which the status line reports, stayed
+clear on firmware 1.0.0 with an antenna drawing current, so the gains are the evidence that an
+antenna is connected. These values are logged only; the collector has them in the forwarded
+blocks (section 7).
+
 ## 7. To the collector
 
 The observer pushes on the GNF1 `sbf` feed with SBF record format 1
@@ -206,6 +233,10 @@ this rate, under its raw retention.
   integration proposal](../../docs/proposals/OBSERVER-TIME-MOTION-AND-SEPTENTRIO.md#custom-mosaic-g5-p3-observer)).
   The P3's ObserverDetails, including tags 6, 17 and 20 built from this status, go out as on
   every board.
+- **Front-end telemetry.** The AGC gains, sample variances, blanking and receiver temperature
+  of section 6 are logged, and reach the collector only inside the forwarded ReceiverStatus
+  blocks. They are not in ObserverDetails, whose RF fields carry u-blox MON-RF's scales, and
+  the collector keeps no series or baseline of them.
 - **PPS.** The PPS metadata u-blox gives in TIM-TP has no counterpart here, so tag 8's TIM-TP
   validity stays clear.
 - **Higher baud rates.** 115200 baud carries the streams above. A faster stream needs a higher
@@ -233,3 +264,8 @@ this rate, under its raw retention.
    configures again; after the failed configuration it pulses GPIO13 once and logs it.
 8. **Flow control.** An ESP32 busy long enough to fill its FIFO deasserts RTS, and the receiver
    holds its output; no CRC errors follow.
+9. **Front ends.** Every 30 s the log lists each front end's gain, variance and blanking and
+   the receiver's temperature (section 6). With the antenna attached every gain is between 15
+   and 50 dB and every variance near 100; moving the antenna away from interference raises the
+   gains. The receiver's temperature reads a few degrees above the board's sensors: 27 C
+   against 22 C on an open bench.

@@ -139,13 +139,46 @@ typedef struct {
 } sbf_rf_t;
 bool sbf_rf_status(const uint8_t *block, size_t length, sbf_rf_t *out);
 
-// ReceiverStatus (4014).
+// One AGCState sub-block of a ReceiverStatus: a front end's code (0 GPSL1/E1 .. 14, see
+// sbf_front_end_name) and antenna (0 main, 1 Aux1, 2 Aux2), its AGC gain in dB, the normalized
+// variance of its IF samples (nominal 100; 0 unknown) and the share of samples its pulse
+// blanker removes. locked is false, and the gain meaningless, while the front end's PLL is
+// not locked. A lower gain means more power at the input: the hardware manual (4.2.1) gives
+// the amplification ahead of the module as 65 dB less this gain.
 typedef struct {
-    uint8_t cpu_load;
+    uint8_t code, antenna;
+    bool locked;
+    int8_t gain_db;
+    uint8_t sample_variance, blanked_percent;
+} sbf_front_end_t;
+#define SBF_FRONT_ENDS_MAX  16u
+#define SBF_FRONT_ENDS_TEXT 576u // room for sbf_front_ends_text of a full list, 34 characters each
+
+// ReceiverStatus (4014). cpu_load is 255 when unknown. The temperature is the receiver's own,
+// valid when its field is not the Do-Not-Use zero. front_end holds the AGCState sub-blocks
+// that fit the block, in the receiver's order, at most SBF_FRONT_ENDS_MAX; a block too short
+// for them still gives the fields before them.
+typedef struct {
+    uint8_t cpu_load, ext_error;
     uint32_t uptime_s, rx_state, rx_error;
+    bool temperature_valid;
+    int16_t temperature_c;
+    uint8_t front_ends;
+    sbf_front_end_t front_end[SBF_FRONT_ENDS_MAX];
 } sbf_rx_status_t;
 enum { SBF_RXSTATE_ACTIVE_ANTENNA = 1u << 1, SBF_RXERROR_ANTENNA = 1u << 5, SBF_RXERROR_CONGESTION = 1u << 6 };
 bool sbf_receiver_status(const uint8_t *block, size_t length, sbf_rx_status_t *out);
+// UpTime alone, for a caller that needs nothing else: sbf_rx_status_t is over a hundred bytes,
+// which matters on the receiver task's 4 KiB stack.
+bool sbf_receiver_uptime(const uint8_t *block, size_t length, uint32_t *uptime_s);
+// The reference guide's name for a front-end code, or NULL for one it does not define.
+const char *sbf_front_end_name(uint8_t code);
+// The front ends as text for a log line: "GPSL1/E1 39/98/0, GLOL1 44/96/1", each as gain in
+// dB, sample variance and blanked percent, or "GPSL1/E1 unlocked"; "aux1 " or "aux2 " comes
+// before a front end of an auxiliary antenna, and an undefined code reads "fe15". Returns the
+// length written, without the NUL it always adds when size is not zero. A list too long for
+// out ends after the last front end that fits whole.
+size_t sbf_front_ends_text(const sbf_rx_status_t *status, char *out, size_t size);
 
 // ReceiverSetup (5902): the receiver's identity, NUL-terminated and printable. ProductName
 // arrived in revision 3 and is empty before it.

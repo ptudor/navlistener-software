@@ -190,6 +190,76 @@ static void meas_test(void)
 
 typedef struct { unsigned n; sbf_sat_t s[8]; } sat_sink_t;
 static void on_sat(const sbf_sat_t *sat, void *ctx) { sat_sink_t *s = ctx; s->s[s->n++] = *sat; }
+// ReceiverStatus's AGCState sub-blocks and Temperature (reference guide 4.2), and the log text.
+static void front_ends_test(void)
+{
+    uint8_t b[512];
+    sbf_rx_status_t st;
+    char text[SBF_FRONT_ENDS_TEXT];
+    // Nine front ends in a receiver's own order, 27 C, with an L1/L5 antenna in a quiet place.
+    static const agc_build_t nine[] = {
+        {5, 0, 37, 98, 1}, {6, 0, 46, 104, 1}, {3, 0, 51, 107, 1}, {4, 0, 50, 100, 0}, {12, 0, 51, 98, 0},
+        {2, 0, 51, 93, 0}, {0, 0, 40, 96, 0}, {1, 0, 44, 96, 0}, {11, 0, 42, 98, 0},
+    };
+    size_t n = status_block_agc(b, 607, 0x08, 127, nine, 9, 9, 4);
+    assert(n == 68 && sbf_receiver_status(b, n, &st));
+    assert(st.uptime_s == 607 && st.cpu_load == 4 && st.rx_state == 0x30 && st.ext_error == 0x08);
+    assert(st.temperature_valid && st.temperature_c == 27 && st.front_ends == 9);
+    for (unsigned i = 0; i < 9; i++)
+        assert(st.front_end[i].code == nine[i].code && st.front_end[i].antenna == 0 && st.front_end[i].locked &&
+               st.front_end[i].gain_db == nine[i].gain && st.front_end[i].sample_variance == nine[i].variance &&
+               st.front_end[i].blanked_percent == nine[i].blanked);
+    static const char expected[] = "L5/E5a/B2a 37/98/1, E5b/B2b 46/104/1, GPSL2 51/107/1, GLOL2 50/100/0, B3 51/98/0, "
+                                   "E6 51/93/0, GPSL1/E1 40/96/0, GLOL1 44/96/0, B1 42/98/0";
+    assert(sbf_front_ends_text(&st, text, sizeof text) == strlen(expected) && !strcmp(text, expected));
+    // Too little room: the text ends after the last front end that fits whole, and stays terminated.
+    char small[40];
+    memset(small, 'x', sizeof small);
+    static const char two[] = "L5/E5a/B2a 37/98/1, E5b/B2b 46/104/1", one[] = "L5/E5a/B2a 37/98/1";
+    assert(sbf_front_ends_text(&st, small, sizeof small) == strlen(two) && !strcmp(small, two));
+    memset(small, 'x', sizeof small);
+    assert(sbf_front_ends_text(&st, small, sizeof one) == strlen(one) && !strcmp(small, one));
+    assert(sbf_front_ends_text(&st, small, sizeof one - 1) == 0 && small[0] == 0);
+    assert(sbf_front_ends_text(&st, small, 1) == 0 && small[0] == 0 && sbf_front_ends_text(&st, small, 0) == 0);
+
+    // Longer sub-blocks are stepped over by SBLength; -128 dB is an unlocked PLL; an auxiliary
+    // antenna and a code the guide does not define are named as such; negative gains are read.
+    static const agc_build_t odd[] = {{0, 0, -128, 0, 0}, {5, 1, -3, 255, 100}, {21, 2, 15, 100, 7}, {14, 3, 50, 100, 0}};
+    n = status_block_agc(b, 5, 0, 60, odd, 4, 4, 8);
+    assert(n == 64 && sbf_receiver_status(b, n, &st) && st.front_ends == 4 && st.temperature_c == -40);
+    assert(!st.front_end[0].locked && st.front_end[1].locked && st.front_end[1].gain_db == -3 &&
+           st.front_end[1].antenna == 1 && st.front_end[2].code == 21 && st.front_end[2].antenna == 2);
+    assert(sbf_front_ends_text(&st, text, sizeof text) &&
+           !strcmp(text, "GPSL1/E1 unlocked, aux1 L5/E5a/B2a -3/255/100, aux2 fe21 15/100/7, ant3 B3/E6 combined 50/100/0"));
+    assert(!sbf_front_end_name(15) && !sbf_front_end_name(31) && !strcmp(sbf_front_end_name(10), "MSS/L-band"));
+
+    // A Temperature of zero is the Do-Not-Use value. A block that states more sub-blocks than
+    // it carries gives those that fit; one whose SBLength is under four gives none.
+    n = status_block_agc(b, 5, 0, 0, nine, 2, 9, 4);
+    assert(n == 40 && sbf_receiver_status(b, n, &st) && !st.temperature_valid && st.front_ends == 2 &&
+           st.front_end[1].code == 6 && st.uptime_s == 5);
+    n = status_block_agc(b, 5, 0, 127, nine, 3, 3, 3);
+    assert(sbf_receiver_status(b, n, &st) && st.front_ends == 0 && st.temperature_c == 27);
+    assert(sbf_front_ends_text(&st, text, sizeof text) == 0 && text[0] == 0);
+    // More sub-blocks than the list holds: the first SBF_FRONT_ENDS_MAX are kept, and their text fits.
+    agc_build_t many[20];
+    for (unsigned i = 0; i < 20; i++) many[i] = (agc_build_t){5, 2, -127, 255, 100};
+    n = status_block_agc(b, 5, 0, 127, many, 20, 20, 4);
+    assert(sbf_receiver_status(b, n, &st) && st.front_ends == SBF_FRONT_ENDS_MAX);
+    assert(sbf_front_ends_text(&st, text, sizeof text) == 16 * strlen("aux2 L5/E5a/B2a -127/255/100") + 15 * 2);
+    // A block that ends after RxError still gives the fields before the sub-blocks.
+    memset(b, 0, 28);
+    b[14] = 255; put32(b + 16, 9); put32(b + 20, 2); put32(b + 24, 0x20);
+    n = seal(b, SBF_RECEIVER_STATUS, 0, 28);
+    assert(sbf_receiver_status(b, n, &st) && st.uptime_s == 9 && st.cpu_load == 255 && st.rx_error == 0x20 &&
+           !st.temperature_valid && st.front_ends == 0);
+    // UpTime alone, under the same block checks.
+    uint32_t uptime = 0;
+    assert(sbf_receiver_uptime(b, n, &uptime) && uptime == 9 && !sbf_receiver_uptime(b, n - 4, &uptime));
+    n = pvt_block(b, 2, 1000, 1, 0, 0, 0, 0);
+    assert(!sbf_receiver_uptime(b, n, &uptime) && uptime == 9);
+}
+
 static void other_blocks_test(void)
 {
     static uint8_t b[512];
@@ -213,6 +283,9 @@ static void other_blocks_test(void)
     n = status_block(b, 86400, SBF_RXSTATE_ACTIVE_ANTENNA, SBF_RXERROR_CONGESTION);
     assert(sbf_receiver_status(b, n, &st) && st.uptime_s == 86400 && st.cpu_load == 12 &&
            st.rx_state == SBF_RXSTATE_ACTIVE_ANTENNA && st.rx_error == SBF_RXERROR_CONGESTION);
+    // Its Temperature byte is 140, and it carries no AGCState sub-block.
+    assert(st.temperature_valid && st.temperature_c == 40 && st.front_ends == 0 && st.ext_error == 0);
+    front_ends_test();
 
     sbf_setup_t setup;
     n = setup_block(b, 3, "3802345", "mosaic-G5", "4.15.1", "mosaic-G5 P3");
@@ -306,6 +379,7 @@ int main(void)
     identity_test();
     robustness_test();
     puts("SBF CRC, reader resynchronization and replies, PVTGeodetic, ReceiverTime, MeasEpoch, SatVisibility, "
-         "RFStatus, ReceiverStatus, ReceiverSetup, identity maps and random-input bounds passed");
+         "RFStatus, ReceiverStatus with its front ends and temperature, ReceiverSetup, identity maps and "
+         "random-input bounds passed");
     return 0;
 }
