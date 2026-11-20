@@ -13,6 +13,24 @@ unsigned rtc_square_wave(const rtc_io_t *io, uint8_t *control, uint8_t *trim)
     *control=settings[0]; *trim=settings[1];
     return *control == desired ? 1 : 4;
 }
+bool rtc_trim_read(const rtc_io_t *io, uint8_t *control, uint8_t *osctrim)
+{
+    uint8_t settings[2];
+    if (!io->read(io->ctx, 7, settings, sizeof settings)) return false;
+    *control = settings[0]; *osctrim = settings[1];
+    return true;
+}
+bool rtc_trim_write(const rtc_io_t *io, uint8_t osctrim, uint8_t *previous)
+{
+    uint8_t control, current;
+    if (!io->write_trim || !rtc_trim_read(io, &control, &current)) return false;
+    if (previous) *previous = current;
+    // EXTOSC: the clock is not this board's crystal. CRSTRIM: each step is 128 times a second,
+    // a mode kept for calibration by hand; neither is this discipline's to change.
+    if (control & 0x0c) return false;
+    if (current == osctrim) return true;
+    return io->write_trim(io->ctx, osctrim) && rtc_trim_read(io, &control, &current) && current == osctrim;
+}
 static bool preserve_power_failure(const rtc_io_t *io, const uint8_t calendar[7])
 {
     if (!(calendar[3] & 0x10)) return true;

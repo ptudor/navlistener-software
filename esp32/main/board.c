@@ -1088,6 +1088,7 @@ static void timing_poll(const gnss_status_t *status)
     }
     if (now < next_timing) return;
     next_timing=now+1000;
+    observer_rtc_discipline(&report.timing,gnss_status_position_fresh(status,(int64_t)now));
     static uint8_t body[OBSERVER_REPORT_MAX], record[OBSERVER_REPORT_MAX+GNF1_RECORD_HDR];
     size_t length=observer_timing_encode(body,sizeof body,&report.timing,esp_timer_get_time()/1000);
     if (!length) return;

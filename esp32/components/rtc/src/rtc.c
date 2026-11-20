@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include "observer_rtc.h"
 #include "rtc_io.h"
+#include "rtc_discipline.h"
 #include "rtc_max31328.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -89,6 +90,12 @@ static bool mcp79412_write_registers(void *ctx, uint8_t reg, const uint8_t *data
     uint8_t buffer[9]; buffer[0] = reg; memcpy(buffer+1, data, length);
     return i2c_master_transmit(ctx, buffer, length + 1, 100) == ESP_OK;
 }
+// OSCTRIM alone: the register write above stops at CONTROL on purpose.
+static bool mcp79412_write_trim(void *ctx, uint8_t osctrim)
+{
+    const uint8_t buffer[2] = {8, osctrim};
+    return i2c_master_transmit(ctx, buffer, sizeof buffer, 100) == ESP_OK;
+}
 static bool save_power_failure(void *ctx, const uint8_t calendar[7], const uint8_t stamps[8])
 {
     (void)ctx;
@@ -112,7 +119,8 @@ static void mcp79412_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
     next_poll = now + 1000;
     if (!attach(bus, 0x6f, now)) return;
     rtc_io_t io = {.ctx = dev, .read = read_registers, .write = mcp79412_write_registers,
-        .delay = delay_ms, .now_ms = now_ms, .save_power_failure = save_power_failure};
+        .delay = delay_ms, .now_ms = now_ms, .save_power_failure = save_power_failure,
+        .write_trim = mcp79412_write_trim};
     unsigned previous_square=square_state;
     square_state=rtc_square_wave(&io,&square_control,&square_trim);
     if (square_state != previous_square)
@@ -158,6 +166,52 @@ static void mcp79412_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
         next_poll = now + 30000;
     }
     candidate = (rtc_candidate_t){0};
+}
+
+// The MCP79412's crystal, measured against the GNSS pulse and trimmed to it. A window takes
+// about ten minutes; each one is logged, and OSCTRIM is written only when the step in force
+// has stopped being the right one. A board without a cell loses the register with its power
+// and has it back ten minutes into the next fix.
+static rtc_discipline_t discipline;
+void observer_rtc_discipline(const report_timing_t *t, bool position_valid)
+{
+    if (part != OBSERVER_RTC_MCP79412 || !dev) return;
+    const timing_channel_report_t *g = &t->channel[0], *r = &t->channel[1];
+    const uint32_t live = TIMING_FRESH | TIMING_PERIOD_VALID;
+    const rtc_discipline_sample_t sample = {
+        .valid = position_valid && (t->flags & 1) && (g->flags & live) == live && (r->flags & live) == live &&
+                 square_state == 1 && !(square_control & 0x0c),
+        .phase_ticks = t->rtc_minus_gnss_ticks, .gnss_period_ticks = g->period_ticks,
+        .gnss_captured = g->captured, .rtc_captured = r->captured,
+        .gnss_missing = g->missing_estimate, .rtc_missing = r->missing_estimate,
+        .gnss_discontinuities = g->discontinuities, .rtc_discontinuities = r->discontinuities,
+    };
+    rtc_discipline_measure_t measure;
+    if (!rtc_discipline_feed(&discipline, &sample, &measure)) return;
+    if (!rtc_discipline_usable(&measure)) {
+        ESP_LOGW(TAG, "rate not used: crystal %+.3f ppm with a spread of %.3f ppm over %u s; trim left as it is",
+                 measure.crystal_ppb / 1000.0, measure.spread_ppb / 1000.0, RTC_DISCIPLINE_SAMPLES);
+        return;
+    }
+    const rtc_io_t io = {.ctx = dev, .read = read_registers, .write_trim = mcp79412_write_trim};
+    uint8_t control, osctrim;
+    if (!rtc_trim_read(&io, &control, &osctrim)) { ESP_LOGW(TAG, "rate measured but the trim register could not be read"); return; }
+    const int current = rtc_trim_steps(osctrim), wanted = rtc_discipline_trim(measure.crystal_ppb, current);
+    if (wanted == current) {
+        ESP_LOGI(TAG, "rate: crystal %+.3f ppm (spread %.3f); trim %+d steps (0x%02x) leaves %+.3f ppm",
+                 measure.crystal_ppb / 1000.0, measure.spread_ppb / 1000.0, current, osctrim,
+                 (measure.crystal_ppb + rtc_trim_ppb(current)) / 1000.0);
+        return;
+    }
+    if (!rtc_trim_write(&io, rtc_trim_register(wanted), NULL)) {
+        ESP_LOGW(TAG, "rate: crystal %+.3f ppm wants trim %+d steps, but OSCTRIM was not written (control=0x%02x)",
+                 measure.crystal_ppb / 1000.0, wanted, control);
+        return;
+    }
+    square_trim = rtc_trim_register(wanted);
+    ESP_LOGI(TAG, "rate: crystal %+.3f ppm (spread %.3f); trim changed from %+d to %+d steps (0x%02x to 0x%02x), leaving %+.3f ppm",
+             measure.crystal_ppb / 1000.0, measure.spread_ppb / 1000.0, current, wanted, osctrim, rtc_trim_register(wanted),
+             (measure.crystal_ppb + rtc_trim_ppb(wanted)) / 1000.0);
 }
 
 // MAX31328 (ZED/X20) at 0x68.

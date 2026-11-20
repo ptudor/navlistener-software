@@ -96,6 +96,46 @@ system time service. This closes the RTC/system-clock gap when correcting a
 retained calendar without network time. Check `rtc status` separately: failure
 to queue/apply a system update does not change the RTC's verified result.
 
+## Rate discipline
+
+On a board whose RTC is an MCP79412, the board task keeps the crystal's rate trimmed to the
+GNSS pulse. Nothing here touches the calendar: the rules above for setting the time stand.
+
+The RTC's 1 Hz output and the receiver's pulse are timed on one counter (TIMING.md), so each
+second shows where the RTC's edge falls within the GNSS second, and how far that moves from one
+RTC second to the next is the RTC's rate error for that second. The part applies its digital
+trim once a minute, as a step of two 32.768 kHz cycles for each TRIMVAL count (DS20002266
+section 5.6); every other second shows the crystal alone. The median of 600 one-second
+readings is therefore the crystal's own rate, whatever trim is in force, and their
+interquartile range says whether the readings agree.
+
+A window counts only readings taken while the receiver holds a position, both pulses are fresh
+with valid periods, and the RTC gives 1 Hz from its crystal in fine-trim mode. A reading that
+fails those conditions, a missed or irregular pulse on either input, or a gap between readings
+starts the window again. A window whose spread is over 1 ppm, or whose rate is beyond
+150 ppm, is logged and not used.
+
+OSCTRIM is then held at the step nearest to cancelling the crystal: 1.017 ppm a step, at most
+127 steps either way. It is rewritten only when the step in force leaves more than three
+quarters of a step, so a crystal between two steps does not make the register flap. The write
+is read back, and is never made with EXTOSC or CRSTRIM set. Each window logs one line:
+
+```
+rtc: rate: crystal +3.090 ppm (spread 0.075); trim changed from +127 to -3 steps (0xff to 0x03), leaving +0.038 ppm
+rtc: rate: crystal +3.094 ppm (spread 0.071); trim -3 steps (0x03) leaves +0.042 ppm
+```
+
+OSCTRIM is in the RTC's battery-backed domain. With a cell fitted it survives a power loss and
+the trim applies in holdover; without one it returns to its power-on value and is set again
+ten minutes into the next fix. The data sheet gives that power-on value as zero, but the first
+P3 read `0xff` on several power-ups: the full +129 ppm, eleven seconds a day. That is why the
+register is owned here and not left as found. The timing record carries OSCTRIM every second
+(`rtc_trim`), so the collector sees each change.
+
+Not done: a crystal's rate follows temperature, and the trim is corrected only while there is
+a fix; in holdover it stays where it was last set. The MAX31328 and DS3231M compensate for
+temperature themselves and are not disciplined.
+
 ## Provenance and qualification
 
 The journal and updater retain their existing qualified GNSS/RTC evidence path.
