@@ -1,6 +1,6 @@
 dependencies:
   esp_hardware_discovery:
-    component_hash: 221acf6df5d7fb470c80db4f406ca86bf6f424919a07deed5dc9d86251974a9c
+    component_hash: 2e7530ed5f5c268068784326b69cc3a1a1a411775604eda485b04dcf2831d358
     dependencies:
     - name: idf
       version: '>=5.2.0'
@@ -42,6 +42,6 @@ dependencies:
 direct_dependencies:
 - esp_hardware_discovery
 - esphome/wireguard
-manifest_hash: 541049882aee288801c0a8cc2865fff5482cd6ab5d0374595a20b530bec86d98
+manifest_hash: daaec0e82adec5a60bfa56a8b9ec318f170890d39989a575377bd38dbace4918
 target: esp32s3
 version: 2.0.0
