@@ -224,6 +224,18 @@ L1OF (`6:0`) and L2OF (`6:2`) are separate bands and stay distinct. The per-SV
 coordinates, versions, clock drift and per-SV reception are not served here; the
 per-SV view is the `svs` feed's `perrecv` (§1.1).
 
+`rf` holds `rf_trust`, the C/N₀ fit (`cn0_mean_db_hz`, `cn0_elev_resid_var`, `num_sats`)
+and, by the station's receiver, `bands` or `front_ends`. A u-blox band has `block`, `agc`,
+`agc_departure`, `cw_suppress`, `noise_level`, `jam_state` and `ant_status`. A Septentrio
+front end has `id` (the receiver's FrontEndID), `name` (`GPSL1/E1`, `L5/E5a/B2a`, …, with
+`aux1` or `aux2` before it on an auxiliary antenna), `antenna` (0 main, 1 and 2 auxiliary),
+`locked`, `gain_db`, `gain_departure_db`, `sample_variance` (nominally 100; absent when the
+receiver reports none) and `blanked_percent`. `gain_departure_db` is the learned baseline
+less the current gain: positive when the gain has been cut, negative when it has risen, and
+absent until a baseline exists. While `locked` is false the front end's PLL is not locked
+and it has neither `gain_db` nor a departure. Front ends are listed in `id` order. A gain is
+in dB and is never served as a u-blox AGC count, nor a count as a gain.
+
 Authorized operator, organization and collection rows add `integrity`, the
 station's assurance assessment ([proposal](proposals/STATION-ASSURANCE.md)):
 `state` (`unavailable`, `unassured`, `inconsistent` or `assured`), the fused
@@ -505,8 +517,8 @@ this section is the wire shape only.
 `station_rf_degraded`, `antenna_fault`, `environment_sensor_health` and
 `environmental_change`, `regional_pressure_anomaly` and `barometric_height_consistency`, the
 collector captures the station's stored inputs
-from ten minutes before to one minute after the confirmation: its `rf_samples` (NAV-SAT, MON-RF
-and receiver solutions) and `observer_samples` (board timing and environment), scoped to the
+from ten minutes before to one minute after the confirmation: its `rf_samples` (NAV-SAT, MON-RF,
+receiver solutions and Septentrio receiver status) and `observer_samples` (board timing and environment), scoped to the
 event's audience. Capture runs about a minute after the event, once per event, and survives
 restarts while the inputs remain within raw retention. Authorized private audiences read it at
 **`GET /gnss/api/v2/event-evidence?id=<event id>[&limit=1..500][&offset=n]`**, where `id` is the
@@ -671,13 +683,16 @@ Raw-plus-decoded means a decoder bug fix lets us **re-derive every historical ep
 from `raw` without re-collecting — the same re-decodability guarantee `radiolistener` keeps.
 
 Receiver RF telemetry has its own private `rf_samples` hypertable. Its `kind` is
-`reception` (NAV-SAT), `jamming` (MON-RF/MON-HW) or `solution` (the receiver's
-own position, velocity, clock and status, telemetry `0x03`). `local_received_at` is
+`reception` (NAV-SAT), `jamming` (MON-RF/MON-HW), `solution` (the receiver's
+own position, velocity, clock and status, telemetry `0x03`) or `receiver_status` (a
+Septentrio ReceiverStatus block, SBF 4014: each front end's AGC gain with the receiver's
+temperature, load, uptime and state). `local_received_at` is
 the collector-local receipt instant (`received_at` is the observer's stamp when it sent
 one) and `wall_clock_stamp` the independent stamp the receiver's UTC was compared with,
 NULL when there was none; with them a replay feeds the station checks exactly the clocks
 the live collector used. It stores the
-exact versioned receiver body in `raw`, its decoded JSON projection in `data`,
+exact versioned receiver body in `raw` (for `receiver_status`, the whole SBF block with
+its header and CRC, since this table has no header column), its decoded JSON projection in `data`,
 `sample_time`, evidence kind, decoder version, source session/sequence and the
 same immutable receipt-time ownership, trust and publication scope as
 `nav_frames`. This separation prevents receiver measurements from masquerading
@@ -702,7 +717,9 @@ event key and `origin`. It is a hypertable on the event time, compressed after 3
 `agc_baselines` is durable point state as well: one row per station with its learned AGC
 baselines as JSON (per band: baseline, when it last moved, and the per-minute medians of the
 last six hours) and the `power_model_epoch` they were learned under, checkpointed every five
-minutes and at orderly shutdown.
+minutes and at orderly shutdown. A Septentrio station's front-end gain baselines are entries
+of the same list with `"front_end": true`: `block` is then the receiver's FrontEndID and the
+values are in dB.
 
 `reception_power_models` is durable point state, not a telemetry history. It
 keeps the latest versioned model blob per `source_id`, its update time and the
@@ -893,7 +910,11 @@ A pushed block's row also carries its session and sequence like every push recei
 Legacy rows remain readable with NULL header and unknown revision; reconstructing
 an original header/CRC for them is unsupported. Apply the additive writer schema
 before using the new reader (the read-only constructor never migrates). No raw
-rows are rewritten/dropped, and SBF remains capture-only without live decoding.
+rows are rewritten/dropped. One block is decoded as well as stored: ReceiverStatus (4014)
+is receiver telemetry, so a collector that decodes it stores it in `rf_samples` as kind
+`receiver_status`, whole, instead of in `nav_frames`, and feeds its front-end gains to the
+station RF state (DEFENSE-PNT.md §2). Rows a previous build stored in `nav_frames` under
+`msg_type` 4014 stay where they are. Every other SBF block remains capture-only.
 
 Raw replay ordering is now explicit. `received_at` still selects the half-open
 `[Since, Until)` window, but new rows replay by `receipt_order`, a persistent

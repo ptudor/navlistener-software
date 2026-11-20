@@ -86,7 +86,11 @@ Each raises at its warning or critical severity and clears at info, like the oth
 alarms. A moderate AGC departure is jamming only when a CW tone, the receiver's jam flag, a
 simultaneous C/N₀ drop (`StationRF.Cn0Drop`, from the integrity `cn0_drop` check) or a
 neighbouring station's interference (`StationRF.Neighbours`, named in the event) corroborates
-it; alone, each is a degradation. Station liveness comes separately from `TickStationLiveness` → `station_offline`.
+it; alone, each is a degradation. A Septentrio station is classified from its front ends
+(`StationRF.FrontEnds`) on dB thresholds: a gain cut of 4 dB stands where the AGC departure
+does and one of 10 dB where the collapse does, while a gain rise of 4 dB, which is less power
+arriving, is only ever a degradation. Such a station has no antenna status, so its
+`antenna` machine is not observed. Station liveness comes separately from `TickStationLiveness` → `station_offline`.
 
 **Station integrity** (`TickIntegrity`): `spoofing_suspected`, `station_assurance`,
 `environment_sensor_health`, `environmental_change`, `regional_pressure_anomaly`, and

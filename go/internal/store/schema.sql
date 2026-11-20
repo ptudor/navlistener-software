@@ -455,6 +455,8 @@ ALTER TABLE observer_samples SET (
 
 -- Private receiver RF evidence. Raw contains the exact versioned telemetry
 -- body used by the live detector; data is a decoded projection for analysis.
+-- A receiver_status row is a Septentrio ReceiverStatus block: raw is the whole
+-- SBF block, header and CRC included, and data its decoded fields.
 -- This table is deliberately separate from broadcast navigation words and
 -- board sensors, while sharing their immutable receipt provenance and replay
 -- ledger transaction.
@@ -485,7 +487,7 @@ CREATE TABLE IF NOT EXISTS rf_samples (
     publish_signals       TEXT[] NOT NULL DEFAULT '{}',
     policy_revision       TEXT   NOT NULL DEFAULT 'legacy-private-v1',
     sample_time TIMESTAMPTZ NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('reception', 'jamming', 'combined', 'solution')),
+    kind TEXT NOT NULL CHECK (kind IN ('reception', 'jamming', 'combined', 'solution', 'receiver_status')),
     raw BYTEA NOT NULL,
     data JSONB NOT NULL,
     decoder_ver TEXT,
@@ -505,19 +507,21 @@ ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS commissioning_fingerprint TEXT N
 -- with, NULL when there was none. NULL on rows stored before these columns.
 ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS local_received_at TIMESTAMPTZ;
 ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS wall_clock_stamp TIMESTAMPTZ;
--- Receiver solutions (telemetry 0x03) joined the kinds after the table first
--- shipped. Widen an older inline constraint in place; this is a no-op once the
--- constraint already admits 'solution'.
+-- Receiver solutions (telemetry 0x03), and then Septentrio ReceiverStatus
+-- blocks, joined the kinds after the table first shipped. Widen an older inline
+-- constraint in place; this is a no-op once the constraint already admits
+-- 'receiver_status'. An older build's own block looks only for 'solution', which
+-- the widened constraint still names, so it leaves this one alone.
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conrelid = 'rf_samples'::regclass AND conname = 'rf_samples_kind_check'
-          AND pg_get_constraintdef(oid) NOT LIKE '%solution%'
+          AND pg_get_constraintdef(oid) NOT LIKE '%receiver_status%'
     ) THEN
         ALTER TABLE rf_samples DROP CONSTRAINT rf_samples_kind_check;
         ALTER TABLE rf_samples ADD CONSTRAINT rf_samples_kind_check
-            CHECK (kind IN ('reception', 'jamming', 'combined', 'solution'));
+            CHECK (kind IN ('reception', 'jamming', 'combined', 'solution', 'receiver_status'));
     END IF;
 END $$;
 CREATE INDEX IF NOT EXISTS idx_rf_samples_source_time

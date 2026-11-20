@@ -1,5 +1,21 @@
 # Unreleased
 
+- The collector decodes a Septentrio receiver's ReceiverStatus block (SBF 4014) and learns a
+  baseline for each RF front end's AGC gain, by the AGC baseline's rules on a dB scale. A gain
+  cut of 4 dB makes a front end interference-suspect and one of 10 dB is a gain collapse, with
+  the same corroboration, `rf_trust` and `jamming_detected`/`station_rf_degraded` events as a
+  u-blox AGC departure. A gain rise of 4 dB, which is the antenna path giving less, is a
+  `station_rf_degraded` and never a jamming claim. The `observers` feed's `rf` lists such a
+  station's `front_ends` (name, `gain_db`, `gain_departure_db`, `sample_variance`,
+  `blanked_percent`), and the two events carry `gain_cut_db`, `gain_rise_db` and the front end
+  showing each. The thresholds come from one mosaic-G5 P3 and are observational
+  (`docs/DEFENSE-PNT.md §2`). Upgrade notes: the `agc` integrity check is version 5 and the
+  operating profile gains two thresholds, so every station's `config_hash` changes;
+  ReceiverStatus blocks are now stored whole in `rf_samples` as kind `receiver_status` instead
+  of in `nav_frames`, and the schema migration widens that table's kind constraint in place
+  (an older collector still runs against the migrated database); gain baselines are
+  checkpointed in `agc_baselines` beside the AGC ones. Every other SBF block remains
+  capture-only.
 - The raw-frame historian now creates one-day rather than one-hour TimescaleDB chunks. Production
   measurements put a day of active indexes well inside the memory sizing target, while the wider
   interval avoids thousands of undersized relations and their planner and lock-table overhead.
@@ -183,7 +199,8 @@
   capture, so it rebuilds byte for byte. `sbf` is a valid feed grant in configuration and the
   control plane. The P3 forwards every block it configures, navigation pages included, and
   pushes on `sbf`: upgrade the collector and grant `sbf` before this firmware reaches a P3,
-  since an older collector refuses the session. The collector does not decode SBF yet.
+  since an older collector refuses the session. Of these blocks the collector decodes
+  ReceiverStatus only (above).
 
 Trusted rollout remains gated by commissioning and hardware acceptance in
 [Update operations](esp32/docs/UPDATE-OPERATIONS.md).

@@ -18,7 +18,8 @@ transport are `docs/DESIGN.md`.
 
 **The edge does not decode.** The C and ESP32 feeders forward UBX raw
 navigation records over GNF1. SBF and RTCM ingest paths are capture-only
-pending central decoders; the current feeder implementations do not provide
+pending central decoders, apart from one SBF block of receiver telemetry (§2.2);
+the current feeder implementations do not provide
 the full planned receiver-format matrix. Navigation decoding, ephemeris
 assembly, and orbit propagation run centrally in `navlistener`.
 
@@ -156,8 +157,11 @@ for its own receiver status and forwards the blocks it configures to the collect
 for the remaining telemetry and decoding work. SBF wraps
 the *already-de-interleaved* ICD nav bits (Septentrio does the word unpacking on the
 receiver), so a future central decoder skips step 1 above and goes straight to parity/CRC +
-parameter extraction. The current `sbf.go` validates framing/CRC and persists raw blocks only,
-from a dial connector or a push session alike (capture-only, like RTCM below); the
+parameter extraction. The current `sbf.go` validates framing/CRC and persists raw blocks,
+from a dial connector or a push session alike, and decodes one of them, which is receiver
+telemetry and not navigation data: ReceiverStatus (4014), whose per-front-end AGC gains feed
+the station RF state (`DEFENSE-PNT.md §2`; `sbf_receiver_status.go`). Navigation is
+capture-only, like RTCM below; the
 block-specific live decoders in this table are planned
 (the block ID's low 13 bits, ignoring the 3-bit revision):
 

@@ -114,7 +114,10 @@ every few seconds, or crafted frames replay it deliberately. Any nonzero value h
 investigating immediately.
 
 **`captured_only_frames_total`** counts valid raw frames persisted but intentionally not decoded
-into live state — the `capture_only` sources (SBF, RTCM) pending central decoders.
+into live state — the `capture_only` sources (SBF, RTCM) pending central decoders. An SBF
+ReceiverStatus block is decoded and is not counted here; one that fails to decode is, and is
+also counted as `sbf_receiver_status` under `ingest_errors_total` (dial) or
+`push_errors_total` (push).
 
 ### Push ingest
 

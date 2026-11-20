@@ -22,8 +22,9 @@ import (
 // broadcast navigation frame or route private receiver telemetry. Word-oriented frames (GPS/QZSS/
 // BeiDou/GLONASS/SBAS from UBX) carry Words; byte-oriented content (RTCM messages
 // and SBF blocks) carries Bytes. RTCM/SBF are currently capture-only: they reach
-// the historian but do not update live constellation state. Word-oriented
-// dispatch is selected by (GnssID, SigID).
+// the historian but do not update live constellation state. The one exception is an
+// SBF ReceiverStatus block, which also carries RF (sbf_receiver_status.go) and feeds
+// the station RF state. Word-oriented dispatch is selected by (GnssID, SigID).
 type RawFrame struct {
 	Recv    time.Time   // reception time (receiver/host clock; push path: the FEEDER's stamp)
 	Source  string      // ingest source name
@@ -163,14 +164,19 @@ func (f *RawFrame) LocalRecv() time.Time {
 }
 
 // RawRF is one RF-environment telemetry sample from a receiver: the jamming/AGC
-// front-end state (UBX-MON-RF on F9+, UBX-MON-HW legacy) and/or the per-SV C/N₀ +
-// elevation the spoofing gates need (UBX-NAV-SAT). It is station-scoped (keyed by the
+// front-end state (UBX-MON-RF on F9+, UBX-MON-HW legacy), the per-SV C/N₀ + elevation
+// the spoofing gates need (UBX-NAV-SAT), or a Septentrio receiver's status with each
+// front end's AGC gain (SBF ReceiverStatus). It is station-scoped (keyed by the
 // ingest source), not per-SV, and feeds the PNT-defense layer (docs/DEFENSE-PNT.md §1).
 // The collector derives fleet and elevation metrics; stationary ESP observers also
 // compare C/N₀ with local and delivered sidereal references.
 type RawRF struct {
 	Bands []RFBand // per-RF-path AGC/noise/CW/jamming/antenna (MON-RF/MON-HW)
 	Sats  []SatCN0 // per-SV C/N₀ and elevation (NAV-SAT), for the C/N₀-vs-elevation gate
+	// Status is a Septentrio ReceiverStatus block (SBF 4014): each front end's AGC gain
+	// in dB with the receiver's own temperature, load and state. A u-blox band's AGC is
+	// a count on another scale, so the two are never mixed; nil on every other sample.
+	Status *SBFReceiverStatus `json:",omitempty"`
 }
 
 // RFBand is one RF path's front-end state (UBX-MON-RF block, or the single MON-HW

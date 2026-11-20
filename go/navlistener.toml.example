@@ -233,7 +233,8 @@ ack_interval = "1s"
 # [[ingest]]
 # name = "mosaic-x5"          # a Septentrio receiver
 # type = "sbf"                # SBF raw-nav blocks
-# capture_only = true         # framing/CRC/raw persistence only; no live-state decode yet
+# capture_only = true         # navigation blocks: framing/CRC/raw persistence only. Its ReceiverStatus
+#                             # blocks are decoded: each front end's gain feeds the station RF state.
 # addr = "192.0.2.20:28784"
 
 # [[ingest]]

@@ -134,7 +134,7 @@ from stored station data the same way the GLONASS discontinuity bands were.
 | `pps_rtc_phase` | timing tag; solution fix state | a step in the RTC-minus-GNSS phase against its recent linear trend | time reference |
 | `cn0_uniformity` | NAV-SAT | the existing C/N₀-vs-elevation gate, unchanged | signal power |
 | `cn0_drop` | NAV-SAT | every signal the receiver used falls by at least 1 dB within 3–5 s, graded by the median fall; jamming corroboration | RF environment |
-| `agc` | MON-RF | the existing AGC departure, CW and receiver jam-state classification; a simultaneous C/N₀ drop or a neighbouring station's own corroborated interference also corroborates a departure | RF environment |
+| `agc` | MON-RF, or a Septentrio receiver's front-end gains (SBF ReceiverStatus) | the existing AGC departure, CW and receiver jam-state classification; a simultaneous C/N₀ drop or a neighbouring station's own corroborated interference also corroborates a departure. A Septentrio front end's gain cut stands where the AGC departure does, on dB thresholds; its gain rise, the antenna path giving less, is inconsistent and never interference | RF environment |
 | `receiver_spoofing` | status block, or the ObserverDetails receiver context | the receiver's own spoofing state | receiver verdict |
 
 Each raw test passes an M-of-N filter (three of the last four evaluations by
@@ -266,6 +266,7 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 | 3.4 | ZED-X20P: SEC-SIG in `0x05`, after bench confirmation of support | deferred until the ZED-X20P bench confirms SEC-SIG output |
 | 3.5 | ZED-X20P: RXM-RAWX as `0x02`, and a Doppler-vs-ephemeris check using the receiver clock drift | deferred until the ZED-X20P bench confirms RXM-RAWX; forwarding cannot be verified without it, and the residual bands need recorded measurements |
 | 3.6 | Receiver capability table from bench verification | deferred: needs the bench verification it records |
+| 3.7 | Septentrio front-end AGC gains as RF evidence: the collector decodes SBF ReceiverStatus, learns a dB baseline per front end, and feeds the `agc` check (version 5), `rf_trust` and the station RF events; the blocks are stored in `rf_samples` as kind `receiver_status` and replay with `stationreplay` | done in the collector, tested on blocks built from the fields a mosaic-G5 P3 reported on a bench (`go/cmd/stationreplay/frontend_scenarios_test.go`); awaiting an enrolled P3's session to confirm it on forwarded blocks. The 4 dB and 10 dB thresholds come from that one unit |
 
 The MAX board's motion summary (OBSERVER-TELEMETRY tag 13) gives, per board report,
 the IMU's still or moving state and the extremes of its acceleration and rotation-rate

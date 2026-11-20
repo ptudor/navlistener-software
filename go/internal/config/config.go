@@ -497,7 +497,7 @@ type Source struct {
 	Type        string `toml:"type"`                   // ubx | sbf | rtcm
 	Addr        string `toml:"addr"`                   // host:port to dial
 	Disabled    bool   `toml:"disabled,omitempty"`     // keep the entry but don't start it (pause)
-	CaptureOnly bool   `toml:"capture_only,omitempty"` // required for byte sources until live decoders land
+	CaptureOnly bool   `toml:"capture_only,omitempty"` // required for byte sources until their navigation decoders land
 
 	// Remark is an operator-supplied free-form station note (docs/OUTPUT.md §1.3):
 	// the ONLY thing that reaches the public observers feed's remark field

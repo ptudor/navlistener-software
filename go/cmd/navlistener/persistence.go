@@ -128,6 +128,26 @@ func populatePersistence(saved *store.NavFrame, f *ingest.RawFrame) {
 			saved.Board.SampleTime = &stamp
 		}
 	}
+	if f.RF != nil && f.RF.Status != nil {
+		// A Septentrio ReceiverStatus block is receiver telemetry, so it is stored
+		// with the RF evidence the station checks replay, not with navigation
+		// frames. The row keeps the whole block, header and CRC included, since
+		// rf_samples has no header column; data is the decoded status. A frame
+		// without its original header cannot be rebuilt, so it stays the captured
+		// block it already is.
+		wire, err := f.SBFWire()
+		if err != nil {
+			return
+		}
+		data, err := json.Marshal(f.RF.Status)
+		if err != nil {
+			panic(err)
+		} // integers, booleans and their pointers only
+		saved.Raw = wire
+		saved.RF = &store.RFSample{Kind: "receiver_status", Data: data}
+		stampRFClocks(saved.RF, f)
+		return
+	}
 	if f.RF != nil {
 		kind := "combined"
 		switch {

@@ -67,6 +67,28 @@ func TestProjectPublicAttributedKeepsGeometryButNotRF(t *testing.T) {
 	}
 }
 
+// A Septentrio ReceiverStatus is RF telemetry like any other: the public projection
+// carries none of it, whatever the station's attribution, and leaves the input whole.
+func TestProjectPublicDropsReceiverStatus(t *testing.T) {
+	gain := 40
+	in := &ingest.RawFrame{
+		Source: "presented-name", Recv: time.Now(), MsgType: ingest.SBFReceiverStatusBlock,
+		Observer: contextFor(identity.AggregatePublicAttributed, identity.MetadataFull),
+		RF: &ingest.RawRF{Status: &ingest.SBFReceiverStatus{UptimeS: 9,
+			FrontEnds: []ingest.SBFFrontEnd{{ID: 0, Locked: true, GainDB: &gain}}}},
+	}
+	out, ok := ProjectPublic(in)
+	if !ok {
+		t.Fatal("attributed public frame rejected")
+	}
+	if out.RF != nil {
+		t.Fatalf("public projection carries receiver status: %+v", out.RF)
+	}
+	if in.RF == nil || in.RF.Status == nil || len(in.RF.Status.FrontEnds) != 1 {
+		t.Fatal("projection mutated authenticated input")
+	}
+}
+
 func TestProjectPublicEventsIsIndependentlyGatedAndRedacted(t *testing.T) {
 	in := &ingest.RawFrame{
 		Source: "hardware-id", Recv: time.Now(),

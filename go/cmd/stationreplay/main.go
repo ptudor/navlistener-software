@@ -7,7 +7,8 @@
 //	stationreplay -config navlistener.toml -station obs -since 2026-10-05T10:00:00Z -until 2026-10-05T11:00:00Z
 //	stationreplay -config navlistener.toml -audience operator:collector-a -id 42
 //
-// The first reads the station's rf_samples (NAV-SAT, MON-RF, receiver solutions) and
+// The first reads the station's rf_samples (NAV-SAT, MON-RF, receiver solutions and a
+// Septentrio receiver's status blocks) and
 // observer_samples (board timing and environment) within the window, so it works while
 // raw retention still holds them. The second reads one station event's captured
 // evidence, which never expires. Inputs are applied to a fresh live state in collector

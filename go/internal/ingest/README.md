@@ -16,6 +16,7 @@ can be validated, routed and stored.
 | `rawframe.go` | The `RawFrame` type and the package doc. |
 | `ubx.go` | UBX framing and the RXM-SFRBX / RXM-RAWX / MON-RF / MON-HW / NAV-SAT parsers. |
 | `sbf.go` | Septentrio SBF block framing. |
+| `sbf_receiver_status.go` | The ReceiverStatus block (4014) decoder: the receiver's state and each front end's AGC gain. |
 | `rtcm.go` | RTCM3 message framing. |
 | `ntrip.go` | The NTRIP caster client transport. |
 | `push.go` | `PushServer` — TLS termination, feeder authentication, GNF1 stream handling. |
@@ -74,9 +75,16 @@ missing data with no signal.
 | `ntrip` | HTTP-ish caster subscription wrapping one of the above | Basic auth; TLS by default with explicit opt-outs required for plaintext. |
 
 **SBF and RTCM are currently capture-only inputs** pending central decoders — `capture_only`
-persists their raw frames without decoding into live state. A GNF1 `sbf` push session
+persists their raw frames without decoding into live constellation state. A GNF1 `sbf` push session
 (SBF record format 1, `docs/DESIGN.md §2`) yields the same SBF frames as the dial
 connector: `push.go` checks each whole block with `splitSBFBlock` and keeps its header.
+
+One SBF block is decoded on both paths, because it is receiver telemetry and not navigation
+data: **ReceiverStatus (4014)**. `attachSBFTelemetry` gives its frame an `RF.Status`, so the
+station RF state learns each front end's gain (`docs/DEFENSE-PNT.md §2`) and the historian
+stores the block whole in `rf_samples` as kind `receiver_status`, from where `StoredFrame`
+replays it. A ReceiverStatus that passes its CRC but contradicts itself (more sub-blocks than
+its length holds) is counted under `sbf_receiver_status` and stays a captured block.
 
 ### Two silence timeouts, and why both exist
 

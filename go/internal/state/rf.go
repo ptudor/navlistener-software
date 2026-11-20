@@ -1,6 +1,7 @@
 package state
 
 import (
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -12,8 +13,9 @@ import (
 )
 
 // PNT-defense Tier-0 (docs/DEFENSE-PNT.md): the collector turns the RF-environment
-// telemetry the fleet's receivers already produce (MON-RF/MON-HW AGC + jamming, NAV-SAT
-// C/N₀ + elevation) into per-station detection metrics — jamming departures from a
+// telemetry the fleet's receivers already produce (MON-RF/MON-HW AGC + jamming, a
+// Septentrio receiver's per-front-end AGC gain, NAV-SAT C/N₀ + elevation) into
+// per-station detection metrics — jamming departures from a
 // learned baseline and the C/N₀-vs-elevation spoofing gate. The metrics are computed
 // here (like the SV integrity signals); the debounced detector classifies them into
 // station-scoped events (internal/detect). Thresholds are observational in v1 — we
@@ -39,6 +41,13 @@ const (
 	agcRelearnAfter     = 15 * time.Minute
 	// agcRestoreMaxAge bounds how old a checkpointed baseline may be when restored.
 	agcRestoreMaxAge = 24 * time.Hour
+	// A Septentrio front end reports its AGC gain in whole dB (SBF ReceiverStatus)
+	// where a u-blox band reports a count, so its baseline is learned by the same
+	// rules on a dB scale: the learn band is half the departure that makes a front end
+	// interference-suspect (integrity.DefaultGainDepartureDB), and the drift bound
+	// keeps the proportion to it that the AGC bound keeps to its own departure.
+	gainLearnBandDB    = 2.0
+	gainDriftDBPerHour = 0.75
 	// rfStaleAfter is THE staleness operating point for station-scoped feeds —
 	// and, through the feed.go alias `sbasStaleAfter = rfStaleAfter`, for the
 	// served SBAS feed as well. two other constants are pinned to this
@@ -54,6 +63,18 @@ const (
 	// Retune all three together, or state the divergence deliberately.
 	rfStaleAfter = 5 * time.Minute
 	cn0MinSats   = 5 // fewest tracked SVs before the C/N₀-vs-elevation gate is meaningful
+)
+
+// baselineScale carries the two operating points of the baseline learner that depend on
+// the measurement's unit; every other rule is shared between the scales.
+type baselineScale struct {
+	learnBand    float64 // a sample further than this from the baseline is measured, not learned
+	driftPerHour float64 // the most an established baseline moves in an hour
+}
+
+var (
+	agcCountScale = baselineScale{learnBand: agcLearnBand, driftPerHour: agcDriftPerHour}
+	gainDBScale   = baselineScale{learnBand: gainLearnBandDB, driftPerHour: gainDriftDBPerHour}
 )
 
 // rfBand is one RF path's learned state at a station: the latest receiver numbers plus
@@ -76,6 +97,31 @@ func (b *rfBand) departure() (dep float64, ok bool) {
 		return 0, false
 	}
 	return b.baseline - float64(b.agc), true
+}
+
+// rfFrontEnd is one Septentrio front end's learned state at a station: the latest AGC
+// state the receiver reported for it, and its quiet-time gain baseline in dB.
+type rfFrontEnd struct {
+	id       uint8 // FrontEndID: front-end code and antenna
+	locked   bool  // the latest report had a gain (the front end's PLL was locked)
+	gainDB   int   // the latest gain; meaningful only while locked
+	variance *int
+	blanked  int
+	lastSeen time.Time
+	// cutSince starts the current run at or beyond the gain-cut departure; zero while
+	// the front end is within it, unlocked or has no baseline.
+	cutSince time.Time
+	agcBaseline
+}
+
+// departure is the front end's gain below its learned baseline in dB: positive when the
+// receiver has turned its gain down (more power arriving), negative when it has turned
+// it up (less). ok is false while no baseline is learned or the front end is unlocked.
+func (e *rfFrontEnd) departure() (dep float64, ok bool) {
+	if !e.haveBaseline || !e.locked {
+		return 0, false
+	}
+	return e.baseline - float64(e.gainDB), true
 }
 
 // AGCMinute is one completed minute's median of quiet AGC samples.
@@ -101,6 +147,9 @@ type rfStation struct {
 	id       string
 	lastSeen time.Time
 	bands    map[int]*rfBand
+	// frontEnds are a Septentrio receiver's front ends, by FrontEndID. A station has
+	// bands or front ends, by its receiver.
+	frontEnds map[uint8]*rfFrontEnd
 
 	haveCn0     bool
 	cn0Mean     float64
@@ -147,7 +196,7 @@ func (s *Store) applyRF(f *ingest.RawFrame) {
 		band.agc, band.noise, band.cwSuppress = b.AGC, b.NoiseLevel, b.CWSuppress
 		band.jamState, band.antStatus = b.JamState, b.AntStatus
 		band.lastSeen = recv
-		band.learn(b.AGC, recv)
+		band.learn(b.AGC, recv, agcCountScale)
 		if dep, ok := band.departure(); ok && dep >= integrity.DefaultAGCDeparture {
 			if band.departedSince.IsZero() {
 				band.departedSince = recv
@@ -156,6 +205,9 @@ func (s *Store) applyRF(f *ingest.RawFrame) {
 			band.departedSince = time.Time{}
 		}
 	}
+	if f.RF.Status != nil {
+		s.applyFrontEnds(st, f.RF.Status.FrontEnds, recv)
+	}
 	if len(f.RF.Sats) > 0 {
 		st.cn0Mean, st.cn0Resid, st.cn0NumSats = cn0ElevationResidual(f.RF.Sats)
 		st.cn0ByGNSS = cn0ElevationResidualByConstellation(f.RF.Sats)
@@ -163,6 +215,41 @@ func (s *Store) applyRF(f *ingest.RawFrame) {
 		st.cn0LastSeen = recv
 	}
 	s.integrityRF(st, f, recv)
+}
+
+// applyFrontEnds folds one ReceiverStatus block's AGC state into the station's front
+// ends. An unlocked front end has no gain: it is neither measured nor learned, and its
+// baseline waits for the gain to return. The caller holds rfMu.
+func (s *Store) applyFrontEnds(st *rfStation, reported []ingest.SBFFrontEnd, recv time.Time) {
+	if len(reported) > 0 && st.frontEnds == nil {
+		st.frontEnds = map[uint8]*rfFrontEnd{}
+	}
+	for _, r := range reported {
+		end := st.frontEnds[r.ID]
+		if end == nil {
+			end = &rfFrontEnd{id: r.ID}
+			if restored, ok := s.gainRestore[st.id][r.ID]; ok {
+				end.agcBaseline = restored
+				delete(s.gainRestore[st.id], r.ID)
+			}
+			st.frontEnds[r.ID] = end
+		}
+		end.variance, end.blanked, end.lastSeen = r.SampleVariance, r.BlankedPercent, recv
+		end.locked = r.Locked && r.GainDB != nil
+		if !end.locked {
+			end.cutSince = time.Time{}
+			continue
+		}
+		end.gainDB = *r.GainDB
+		end.learn(end.gainDB, recv, gainDBScale)
+		if dep, ok := end.departure(); ok && dep >= integrity.DefaultGainDepartureDB {
+			if end.cutSince.IsZero() {
+				end.cutSince = recv
+			}
+		} else {
+			end.cutSince = time.Time{}
+		}
+	}
 }
 
 // cn0ElevationResidualByConstellation keeps the single-constellation transmitter
@@ -186,15 +273,16 @@ func cn0ElevationResidualByConstellation(sats []ingest.SatCN0) map[int]Cn0Stats 
 	return out
 }
 
-// learn folds an AGC sample received at at into the quiet-time baseline.
-func (b *agcBaseline) learn(agc int, at time.Time) {
+// learn folds a sample received at at into the quiet-time baseline: an AGC count, or a
+// front end's gain in dB, on its scale.
+func (b *agcBaseline) learn(agc int, at time.Time, scale baselineScale) {
 	if b.haveBaseline {
 		switch d := float64(agc) - b.baseline; {
-		case d < -agcLearnBand:
+		case d < -scale.learnBand:
 			// A gain cut: a jamming departure, measured but never learned.
 			b.aboveSince = time.Time{}
 			return
-		case d > agcLearnBand:
+		case d > scale.learnBand:
 			// Quieter than the clear-sky reference. Brief excursions are not
 			// learned; a sustained one means the reference was learned under
 			// interference, so learning starts again.
@@ -213,7 +301,7 @@ func (b *agcBaseline) learn(agc int, at time.Time) {
 		b.minuteStart = at
 	}
 	if at.Sub(b.minuteStart) >= time.Minute {
-		b.closeMinute(at)
+		b.closeMinute(at, scale)
 	}
 	if len(b.current) < agcMinuteMaxSamples {
 		b.current = append(b.current, agc)
@@ -222,7 +310,7 @@ func (b *agcBaseline) learn(agc int, at time.Time) {
 
 // closeMinute completes the minute in progress, drops minutes older than the window,
 // and moves the baseline toward the median of the remaining minutes.
-func (b *agcBaseline) closeMinute(at time.Time) {
+func (b *agcBaseline) closeMinute(at time.Time, scale baselineScale) {
 	if len(b.current) >= agcMinuteMinSamples {
 		b.minutes = append(b.minutes, AGCMinute{Start: b.minuteStart, Median: medianInt(b.current)})
 	}
@@ -232,12 +320,12 @@ func (b *agcBaseline) closeMinute(at time.Time) {
 		n++
 	}
 	b.minutes = b.minutes[n:]
-	b.update(at)
+	b.update(at, scale)
 }
 
 // update moves the baseline toward the median of the learned minutes, establishing it
-// after the warm-up and then at most agcDriftPerHour.
-func (b *agcBaseline) update(at time.Time) {
+// after the warm-up and then at most the scale's drift an hour.
+func (b *agcBaseline) update(at time.Time, scale baselineScale) {
 	if len(b.minutes) == 0 {
 		return
 	}
@@ -252,7 +340,7 @@ func (b *agcBaseline) update(at time.Time) {
 			b.baseline, b.haveBaseline, b.baselineAt = target, true, at
 		}
 	default:
-		limit := agcDriftPerHour * at.Sub(b.baselineAt).Hours()
+		limit := scale.driftPerHour * at.Sub(b.baselineAt).Hours()
 		b.baseline += math.Max(-limit, math.Min(limit, target-b.baseline))
 		b.baselineAt = at
 	}
@@ -328,6 +416,9 @@ type StationRF struct {
 	Cn0Resid *float64        `json:"cn0_elev_resid_var,omitempty"`
 	NumSats  int             `json:"num_sats"`
 	RFTrust  float64         `json:"rf_trust"`
+	// FrontEnds are a Septentrio receiver's front ends, in FrontEndID order; a u-blox
+	// receiver has Bands instead.
+	FrontEnds []StationFrontEnd `json:"front_ends,omitempty"`
 	// Neighbours lists, sorted by id, the nearest maxNamedNeighbours stations within
 	// the neighbour radius that show corroborated interference evidence of their own
 	// (Store.interferingNeighbours), computed only while this station shows an AGC
@@ -362,6 +453,25 @@ type StationRFBand struct {
 	NoiseLevel   int      `json:"noise_level"`
 	JamState     int      `json:"jam_state"`
 	AntStatus    int      `json:"ant_status"`
+}
+
+// StationFrontEnd is one Septentrio front end's published metrics (docs/DEFENSE-PNT.md
+// §6): the AGC state the receiver reports and the gain's departure from the learned
+// baseline. The gain is in dB; it is not a u-blox AGC count and is never served as one.
+type StationFrontEnd struct {
+	// ID is the receiver's FrontEndID; Name is the front end's name with the antenna
+	// when it is not the main one ("GPSL1/E1", "aux1 GPSL1/E1").
+	ID      int    `json:"id"`
+	Name    string `json:"name"`
+	Antenna int    `json:"antenna"`
+	// Locked is false while the front end's PLL is not locked; there is then no gain.
+	Locked bool `json:"locked"`
+	GainDB *int `json:"gain_db,omitempty"`
+	// GainDeparture is the baseline minus the current gain: positive when the gain has
+	// been cut (more power arriving), negative when it has risen (less).
+	GainDeparture  *float64 `json:"gain_departure_db,omitempty"`
+	SampleVariance *int     `json:"sample_variance,omitempty"`
+	BlankedPercent int      `json:"blanked_percent"`
 }
 
 // FeedStationRF builds the per-station RF-defense read model as of now, for the
@@ -422,21 +532,36 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 			}
 			entry.Bands = append(entry.Bands, sb)
 		}
+		for _, fid := range slices.Sorted(maps.Keys(st.frontEnds)) {
+			e := st.frontEnds[fid]
+			// A front end that has stopped reporting is withheld like a stale band.
+			if now.Sub(e.lastSeen) > rfStaleAfter {
+				continue
+			}
+			fe := StationFrontEnd{
+				ID: int(e.id), Name: ingest.SBFFrontEndLabel(e.id), Antenna: int(e.id >> 5),
+				Locked: e.locked, SampleVariance: e.variance, BlankedPercent: e.blanked,
+			}
+			if e.locked {
+				gain := e.gainDB
+				fe.GainDB = &gain
+			}
+			if dep, ok := e.departure(); ok {
+				fe.GainDeparture = &dep
+			}
+			entry.FrontEnds = append(entry.FrontEnds, fe)
+		}
 		out[id] = entry
 	}
 	return out
 }
 
 // rfTrust is how much the station's votes count given its front end: 0.3 while a
-// fresh band shows a real AGC departure, otherwise 1. The caller holds rfMu.
+// fresh band shows a real AGC departure or a fresh front end a real gain cut,
+// otherwise 1. The caller holds rfMu.
 func (st *rfStation) rfTrust(now time.Time) float64 {
-	for _, b := range st.bands {
-		if now.Sub(b.lastSeen) > rfStaleAfter {
-			continue
-		}
-		if dep, ok := b.departure(); ok && dep >= integrity.DefaultAGCDeparture {
-			return 0.3
-		}
+	if st.departed(now) {
+		return 0.3
 	}
 	return 1
 }
@@ -486,14 +611,23 @@ func (s *Store) sourceVoteWeights(now time.Time) map[string]float64 {
 	return out
 }
 
-// departed reports a fresh band at or beyond the jamming AGC departure. The caller
-// holds rfMu.
+// departed reports a fresh band at or beyond the jamming AGC departure, or a fresh
+// front end whose gain has been cut by at least the gain departure. A gain that has
+// risen is not interference and does not count. The caller holds rfMu.
 func (st *rfStation) departed(now time.Time) bool {
 	for _, b := range st.bands {
 		if now.Sub(b.lastSeen) > rfStaleAfter {
 			continue
 		}
 		if dep, ok := b.departure(); ok && dep >= integrity.DefaultAGCDeparture {
+			return true
+		}
+	}
+	for _, e := range st.frontEnds {
+		if now.Sub(e.lastSeen) > rfStaleAfter {
+			continue
+		}
+		if dep, ok := e.departure(); ok && dep >= integrity.DefaultGainDepartureDB {
 			return true
 		}
 	}
@@ -538,8 +672,9 @@ func (s *Store) stationLocation(id string, now time.Time) (integrity.Surveyed, b
 
 // interferenceEvidence grades a station's own front-end evidence of interference
 // within the window: how many independent signs it shows — a band at or beyond the
-// jamming AGC departure, a CW tone, the receiver's jam flag, a simultaneous C/N₀
-// drop — and whether a band shows a severe collapse. The drop counts only while the
+// jamming AGC departure or a front end's gain cut by the gain departure, a CW tone,
+// the receiver's jam flag, a simultaneous C/N₀ drop — and whether a band or a front
+// end shows a severe collapse. The drop counts only while the
 // cn0_drop check's latest evaluation, not its held served state, found one inside
 // the window: the served state is held through the recovery period and survives
 // staleness, so a drop up to ten minutes old would otherwise corroborate. Neighbours'
@@ -557,6 +692,15 @@ func (s *Store) interferenceEvidence(st *rfStation, now time.Time, window time.D
 		}
 		cw = cw || b.cwSuppress >= integrity.DefaultCWSuppress
 		jam = jam || b.jamState >= 2
+	}
+	for _, e := range st.frontEnds {
+		if now.Sub(e.lastSeen) > window {
+			continue
+		}
+		if dep, ok := e.departure(); ok && dep >= integrity.DefaultGainDepartureDB {
+			departed = true
+			severe = severe || dep >= integrity.DefaultGainDepartureSevereDB
+		}
 	}
 	drop := !st.cn0DropEvalAt.IsZero() && now.Sub(st.cn0DropEvalAt) <= window
 	for _, sign := range []bool{departed, cw, jam, drop} {
@@ -684,7 +828,8 @@ func (s *Store) interferingNeighbours(id string, now time.Time, candidates []nei
 
 // cn0DropCorroboration reports a simultaneous C/N₀ drop that corroborates the
 // station's front-end evidence as of now: one the cn0_drop check serves now, or one
-// it served during a fresh band's current AGC departure. The drop marks a jammer's
+// it served during a fresh band's current AGC departure or a fresh front end's current
+// gain cut. The drop marks a jammer's
 // onset and C/N₀ then stays low without dropping again, so a drop seen during a
 // departure keeps corroborating it until the departure ends. The caller holds rfMu.
 func (s *Store) cn0DropCorroboration(st *rfStation, now time.Time) bool {
@@ -698,6 +843,11 @@ func (s *Store) cn0DropCorroboration(st *rfStation, now time.Time) bool {
 	}
 	for _, b := range st.bands {
 		if now.Sub(b.lastSeen) <= rfStaleAfter && !b.departedSince.IsZero() && !st.cn0DropAt.Before(b.departedSince) {
+			return true
+		}
+	}
+	for _, e := range st.frontEnds {
+		if now.Sub(e.lastSeen) <= rfStaleAfter && !e.cutSince.IsZero() && !st.cn0DropAt.Before(e.cutSince) {
 			return true
 		}
 	}
@@ -735,15 +885,19 @@ func absInt(x int) int {
 }
 
 // AGCBaseline is one band's durable AGC baseline: what a checkpoint stores and a
-// restart restores, so a collector restart does not repeat the warm-up.
+// restart restores, so a collector restart does not repeat the warm-up. A Septentrio
+// front end's gain baseline is checkpointed in the same list with FrontEnd set: Block
+// is then its FrontEndID, and Baseline and Minutes are in dB, not AGC counts.
 type AGCBaseline struct {
 	Block      int         `json:"block"`
+	FrontEnd   bool        `json:"front_end,omitempty"`
 	Baseline   float64     `json:"baseline"`
 	BaselineAt time.Time   `json:"baseline_at"`
 	Minutes    []AGCMinute `json:"minutes"`
 }
 
-// AGCBaselines returns every station's established AGC baselines, bands in block order.
+// AGCBaselines returns every station's established baselines: its bands in block
+// order, then its front ends in FrontEndID order.
 func (s *Store) AGCBaselines() map[string][]AGCBaseline {
 	s.rfMu.Lock()
 	defer s.rfMu.Unlock()
@@ -761,24 +915,41 @@ func (s *Store) AGCBaselines() map[string][]AGCBaseline {
 			out[id] = append(out[id], AGCBaseline{Block: block, Baseline: b.baseline, BaselineAt: b.baselineAt,
 				Minutes: append([]AGCMinute(nil), b.minutes...)})
 		}
+		for _, fid := range slices.Sorted(maps.Keys(st.frontEnds)) {
+			if e := st.frontEnds[fid]; e.haveBaseline {
+				out[id] = append(out[id], AGCBaseline{Block: int(fid), FrontEnd: true, Baseline: e.baseline, BaselineAt: e.baselineAt,
+					Minutes: append([]AGCMinute(nil), e.minutes...)})
+			}
+		}
 	}
 	return out
 }
 
 // RestoreAGCBaselines queues a station's checkpointed baselines. Each is installed
-// when its band first reports, so a restored station is not live until it is heard
-// from. A baseline older than agcRestoreMaxAge, out of range, or for a band that has
-// already reported is not restored; the count restored is returned.
+// when its band or front end first reports, so a restored station is not live until it
+// is heard from. A baseline older than agcRestoreMaxAge, out of range, or for a band or
+// front end that has already reported is not restored; the count restored is returned.
 func (s *Store) RestoreAGCBaselines(id string, bands []AGCBaseline, now time.Time) int {
 	s.rfMu.Lock()
 	defer s.rfMu.Unlock()
 	restored := 0
 	for _, b := range bands {
-		if b.Block < 0 || b.Block > 255 || math.IsNaN(b.Baseline) || b.Baseline < 0 || b.Baseline > 65535 ||
+		// A band's AGC is a 16-bit count; a front end's gain is a signed byte of dB,
+		// whose lowest value means its PLL is not locked.
+		low, high := 0.0, 65535.0
+		if b.FrontEnd {
+			low, high = -127, 127
+		}
+		if b.Block < 0 || b.Block > 255 || math.IsNaN(b.Baseline) || b.Baseline < low || b.Baseline > high ||
 			now.Sub(b.BaselineAt) > agcRestoreMaxAge || b.BaselineAt.After(now) {
 			continue
 		}
-		if st := s.rf[id]; st != nil && st.bands[b.Block] != nil {
+		st := s.rf[id]
+		if b.FrontEnd {
+			if st != nil && st.frontEnds[uint8(b.Block)] != nil {
+				continue
+			}
+		} else if st != nil && st.bands[b.Block] != nil {
 			continue
 		}
 		baseline := agcBaseline{baseline: b.Baseline, haveBaseline: true, baselineAt: b.BaselineAt}
@@ -787,10 +958,17 @@ func (s *Store) RestoreAGCBaselines(id string, bands []AGCBaseline, now time.Tim
 				baseline.minutes = append(baseline.minutes, m)
 			}
 		}
-		if s.agcRestore[id] == nil {
-			s.agcRestore[id] = map[int]agcBaseline{}
+		if b.FrontEnd {
+			if s.gainRestore[id] == nil {
+				s.gainRestore[id] = map[uint8]agcBaseline{}
+			}
+			s.gainRestore[id][uint8(b.Block)] = baseline
+		} else {
+			if s.agcRestore[id] == nil {
+				s.agcRestore[id] = map[int]agcBaseline{}
+			}
+			s.agcRestore[id][b.Block] = baseline
 		}
-		s.agcRestore[id][b.Block] = baseline
 		restored++
 	}
 	return restored

@@ -126,7 +126,7 @@ func (s *Store) CaptureEventEvidence(ctx context.Context, collectorID string, no
 // rfKinds and boardKinds name every kind of each source table, so the capture
 // query can use the (source_id, kind, time) indexes.
 var (
-	rfKinds    = []string{"reception", "jamming", "combined", "solution"}
+	rfKinds    = []string{"reception", "jamming", "combined", "solution", "receiver_status"}
 	boardKinds = []string{"environment", "timing", "network"}
 )
 

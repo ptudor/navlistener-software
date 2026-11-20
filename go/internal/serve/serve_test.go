@@ -1019,6 +1019,51 @@ func TestRejectedRequestBodyDrainIsBounded(t *testing.T) {
 	}
 }
 
+// TestObserversCarryFrontEnds pins the served shape of a Septentrio station's RF read
+// model (docs/OUTPUT.md §1.3): its front ends, by name, with the gain in dB and no
+// u-blox band fields standing in for them. A departure appears only once a baseline
+// exists.
+func TestObserversCarryFrontEnds(t *testing.T) {
+	s := testServer([]config.Source{{Name: "p3", Type: "sbf", Addr: "10.0.0.3:28784", CaptureOnly: true}})
+	gain, variance := 40, 98
+	s.store.Apply(&ingest.RawFrame{
+		Source: "p3", Recv: time.Now(), MsgType: ingest.SBFReceiverStatusBlock,
+		RF: &ingest.RawRF{Status: &ingest.SBFReceiverStatus{FrontEnds: []ingest.SBFFrontEnd{
+			{ID: 5, Code: 5}, // PLL not locked: no gain
+			{ID: 0, Code: 0, Locked: true, GainDB: &gain, SampleVariance: &variance, BlankedPercent: 1},
+		}}},
+	})
+	s.refresh("observers")
+	rr := httptest.NewRecorder()
+	s.serveFeed("observers")(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
+	var env struct {
+		Data struct {
+			Observers []struct {
+				ID string                     `json:"id"`
+				RF map[string]json.RawMessage `json:"rf"`
+			} `json:"observers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.Data.Observers) != 1 || env.Data.Observers[0].RF == nil {
+		t.Fatalf("observer RF not attached: %s", rr.Body.String())
+	}
+	rf := env.Data.Observers[0].RF
+	if _, has := rf["bands"]; has {
+		t.Fatalf("a Septentrio station serves u-blox bands: %s", rf["bands"])
+	}
+	if string(rf["rf_trust"]) != "1" {
+		t.Fatalf("rf_trust = %s", rf["rf_trust"])
+	}
+	want := `[{"id":0,"name":"GPSL1/E1","antenna":0,"locked":true,"gain_db":40,"sample_variance":98,"blanked_percent":1},` +
+		`{"id":5,"name":"L5/E5a/B2a","antenna":0,"locked":false,"blanked_percent":0}]`
+	if string(rf["front_ends"]) != want {
+		t.Fatalf("front_ends = %s\nwant         %s", rf["front_ends"], want)
+	}
+}
+
 // TestObserversCarryRF confirms a station's PNT-defense RF metrics attach to its observer
 // record when the receiver has reported RF telemetry (docs/OUTPUT.md §1.3, DEFENSE-PNT §6).
 func TestObserversCarryRF(t *testing.T) {

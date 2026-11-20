@@ -6,7 +6,8 @@ import (
 )
 
 // StoredInput is one stored station input, as rf_samples and observer_samples keep it:
-// the exact telemetry body with the clocks it was received under.
+// the exact telemetry body, or for a receiver_status row the whole SBF block, with the
+// clocks it was received under.
 type StoredInput struct {
 	// Origin is "rf" (rf_samples) or "board" (observer_samples); Kind is the row kind.
 	Origin, Kind string
@@ -45,6 +46,17 @@ func StoredFrame(in StoredInput) (*RawFrame, error) {
 	case in.Origin == "rf" && in.Kind == "solution":
 		f.MsgType = TelemReceiverSolution
 		f.Solution, err = decodeReceiverSolution(in.Raw)
+	case in.Origin == "rf" && in.Kind == "receiver_status":
+		// The row keeps the whole SBF block, header and CRC included.
+		var number int
+		number, f.SBFHeader, f.Bytes, err = splitSBFBlock(in.Raw)
+		if err == nil && number != SBFReceiverStatusBlock {
+			err = fmt.Errorf("SBF block %d is not a ReceiverStatus", number)
+		}
+		if err == nil {
+			f.MsgType, f.RF = number, &RawRF{}
+			f.RF.Status, err = DecodeSBFReceiverStatus(f.Bytes)
+		}
 	case in.Origin == "board":
 		f.MsgType = TelemObserverDetails
 		f.Details, err = decodeObserverDetails(in.Raw)

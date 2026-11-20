@@ -183,12 +183,16 @@ deterministically ordered by `(gnss, sig)`.
 ### PNT-defense Tier-0 (`rf.go`)
 
 Turns the RF telemetry the fleet's receivers already produce — MON-RF/MON-HW AGC and jamming
-indicators, NAV-SAT C/N₀ and elevation — into per-station detection metrics:
+indicators, a Septentrio receiver's front-end gains, NAV-SAT C/N₀ and elevation — into
+per-station detection metrics:
 
 - **jamming**: departures from a *learned per-station baseline*, not a fixed threshold. Every site
   has its own noise floor. The baseline is a six-hour median of per-minute medians with a
   ten-minute warm-up, a bounded drift rate and relearning after a jammed start
   (`docs/DEFENSE-PNT.md §2`); `AGCBaselines`/`RestoreAGCBaselines` checkpoint and restore it.
+  One learner serves both receiver families on its own scale (`baselineScale`): a u-blox band's
+  AGC in counts, and each Septentrio front end's gain in dB, where a gain above the baseline
+  is served too, as a negative departure, because it is how a lost antenna shows.
 - **spoofing**: the C/N₀-vs-elevation gate. Real satellites show a characteristic C/N₀ rise with
   elevation; a ground transmitter doesn't. `Cn0Stats` carries the per-constellation fit.
 

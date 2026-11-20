@@ -190,11 +190,11 @@ short/long gaps, relocation and implausible motion.
 
 | Layer | Current support | Remaining work |
 |---|---|---|
-| Collector SBF input | TCP dial capture and `sbf` push sessions: framing/CRC, original header/revision/body persistence and exact reconstruction | Real P3 captures and block-specific decoding. |
+| Collector SBF input | TCP dial capture and `sbf` push sessions: framing/CRC, original header/revision/body persistence and exact reconstruction; ReceiverStatus decoded, as receiver telemetry | Real P3 captures and decoding of the navigation, solution, measurement and interference blocks. |
 | C feeder | UBX input | SBF source/configuration support. |
 | ESP32 receiver | UBX parser, MON-VER discovery and UBX configuration; on a P3, SBF framing and CRC, Septentrio command/reply handling, COM2 RTS/CTS, identity and constellation discovery, receiver reset recovery, status/time adaptation into the receiver-neutral status, and the configured blocks, navigation pages included, forwarded whole on the `sbf` feed ([SBF-RECEIVER.md](../../esp32/docs/SBF-RECEIVER.md)) | Higher baud rates; validation on a P3. |
 | GNF1 push and enrollment | `ubx`/`rtcm`/`sbf` feed grants; SBF record format 1 negotiated in HELLO and WELCOME, each block carried whole with its header, persisted with the session and sequence that dedup replay ([DESIGN.md §2](../DESIGN.md#2-the-gnf1-wire-feeder--collector)) | An SBF source mode in the C feeder, whose disk spool would need a feed and format identity. |
-| Station analysis | Receiver-neutral solution record and integrity engine | Map P3 solution, uncertainty, time, tracking and RF evidence; retain unavailable fields rather than inventing UBX equivalents. |
+| Station analysis | Receiver-neutral solution record and integrity engine; the P3's front-end AGC gains, in dB and on their own thresholds, feed the station RF baseline, the `agc` check and the station RF events ([DEFENSE-PNT.md §2](../DEFENSE-PNT.md#2-jamming-detection-the-rf-front-end)) | Map P3 solution, uncertainty, time, tracking and the RFStatus interference evidence; retain unavailable fields rather than inventing UBX equivalents. |
 | Board platform | Identity EEPROM, manifest, ATECC, commissioning, OTA, RTC, panel and selected sensors; the P3 board ID, revision 1 parts list, pins, OTA target, rail monitor and its alert interrupt, SHT35 and HIH8121 drivers, and receiver reset control | Bring-up on an assembled P3. |
 
 The GNF1 DATA `frame_type` cannot carry an SBF block number, so SBF record

@@ -174,7 +174,20 @@ type RFBand struct {
 	AntStatus  int
 }
 
-// RFSample is one front-end report. Cn0Drop reports a simultaneous C/N₀ drop that
+// RFFrontEnd is one Septentrio front end with its AGC gain's departure from the
+// learned baseline. The gain is in dB, where an RFBand's AGC is a u-blox count.
+type RFFrontEnd struct {
+	// ID is the receiver's FrontEndID: the front-end code and the antenna.
+	ID int
+	// Departure is the learned baseline minus the current gain, in dB: positive when
+	// the receiver has turned its gain down (more power arriving), negative when it
+	// has turned it up (less). Nil while no baseline exists or the front end's PLL is
+	// not locked.
+	Departure *float64
+}
+
+// RFSample is one front-end report: a u-blox receiver's bands, or a Septentrio
+// receiver's front ends. Cn0Drop reports a simultaneous C/N₀ drop that
 // accompanies the current front-end evidence: one the cn0_drop check serves now, or
 // one it served during the current AGC departure (the caller tracks the departure).
 // Neighbours counts the stations within the neighbour radius that show interference
@@ -182,6 +195,7 @@ type RFBand struct {
 type RFSample struct {
 	Received   time.Time
 	Bands      []RFBand
+	FrontEnds  []RFFrontEnd
 	Cn0Drop    bool
 	Neighbours int
 }

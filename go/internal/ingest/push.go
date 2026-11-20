@@ -1408,7 +1408,8 @@ func waitForDurable(ctx context.Context, tracker *DurableTracker, source, sessio
 // recordToFrame reconstructs a RawFrame from a GNF1 raw record. A telemetry record
 // (frame_type < 0x10, docs/CONSTELLATIONS.md §6.2) decodes to an RF sample; the ubx feed
 // carries the broadcast words big-endian in Raw; rtcm carries the message bytes; sbf
-// carries one whole SBF block, split as a dial capture splits it. The reception time falls back to now when the feeder did not stamp it. A
+// carries one whole SBF block, split as a dial capture splits it, with a ReceiverStatus
+// block decoded into an RF sample as well. The reception time falls back to now when the feeder did not stamp it. A
 // malformed telemetry body returns nil (the caller counts and drops it).
 // Future stamps remain tightly bounded as clock errors. Past stamps have a much
 // wider horizon because the edge feeder deliberately replays its durable spool
@@ -1466,6 +1467,10 @@ func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 			return nil
 		}
 		f.MsgType, f.SBFHeader, f.Bytes = number, header, body
+		// A ReceiverStatus that passed its CRC but does not decode is still captured.
+		if attachSBFTelemetry(f) {
+			metrics.PushErrorsTotal.WithLabelValues(source, "sbf_receiver_status").Inc()
+		}
 		return f
 	}
 	if feed == "rtcm" {

@@ -1,7 +1,8 @@
 # navlistener — PNT defense: jamming & spoofing detection
 
 **Status: RF monitoring, jamming detection, stationary received-power history and
-station integrity checks implemented.** MON-RF/MON-HW, reception telemetry, the
+station integrity checks implemented.** MON-RF/MON-HW, a Septentrio receiver's
+front-end gains (SBF ReceiverStatus), reception telemetry, the
 receiver's own solution (telemetry `0x03`) and the board's pulse timing feed the
 station detectors. Five independent physics domains are wired against the quorum of
 two; the fifth, barometric position, is available only at surveyed fixed stations whose
@@ -50,7 +51,9 @@ blind when a receiver boots inside an already degraded environment (§5).
 The table maps receiver telemetry to current and proposed detector inputs. Current
 GNF1 telemetry carries the supported UBX records described in
 `docs/CONSTELLATIONS.md §6.2`. SEC-SIG's jamming state is carried as described below;
-its spoofing state, SEC-SIGLOG and Septentrio central decoding remain planned. Listing a
+its spoofing state and SEC-SIGLOG remain planned. From a Septentrio receiver the collector
+decodes one block, ReceiverStatus, for its front-end gains; its solution, measurement and
+interference blocks are stored and not yet decoded. Listing a
 receiver message here does not imply a wired detector.
 
 | Source message | Carries | GNF1 type | Threat signal it feeds |
@@ -61,6 +64,7 @@ receiver message here does not imply a wired detector.
 | **UBX-NAV-SAT** | per-SV C/N₀, elevation, azimuth, pseudorange residual, quality indicator, health, used-in-solution | `ReceptionData` (0x01) | C/N₀-vs-elevation plausibility (§3), simultaneous C/N₀ drop (§2) |
 | **UBX-RXM-RAWX** | pseudorange, carrier phase, Doppler, lock-time, C/N₀ | `RFData` (0x02) | Doppler plausibility, measured iono (§3, `docs/MATH.md §7.4`) |
 | **UBX-NAV-PVT / NAV-CLOCK / NAV-STATUS** | position, velocity, UTC, clock bias/drift, fix and spoofing state | `ReceiverSolution` (0x03) | position, clock and time-reference integrity checks |
+| **SBF ReceiverStatus** (4014) | per-front-end AGC gain in dB, sample variance, pulse-blanking share; the receiver's temperature, load, uptime and state | the block itself, on an `sbf` session (`SbfBlock`, 0x80) or a dial capture | broadband jamming and antenna-path loss, from the gains (§2) |
 
 **Software task P-Jam-1 (done for MON-RF/MON-HW/NAV-SAT):** the `JammingStats` (0x05) record
 carries the full MON-RF per-band block (per RF path: AGC, noiseLevel, cwSuppression/jamInd,
@@ -102,6 +106,43 @@ drowned out; the receiver's own front-end is the best jamming sensor we have. Tw
   receiver's notch filters; the **CW-suppression indicator** spikes toward 100%. The metric is
   the CW-suppression level crossing a band, debounced.
 
+**Septentrio front ends.** A Septentrio receiver reports the same evidence in another unit: its
+ReceiverStatus block gives each RF front end's AGC gain in whole dB, and a mosaic-G5 P3 has nine
+front ends (L1, GLONASS L1, B1, L5, E5b, L2, GLONASS L2, B3, E6). The collector decodes that
+block and learns a baseline for every front end by the rules above on a dB scale: a sample more
+than 2 dB from the baseline is measured but not learned, the baseline moves at most 0.75 dB an
+hour, and a gain more than 2 dB above it for fifteen minutes starts the learning again. A gain
+is never converted to a u-blox count, and a station has bands or front ends, by its receiver.
+
+```
+gain_departure_db = baseline_gain − current_gain       // dB; positive: gain cut, negative: gain rise
+```
+
+- **A gain cut** is more power at that front end's input, as an AGC departure is. A cut of
+  4 dB makes the front end interference-suspect and one of 10 dB is a gain collapse; they take
+  the place of the 800- and 2000-count AGC departures in everything below (corroboration,
+  neighbours, `rf_trust`, the events of §4).
+- **A gain rise** is less power arriving: the antenna, its amplifier or its cable is giving
+  less. A rise of 4 dB is reported as a degradation and never as interference, whatever
+  corroborates it. This is the receiver's only evidence of a lost antenna where its own
+  active-antenna flag cannot be relied on: a mosaic-G5 on firmware 1.0.0 left that flag clear
+  with an antenna drawing current.
+- **A front end whose PLL is not locked** reports no gain. It is neither measured nor learned
+  until the gain returns.
+
+The thresholds come from one receiver so far and are observational like the rest: a
+mosaic-G5 P3 indoors held every front end within 1 dB over eight hours, and bench noise that
+cost it all tracking lowered every gain by 8 to 10 dB.
+
+The learning rules have one consequence to know before working on an antenna. A rise that
+lasts fifteen minutes restarts the learning, so an antenna that stays disconnected stops
+showing as a departure fifteen minutes after it went and its event clears five minutes
+later; twenty-five minutes after it went, the higher gain is the new baseline. Reconnecting it then reads
+as a gain cut against that baseline, and a cut is never learned: it stays, as a degradation
+or a collapse, until the station's baselines are discarded. The same holds for an AGC band.
+Announce work on the antenna path, and its completion, with the station's
+`power_model_epoch` (§6).
+
 **Derived metrics (per station × RF band), computed centrally:**
 
 ```
@@ -112,7 +153,9 @@ jam_state       = worst-of(receiver jamInd, our agc/cw classification)
 ```
 
 (These are internal derived-quantity names. The **served** feed keys are `cw_suppress` and
-the raw-indicator `noise_level` — §6, regression fix; no dB unit is claimed on the wire.)
+the raw-indicator `noise_level` — §6, regression fix; no dB unit is claimed on the wire for a
+u-blox band. A Septentrio front end's `gain_db` and `gain_departure_db` are in dB because the
+receiver reports them so.)
 
 A jamming event is **corroborated**, not taken from one box: a real jammer near a station shows
 as `agc_departure` + `cw_suppression` + a C/N₀ collapse across *all* SVs that station tracks,
@@ -151,8 +194,9 @@ source by its vote weight: its `rf_trust`, lowered to ½ while its station asses
 is inconsistent and to 0 while it is unassured or indicates spoofing, since a spoofed
 receiver's decoded navigation data is the attacker's. `conf` still counts every fresh
 source. RF trust is 1 for a quiet front end and 0.3 when a fresh band has an
-AGC departure of at least 800 counts, the same threshold used by the jamming
-checks. A 300-count drift stays at full weight. The planned broadcast-agreement
+AGC departure of at least 800 counts, or a fresh Septentrio front end a gain cut of at
+least 4 dB, the same thresholds used by the jamming
+checks. A 300-count drift stays at full weight, and so does a gain that has risen. The planned broadcast-agreement
 comparison will use the same weights.
 
 ---
@@ -260,11 +304,11 @@ added to the vocabulary in `docs/INTEGRITY.md §5`:
 
 | `event_type` | Fires when | Severity |
 |---|---|---|
-| `jamming_detected` | AGC departure corroborated by a CW tone, the receiver's jam flag, a simultaneous C/N₀ drop or a neighbouring station's interference, debounced; a near-total AGC collapse alone | 1 → 2 on full lock loss; 0 on clear |
+| `jamming_detected` | AGC departure, or a Septentrio front end's gain cut, corroborated by a CW tone, the receiver's jam flag, a simultaneous C/N₀ drop or a neighbouring station's interference, debounced; a near-total AGC collapse or a 10 dB gain collapse alone | 1 → 2 on full lock loss; 0 on clear |
 | `spoofing_suspected` | ≥2 independent physics domains (§3), or one with the receiver's spoofing flag, unassured at a station, debounced | 2; 0 on clear |
 | `station_assurance` | the station's fused integrity state changes among `assured`, `inconsistent` and `unassured` ([proposal](proposals/STATION-ASSURANCE.md) §4) | 2 unassured, 1 inconsistent, 0 assured |
-| `station_rf_degraded` | a single RF metric departs baseline, or a simultaneous C/N₀ drop with a quiet front end (fault-or-early-warning, not an attack claim) | 1; 0 on clear |
-| `antenna_fault` | MON-RF antenna status open/short, or C/N₀ collapse with no jamming signature | 1; 0 on clear |
+| `station_rf_degraded` | a single RF metric departs baseline, a Septentrio front end's gain rises by 4 dB or more, or a simultaneous C/N₀ drop with a quiet front end (fault-or-early-warning, not an attack claim) | 1; 0 on clear |
+| `antenna_fault` | MON-RF antenna status open/short, or C/N₀ collapse with no jamming signature. A Septentrio receiver reports no such status; its lost antenna is a gain rise, above | 1; 0 on clear |
 
 **Current thresholds are implemented in `go/internal/integrity`** (`DefaultProfile`, with the
 station RF classifier names in `go/internal/detect/thresholds.go`). The RF state learns a
@@ -275,7 +319,9 @@ aligned. Severity encoding is the shared `0 info · 1 warning · 2 critical`.
 
 Constellation/station scope: these are **station-scoped** events (the threat is at a receiver's
 antenna), unlike the SV-scoped broadcast events. `jamming_detected`, `station_rf_degraded` and
-`antenna_fault` carry the station id and the aggregate RF indicators. `spoofing_suspected` and
+`antenna_fault` carry the station id and the aggregate RF indicators; for a Septentrio station
+the first two add `gain_cut_db` and `gain_rise_db`, the largest of each among its front ends,
+and name the front end showing each (`gain_cut_front_end`, `gain_rise_front_end`). `spoofing_suspected` and
 `station_assurance` carry the station's whole assessment: fused state and score, unassured
 domains, every available check's state, measured values, thresholds, version and reasons, the
 names of unavailable checks, the engine version and the configuration hash. Station RF machines
@@ -310,13 +356,18 @@ The receiver flag is therefore **one weighted input** into the fusion rule (§3)
 
 - **RF telemetry is stored like any observation** (`docs/OUTPUT.md §4`): `JammingStats` and
   `ReceptionData` land in the private `rf_samples` hypertable with exact raw bodies,
-  decoded projections, receipt scope, session and sequence. The write shares the
+  decoded projections, receipt scope, session and sequence. A Septentrio ReceiverStatus
+  block lands there too, kind `receiver_status`, as the whole block with its header and
+  CRC, and its decoded projection keeps the receiver's temperature, load, uptime and state
+  beside the gains. The write shares the
   navigation replay-ledger transaction, so a detector improvement can be replayed
   over history without acknowledging evidence that failed storage.
 - **Station RF health surfaces in the `observers` feed** (`docs/OUTPUT.md §1.3`): per-station,
   per-band `agc_departure`, `cw_suppress`, `noise_level`, `jam_state`, and a `rf_trust`
   scalar (how much this station's votes are currently down-weighted); `noise_level` is the
-  receiver's raw MON-RF indicator, not a dB measurement. Confirmed events go to the
+  receiver's raw MON-RF indicator, not a dB measurement. A Septentrio station has
+  `front_ends` in place of bands: each front end's name, `gain_db`, `gain_departure_db`,
+  `sample_variance` and `blanked_percent`. Confirmed events go to the
   SSE stream and `gnss_events` like every other integrity event.
 - **Station events keep their evidence.** When a station event confirms, the collector copies
   that station's stored inputs from ten minutes before to one minute after into retention-less
@@ -328,11 +379,14 @@ The receiver flag is therefore **one weighted input** into the fusion rule (§3)
   station RF and solution telemetry entirely.
 - **Baselines are state:** with the historian enabled, the server's repeating-track
   C/N₀ model is versioned in `reception_power_models`, while the observer keeps its
-  own CRC-protected model in local NVS. The AGC baselines are checkpointed in
+  own CRC-protected model in local NVS. The AGC baselines, and a Septentrio station's
+  front-end gain baselines with them, are checkpointed in
   `agc_baselines` every five minutes and at orderly shutdown and restored at startup
-  (when under a day old), so a restart does not repeat the warm-up; a restored band is
-  installed when it first reports. Changing a station's `power_model_epoch` discards its
-  stored AGC baseline too. Scoped audience views learn their own baselines. Threshold
+  (when under a day old), so a restart does not repeat the warm-up; a restored band or
+  front end is installed when it first reports. Changing a station's `power_model_epoch`
+  discards its stored baselines too, which is how a change of antenna, amplifier or cable
+  is announced: every gain moves with one, and the old baselines no longer describe the
+  station. Scoped audience views learn their own baselines. Threshold
   policy and the explicit hardware/site epoch remain configuration.
 
 ---

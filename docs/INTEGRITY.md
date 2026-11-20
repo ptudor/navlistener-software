@@ -227,14 +227,14 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `sbas_health` | SBAS message-type-0 / health change (do-not-use is latched on MT0 recency — `sbasType0Hold` — not the last message, so a test-mode MT0/2 interleave reads do-not-use, as a DO-229 receiver would) | sev 0 (info), → sev 2 (critical) on do-not-use — these are event *severities*; the served SBAS `health_code` itself is only ever 1 (OK) or 3 (do-not-use), per the §OUTPUT 2.2 enum |
 | `qzss_health` | QZSS navigation health transition; L1S DC-report enrichment is planned | 1–2 |
 | `navic_health` *(planned)* | NavIC SPS health transition; unavailable until the NavIC decoder lands | 1–2 |
-| `jamming_detected` | station AGC departure corroborated by CW, the receiver's jam flag, a simultaneous C/N₀ drop or a neighbouring station's own corroborated interference (`params.neighbours` names the nearest eight, `params.neighbour_count` the total), or a near-total AGC collapse, confirms jamming (`DEFENSE-PNT.md §2`, `§4`) | 1, → 2 on severe/full-lock-loss evidence; 0 on clear |
+| `jamming_detected` | station AGC departure (or a Septentrio front end's gain cut of 4 dB) corroborated by CW, the receiver's jam flag, a simultaneous C/N₀ drop or a neighbouring station's own corroborated interference (`params.neighbours` names the nearest eight, `params.neighbour_count` the total), or a near-total AGC collapse (a gain cut of 10 dB), confirms jamming (`DEFENSE-PNT.md §2`, `§4`) | 1, → 2 on severe/full-lock-loss evidence; 0 on clear |
 | `spoofing_suspected` | ≥2 independent station physics domains are unassured together, or one with the receiver's own spoofing flag (`DEFENSE-PNT.md §3–4`); see §8 | 2; 0 on clear |
 | `station_assurance` | a station's fused integrity state changes among `assured`, `inconsistent` and `unassured`; carries every check's evidence ([proposal](proposals/STATION-ASSURANCE.md)) | 2 unassured, 1 inconsistent, 0 assured |
 | `environment_sensor_health` | environmental instrumentation changes among `ok`, `degraded`, `fault`, `stale` and `unknown`; includes validity, disagreement, saturation, flatline and calibration evidence | 1 on degradation/fault/stale/unknown; 0 on recovery |
 | `environmental_change` | the station-specific temperature, RH, pressure, rate or dew-point-spread check changes among `normal`, `changed`, `severe` and `unknown` after filtering | 1 on changed/severe or stale unknown; 0 on recovery. Advisory only; never an attack classification |
 | `regional_pressure_anomaly` | a qualified station's pressure tendency changes among `coherent`, `local_change`, `severe` and `unknown` relative to fresh surveyed neighbours | 1 on local/severe, incoherent, sensor-fault or stale context; 0 on coherent. Advisory only |
 | `barometric_height_consistency` | regional-weather-corrected barometric height and synchronized GNSS height change among `consistent`, `inconsistent`, `diverged` and `unknown` | 1 on inconsistent/diverged or ambiguous/fault/stale context; 0 on consistent. Only qualified inconsistency enters fusion |
-| `station_rf_degraded` | one station RF metric departs its baseline, or every signal's C/N₀ drops with a quiet front end; early warning, not an attack claim | 1; 0 on clear |
+| `station_rf_degraded` | one station RF metric departs its baseline, a Septentrio front end's gain rises 4 dB above its baseline (less power arriving: the antenna path), or every signal's C/N₀ drops with a quiet front end; early warning, not an attack claim. For a Septentrio station `params.gain_cut_db` and `params.gain_rise_db` give the largest cut and rise, and `params.gain_cut_front_end` and `params.gain_rise_front_end` the front end showing each | 1; 0 on clear |
 | `antenna_fault` | receiver antenna status reports open/short or equivalent confirmed fault | 1; 0 on clear |
 | `capability_signal_lost` | a demonstrated `(gnssId,sigId)` is unseen past `CapSignalLostAfter` while its station remains alive | 1 |
 | `capability_impossible` | an observed signal lies outside the station's declared tudorgps capability set | 2 |
@@ -324,7 +324,8 @@ of coverage:
   Galileo GGTO and BeiDou BDT-UTC now decode; the coherence detector itself
   is tracked P6+ work.
 - **Jamming context** — *implemented* (`jamming_detected`/`station_rf_degraded`, DEFENSE-PNT
-  §2/§4): u-blox MON-HW/MON-RF jamming/AGC indicators raise the prior on a receiver's
+  §2/§4): u-blox MON-HW/MON-RF jamming/AGC indicators, and a Septentrio receiver's
+  front-end gains, raise the prior on a receiver's
   environment being hostile, down-weighting its votes (`rf_trust`). With the station's
   assessment, that weight gives `conf_weighted` (`OUTPUT.md §1.1`).
 - **Station solution, clock and time consistency** — *implemented* (station integrity checks,

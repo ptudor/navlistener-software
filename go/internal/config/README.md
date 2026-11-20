@@ -150,8 +150,10 @@ capabilities = ["0:0", "2:0", "2:3", "3:0", "6:0"]
   silicon can produce. The integrity layer compares declared against observed: a declared signal
   that goes silent, or an observed signal the silicon can't produce, is a threat
   (`docs/INTEGRITY.md §6`).
-- **`capture_only`** persists raw frames without decoding into live state. Required for the byte
-  sources (SBF, RTCM) until their central decoders land.
+- **`capture_only`** persists raw frames without decoding them into live constellation state.
+  Required for the byte sources (SBF, RTCM) until their navigation decoders land. It does not
+  switch off an SBF source's receiver telemetry: its ReceiverStatus blocks are decoded, and
+  each front end's gain feeds the station RF state (`docs/DEFENSE-PNT.md §2`).
 - **`disabled`** keeps an entry in the file but doesn't start it — pause without deleting.
 - **Identity and policy fields** are `organization`, `enrollment`, `collector_instance`,
   `collections`, `aggregate_use`, `station_metadata`, `event_visibility`, `raw_export`,

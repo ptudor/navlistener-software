@@ -14,7 +14,7 @@ const (
 
 var (
 	cn0UniformityInfo    = Info{Name: CheckCn0Uniformity, Version: 1, Domain: DomainSignalPower, LowerOnly: true}
-	agcInfo              = Info{Name: CheckAGC, Version: 4, Domain: DomainRFEnvironment, LowerOnly: true}
+	agcInfo              = Info{Name: CheckAGC, Version: 5, Domain: DomainRFEnvironment, LowerOnly: true}
 	receiverSpoofingInfo = Info{Name: CheckReceiverSpoofing, Version: 1, Domain: DomainReceiverVerdict, LowerOnly: true}
 )
 
@@ -26,11 +26,14 @@ const (
 	ReasonNoBaseline       = "no_agc_baseline"
 	ReasonAGCDeparture     = "agc_departure"
 	ReasonAGCCollapse      = "agc_collapse"
-	ReasonCWTone           = "cw_tone"
-	ReasonReceiverJamFlag  = "receiver_jam_flag"
-	ReasonAntennaFault     = "antenna_fault"
-	ReasonSpoofingUnknown  = "receiver_spoofing_unknown"
-	ReasonSpoofingFlag     = "receiver_spoofing_flag"
+	// ReasonGainRise: a front end's gain has risen above its baseline, so less power
+	// is arriving: the antenna, its amplifier or its cable is giving less.
+	ReasonGainRise        = "front_end_gain_rise"
+	ReasonCWTone          = "cw_tone"
+	ReasonReceiverJamFlag = "receiver_jam_flag"
+	ReasonAntennaFault    = "antenna_fault"
+	ReasonSpoofingUnknown = "receiver_spoofing_unknown"
+	ReasonSpoofingFlag    = "receiver_spoofing_flag"
 	// ReasonNeighbourInterference: stations nearby show interference at the same time.
 	ReasonNeighbourInterference = "neighbour_interference"
 )
@@ -43,6 +46,14 @@ const (
 	// near-total gain collapse.
 	DefaultAGCDeparture       = 800.0
 	DefaultAGCDepartureSevere = 2000.0
+	// DefaultGainDepartureDB is how far, in dB, a Septentrio front end's AGC gain
+	// may sit from its learned baseline before it counts: below it, the front end is
+	// interference-suspect as a band past DefaultAGCDeparture is, and above it, the
+	// antenna path is giving less. DefaultGainDepartureSevereDB below the baseline is
+	// a gain collapse. A mosaic-G5 held every front end within 1 dB over eight hours
+	// indoors, and bench noise that cost it all tracking lowered them by 8 to 10 dB.
+	DefaultGainDepartureDB       = 4.0
+	DefaultGainDepartureSevereDB = 10.0
 	// DefaultCWSuppress is the CW-suppression indicator (0..255) above which a
 	// band is taken to hold a narrowband tone.
 	DefaultCWSuppress = 180
@@ -61,11 +72,14 @@ type Cn0UniformityProfile struct {
 	MinSats  int     `json:"min_sats"`
 }
 
-// AGCProfile holds the agc operating points.
+// AGCProfile holds the agc operating points: a band's departure in AGC counts, a
+// front end's in dB.
 type AGCProfile struct {
-	Departure       float64 `json:"departure"`
-	DepartureSevere float64 `json:"departure_severe"`
-	CWSuppress      int     `json:"cw_suppress"`
+	Departure             float64 `json:"departure"`
+	DepartureSevere       float64 `json:"departure_severe"`
+	CWSuppress            int     `json:"cw_suppress"`
+	GainDepartureDB       float64 `json:"gain_departure_db"`
+	GainDepartureSevereDB float64 `json:"gain_departure_severe_db"`
 }
 
 // cn0Uniformity applies the C/N₀-vs-elevation gate to the aggregate fit and to each
@@ -120,9 +134,12 @@ func cn0Uniformity(f Cn0Fit, prof Cn0UniformityProfile) Verdict {
 // evidence is corroborated (two signs, or a severe collapse) within the neighbour
 // window, located by its surveyed position or — only when configured mobile — a
 // recent fix, and not itself unassured or indicating spoofing (the rule lives in the
-// state layer's neighbour scan; the verdict here is unchanged).
+// state layer's neighbour scan; the verdict here is unchanged). Version 5 added
+// Septentrio front ends, whose gain is in dB: a gain below its baseline is a departure
+// like a band's, on its own thresholds, and a gain above it is a sign of its own, the
+// antenna path giving less, which is inconsistent and never an interference claim.
 func agc(rf RFSample, prof AGCProfile) Verdict {
-	if len(rf.Bands) == 0 {
+	if len(rf.Bands) == 0 && len(rf.FrontEnds) == 0 {
 		return Verdict{State: Unavailable, Reasons: []string{ReasonNoBands}}
 	}
 	var maxDep float64
@@ -138,6 +155,18 @@ func agc(rf RFSample, prof AGCProfile) Verdict {
 		rxJam = rxJam || b.JamState >= 2
 		ant = ant || b.AntStatus == 3 || b.AntStatus == 4
 	}
+	// The largest gain cut and the largest gain rise among the front ends with a
+	// baseline, each zero when no front end has moved that way.
+	var maxCut, maxRise float64
+	haveGain := false
+	for _, e := range rf.FrontEnds {
+		if e.Departure == nil {
+			continue
+		}
+		haveGain = true
+		maxCut = max(maxCut, *e.Departure)
+		maxRise = max(maxRise, -*e.Departure)
+	}
 	v := Verdict{
 		State: Assured,
 		Metrics: map[string]float64{
@@ -149,9 +178,20 @@ func agc(rf RFSample, prof AGCProfile) Verdict {
 	if haveDep {
 		v.Metrics["max_departure"] = maxDep
 	}
-	dep := haveDep && maxDep >= prof.Departure
+	if len(rf.FrontEnds) > 0 {
+		v.Metrics["front_ends"] = float64(len(rf.FrontEnds))
+		v.Thresholds["gain_departure_db"] = prof.GainDepartureDB
+		v.Thresholds["gain_departure_severe_db"] = prof.GainDepartureSevereDB
+	}
+	if haveGain {
+		v.Metrics["max_gain_cut_db"] = maxCut
+		v.Metrics["max_gain_rise_db"] = maxRise
+	}
+	dep := haveDep && maxDep >= prof.Departure || haveGain && maxCut >= prof.GainDepartureDB
+	severe := haveDep && maxDep >= prof.DepartureSevere || haveGain && maxCut >= prof.GainDepartureSevereDB
+	rise := haveGain && maxRise >= prof.GainDepartureDB
 	switch {
-	case haveDep && maxDep >= prof.DepartureSevere:
+	case severe:
 		v.State, v.Reasons = Unassured, []string{ReasonAGCCollapse}
 	case dep && (cw || rxJam || rf.Cn0Drop || rf.Neighbours > 0):
 		v.State, v.Reasons = Unassured, []string{ReasonAGCDeparture}
@@ -161,13 +201,16 @@ func agc(rf RFSample, prof AGCProfile) Verdict {
 		if rf.Neighbours > 0 {
 			v.Reasons = append(v.Reasons, ReasonNeighbourInterference)
 		}
-	case dep || cw || rxJam || ant:
+	case dep || cw || rxJam || ant || rise:
 		v.State = Inconsistent
 		if dep {
 			v.Reasons = append(v.Reasons, ReasonAGCDeparture)
 		}
-	case !haveDep:
+	case !haveDep && !haveGain:
 		return Verdict{State: Unavailable, Reasons: []string{ReasonNoBaseline}, Metrics: v.Metrics, Thresholds: v.Thresholds}
+	}
+	if rise {
+		v.Reasons = append(v.Reasons, ReasonGainRise)
 	}
 	if cw {
 		v.Reasons = append(v.Reasons, ReasonCWTone)

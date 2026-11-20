@@ -293,7 +293,7 @@ Raw samples expire with `raw_retention`; events never do. So the daemon's eviden
 collector's station events (`spoofing_suspected`, `station_assurance`, `jamming_detected`,
 `station_rf_degraded`, `antenna_fault`) that are at least the post-roll old, still within the
 horizon raw retention covers, and have no `event_evidence` row. For each it copies the station's
-`rf_samples` and `observer_samples` from ten minutes before to one minute after into
+`rf_samples` (every kind, a Septentrio station's `receiver_status` rows included) and `observer_samples` from ten minutes before to one minute after into
 `event_evidence_samples`, in one transaction with the bundle row, scoped like the sensor-history
 reads: an organization audience gets its organization's samples, a collection audience its
 collection's, an operator audience the collector's. The bundle row is inserted first, so a
@@ -318,8 +318,9 @@ public/operator view.
 ### Point state — `agc_baselines` and `reception_power_models`
 
 Two small plain tables hold learned station state that would otherwise be relearned after every
-restart: each station's AGC baselines (`docs/DEFENSE-PNT.md §2`, a ten-minute warm-up) and its
-received-power model. The daemon checkpoints both every five minutes and once more during the
+restart: each station's AGC baselines (`docs/DEFENSE-PNT.md §2`, a ten-minute warm-up; a
+Septentrio station's front-end gain baselines are entries of the same list, marked
+`front_end`) and its received-power model. The daemon checkpoints both every five minutes and once more during the
 ordered shutdown, and restores them before ingest starts. Both are keyed by
 `(collector_instance_id, source_id)`, so collectors sharing a database keep and restore their
 own rows; `LoadAGCBaselines` and `LoadReceptionPowerModels` take the collector id and the saves

@@ -124,7 +124,8 @@ func DefaultProfile() Profile {
 			Window: 5 * time.Second, MinSpan: 3 * time.Second, MinSignals: 6, MinQuality: 4,
 			EveryDB: 1, InconsistentDB: 3, UnassuredDB: 6,
 		},
-		AGC: AGCProfile{Departure: DefaultAGCDeparture, DepartureSevere: DefaultAGCDepartureSevere, CWSuppress: DefaultCWSuppress},
+		AGC: AGCProfile{Departure: DefaultAGCDeparture, DepartureSevere: DefaultAGCDepartureSevere, CWSuppress: DefaultCWSuppress,
+			GainDepartureDB: DefaultGainDepartureDB, GainDepartureSevereDB: DefaultGainDepartureSevereDB},
 		// After the PNT Integrity range-position check: the bands scale with the
 		// pair's combined 3D accuracy, like the static position bands.
 		Baseline: BaselineProfile{
@@ -222,6 +223,7 @@ func (p Profile) Validate() error {
 		positive("cn0_drop.every_drop_db", p.Cn0Drop.EveryDB),
 		bands("cn0_drop.median", p.Cn0Drop.InconsistentDB, p.Cn0Drop.UnassuredDB),
 		bands("agc.departure", p.AGC.Departure, p.AGC.DepartureSevere),
+		bands("agc.gain_departure_db", p.AGC.GainDepartureDB, p.AGC.GainDepartureSevereDB),
 		p.Baseline.Bands.validate("baseline.bands"),
 		nonNegative("baseline.max_epoch_skew", p.Baseline.MaxEpochSkew.Seconds()),
 		positive("neighbour.radius_m", p.Neighbour.RadiusM),

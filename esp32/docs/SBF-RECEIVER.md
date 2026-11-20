@@ -7,9 +7,11 @@ how that becomes the observer's receiver status, and how the blocks reach the co
 reply formats are from the mosaic-G5 firmware reference guide v1.0.1; section numbers below
 refer to it, except where the hardware manual (v2.0.0) is named.
 
-Nothing here has run against a receiver yet. The host tests build every block field by field
-from the reference guide's tables; they are not captures. Section 9 lists what the first
-P3 must confirm.
+The first P3 has run this path on a bench, on receiver firmware 1.0.0: over seven hours on one
+fix every block passed its CRC and no pulse was missed. The host tests build every block field
+by field from the reference guide's tables; they are not captures. Section 9 lists the
+bring-up checks; the ones that need a collector session, a scope or an induced fault have not
+been run yet.
 
 ## 1. When it runs
 
@@ -189,8 +191,8 @@ not pass, show the least power. On the same unit a noisy bench lowered every gai
 therefore noise or interference arriving, and one that rises is an antenna, its amplifier or
 its cable giving less. ReceiverStatus's ACTIVEANTENNA bit, which the status line reports, stayed
 clear on firmware 1.0.0 with an antenna drawing current, so the gains are the evidence that an
-antenna is connected. These values are logged only; the collector has them in the forwarded
-blocks (section 7).
+antenna is connected. The observer only logs these values. The collector decodes them from the
+forwarded blocks and learns each front end's normal gain (section 7).
 
 ## 7. To the collector
 
@@ -212,8 +214,20 @@ forecasts run on `sbf` sessions as on `ubx` ones.
 
 The collector checks each block's sync, Length and CRC, and stores it as it stores a dial-mode
 SBF capture: the block number, the eight original header bytes and the body, which rebuild the
-block byte for byte, with the session and sequence that dedup a replay. It does not decode the
-blocks yet (section 8).
+block byte for byte, with the session and sequence that dedup a replay. It decodes one of them,
+ReceiverStatus, and stores the rest undecoded (section 8).
+
+**Front-end gains at the collector.** From each ReceiverStatus the collector takes the front
+ends' gains and learns a baseline for each one: the median of its quiet minutes over six
+hours, served after ten minutes. A gain 4 dB below its baseline makes the station's RF
+`station_rf_degraded`, or `jamming_detected` when something corroborates it, and 10 dB below
+is `jamming_detected` on its own. A gain 4 dB above its baseline, which is what an antenna,
+amplifier or cable giving less looks like, is `station_rf_degraded` and never a jamming
+claim. The station's row in the collector's `observers` feed lists every front end with its
+gain and departure, and the blocks themselves are kept with the station's other RF evidence
+([DEFENSE-PNT.md §2](../../docs/DEFENSE-PNT.md#2-jamming-detection-the-rf-front-end)). Changing
+the antenna, its amplifier or its cable moves every gain: give the station a new
+`power_model_epoch` at the collector when you do, so the baselines are learned again.
 
 **Line budget.** Estimated from the block sizes in 4.2 for about 45 tracked satellites: the
 1 Hz stream is about 2.7 KB/s, most of it MeasEpoch, and the navigation pages about 1.7 KB/s,
@@ -225,7 +239,8 @@ this rate, under its raw retention.
 
 ## 8. What it does not do yet
 
-- **Collector decoding.** The collector stores the blocks but decodes none of them: the P3's
+- **Collector decoding.** The collector stores the blocks and decodes only ReceiverStatus
+  (section 7): the P3's
   navigation pages do not update live constellation state, and its PVT, measurement,
   visibility and RF status blocks do not yet feed the station integrity checks, reception
   records or interference telemetry the u-blox records feed. Those mappings must keep fields
@@ -233,10 +248,11 @@ this rate, under its raw retention.
   integration proposal](../../docs/proposals/OBSERVER-TIME-MOTION-AND-SEPTENTRIO.md#custom-mosaic-g5-p3-observer)).
   The P3's ObserverDetails, including tags 6, 17 and 20 built from this status, go out as on
   every board.
-- **Front-end telemetry.** The AGC gains, sample variances, blanking and receiver temperature
-  of section 6 are logged, and reach the collector only inside the forwarded ReceiverStatus
-  blocks. They are not in ObserverDetails, whose RF fields carry u-blox MON-RF's scales, and
-  the collector keeps no series or baseline of them.
+- **Front-end telemetry in ObserverDetails.** The AGC gains, sample variances, blanking and
+  receiver temperature of section 6 are logged, and reach the collector inside the forwarded
+  ReceiverStatus blocks, where it keeps their series and a baseline of each gain. They are
+  not in ObserverDetails, whose RF fields carry u-blox MON-RF's scales, so the panel and the
+  board report do not show them.
 - **PPS.** The PPS metadata u-blox gives in TIM-TP has no counterpart here, so tag 8's TIM-TP
   validity stays clear.
 - **Higher baud rates.** 115200 baud carries the streams above. A faster stream needs a higher

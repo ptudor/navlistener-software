@@ -3,7 +3,8 @@ package store
 import "time"
 
 // RFSample is private receiver RF evidence. Raw is the versioned telemetry body
-// stored on NavFrame; Data is its decoded projection. Keeping this separate
+// stored on NavFrame, or for kind receiver_status the whole SBF ReceiverStatus
+// block; Data is its decoded projection. Keeping this separate
 // from broadcast navigation frames makes replay and retention unambiguous.
 // LocalReceivedAt and WallClockStamp are the clocks the live station checks used
 // (state/integrity.go): the collector-local receipt instant, and the independent

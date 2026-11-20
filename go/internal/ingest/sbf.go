@@ -17,7 +17,9 @@ import (
 // bits, so the collector emits the raw block body tagged with its block number.
 // A dial capture and an sbf push session (wire.SBFFormat) give the same frame: the
 // block number and body with the original header, kept for the historian and exact
-// reconstruction. No block-specific live-state decoder is dispatched yet.
+// reconstruction. One block is decoded as well: ReceiverStatus, whose front-end gains
+// feed the station RF state (sbf_receiver_status.go). Navigation, measurement and
+// solution blocks are captured only.
 const (
 	sbfSync1 = '$'
 	sbfSync2 = '@'
@@ -76,13 +78,18 @@ func scanSBF(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 		if _, err := br.Discard(total); err != nil {
 			return err
 		}
-		emit(&RawFrame{
+		f := &RawFrame{
 			Recv:      now(),
 			Source:    source,
 			MsgType:   int(id & 0x1FFF), // block number; revision remains in SBFHeader
 			SBFHeader: header,
 			Bytes:     body,
-		})
+		}
+		// A ReceiverStatus that passed its CRC but does not decode is still captured.
+		if attachSBFTelemetry(f) {
+			onErr("sbf_receiver_status")
+		}
+		emit(f)
 	}
 }
 
@@ -91,9 +98,11 @@ func scanSBF(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 // given byte groups in order. validated against an independently-authored
 // implementation of the same named algorithm (CPython's binascii.crc_hqx — see
 // TestCRC16CCITTGoldenVectors), so a wrong polynomial/init/shift here cannot pass
-// the suite. A vector from a REAL captured SBF block is still wanted to confirm
-// Septentrio's on-wire CRC is this exact algorithm end-to-end; no Septentrio
-// hardware exists in the fleet yet, and inventing one is prohibited.
+// the suite. That it is Septentrio's on-wire CRC is confirmed on hardware by the
+// observer firmware, whose reader computes the same CRC and accepted every block
+// a mosaic-G5 P3 sent it in an eight-hour run (esp32/docs/SBF-RECEIVER.md). A
+// byte-for-byte captured block is still wanted as a vector here; the fixtures in
+// this package are built or packed, not captured, and inventing one is prohibited.
 func crc16ccitt(groups ...[]byte) uint16 {
 	var crc uint16
 	for _, g := range groups {

@@ -10,7 +10,8 @@ import (
 
 // Station integrity assurance (docs/proposals/STATION-ASSURANCE.md). Each station's
 // receiver solutions, clock and status, board pulse timing, NAV-SAT fits and MON-RF
-// reports feed one integrity.Station, which filters, holds and fuses its checks.
+// or Septentrio front-end reports feed one integrity.Station, which filters, holds
+// and fuses its checks.
 // FeedStationIntegrity serves the assessments to the observers feed and the
 // detector. All of it is guarded by rfMu, with the other station-scoped state.
 
@@ -249,14 +250,15 @@ func (s *Store) integrityBaseline(id string, st *integrityStation, sol integrity
 	}
 }
 
-// integrityRF folds a MON-RF or NAV-SAT update into the station's checks after
-// applyRF has refreshed the baselines and fits. The caller holds rfMu.
+// integrityRF folds a MON-RF, NAV-SAT or Septentrio ReceiverStatus update into the
+// station's checks after applyRF has refreshed the baselines and fits. The caller
+// holds rfMu.
 func (s *Store) integrityRF(st *rfStation, f *ingest.RawFrame, recv time.Time) {
 	is := s.integrityFor(st.id, recv)
 	if is == nil {
 		return
 	}
-	if len(f.RF.Bands) > 0 {
+	if len(f.RF.Bands) > 0 || f.RF.Status != nil && len(f.RF.Status.FrontEnds) > 0 {
 		sample := integrity.RFSample{Received: recv, Cn0Drop: s.cn0DropCorroboration(st, recv)}
 		if st.departed(recv) {
 			// The candidate set built by the latest tick (or by the first departed
@@ -273,6 +275,16 @@ func (s *Store) integrityRF(st *rfStation, f *ingest.RawFrame, recv time.Time) {
 				band.Departure = &dep
 			}
 			sample.Bands = append(sample.Bands, band)
+		}
+		for _, e := range st.frontEnds {
+			if recv.Sub(e.lastSeen) > rfStaleAfter {
+				continue
+			}
+			end := integrity.RFFrontEnd{ID: int(e.id)}
+			if dep, ok := e.departure(); ok {
+				end.Departure = &dep
+			}
+			sample.FrontEnds = append(sample.FrontEnds, end)
 		}
 		is.eval.ApplyRF(sample)
 	}

@@ -265,8 +265,11 @@ position = [37.4219, -122.0841, 12.5]
 	}
 
 	// The same events replay from their captured evidence, which outlives raw retention.
+	// The capture runs on the fixture's own clock, shortly after its last event: the
+	// horizon is measured back from the capture time, so the wall clock would put
+	// these fixed-date events outside it once the date passed.
 	policy := store.EvidencePolicy{PreRoll: 10 * time.Minute, PostRoll: time.Minute, Horizon: 30 * 24 * time.Hour, Batch: 50, MaxSamples: 20000}
-	if n, err := historian.CaptureEventEvidence(ctx, collector, time.Now(), policy); err != nil || n != len(live.events) {
+	if n, err := historian.CaptureEventEvidence(ctx, collector, until.Add(2*time.Minute), policy); err != nil || n != len(live.events) {
 		t.Fatalf("captured %d bundles, want %d: %v", n, len(live.events), err)
 	}
 	var seq int64

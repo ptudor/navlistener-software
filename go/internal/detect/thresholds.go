@@ -136,6 +136,14 @@ const (
 	AGCDepartureThreshold       = integrity.DefaultAGCDeparture
 	AGCDepartureSevereThreshold = integrity.DefaultAGCDepartureSevere
 
+	// GainDepartureThreshold (dB between a Septentrio front end's AGC gain and its
+	// learned baseline) at which the front end counts: a gain cut by this much is
+	// jamming-suspect like a band past AGCDepartureThreshold, and a gain risen by this
+	// much is the antenna path giving less. A cut of GainDepartureSevereThreshold is a
+	// gain collapse.
+	GainDepartureThreshold       = integrity.DefaultGainDepartureDB
+	GainDepartureSevereThreshold = integrity.DefaultGainDepartureSevereDB
+
 	// CWSuppressThreshold: a CW-suppression / jamming indicator above this points at a
 	// narrowband tone (u-blox reports 0..255).
 	CWSuppressThreshold = integrity.DefaultCWSuppress

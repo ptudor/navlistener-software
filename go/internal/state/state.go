@@ -711,8 +711,10 @@ type Store struct {
 	rf     map[string]*rfStation
 	boards map[string]*boardStation // also guarded by rfMu
 	// Checkpointed AGC baselines awaiting their band's first report (rf.go), also
-	// guarded by rfMu.
-	agcRestore map[string]map[int]agcBaseline
+	// guarded by rfMu; gainRestore holds a Septentrio station's front-end gain
+	// baselines the same way, by FrontEndID.
+	agcRestore  map[string]map[int]agcBaseline
+	gainRestore map[string]map[uint8]agcBaseline
 	// Per-station integrity assurance (integrity.go), also guarded by rfMu.
 	integrity    map[string]*integrityStation
 	integrityCfg *IntegrityConfig // nil: default profile, no installations
@@ -745,6 +747,7 @@ func New(n int) *Store {
 		boards:           make(map[string]*boardStation),
 		integrity:        make(map[string]*integrityStation),
 		agcRestore:       make(map[string]map[int]agcBaseline),
+		gainRestore:      make(map[string]map[uint8]agcBaseline),
 		caps:             make(map[string]*capStation),
 	}
 	for i := range s.shards {

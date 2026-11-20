@@ -77,7 +77,7 @@ nav-frame output and forward it untouched. Per source:
 | Source | Producer (on the receiver) | Raw frames `navlistener` consumes |
 |---|---|---|
 | **u-blox** | the F9P/F9T/F10 itself | **UBX-RXM-SFRBX** (raw nav words, per gnssId/sigId) + **UBX-RXM-RAWX** (pseudorange/Doppler/carrier-phase) + **UBX-NAV-SAT/SIG** (C/N0, el/az, prRes) + **UBX-NAV-HPPOSECEF/PVT** (receiver position) + **UBX-MON-HW/MON-RF** (jamming; MON-RF on F9+). |
-| **Septentrio** | mosaic-X5 / PolaRx | **Capture-only:** SBF blocks are framed, CRC-checked, and raw-persisted; live navigation decode is planned. |
+| **Septentrio** | mosaic-X5 / PolaRx / mosaic-G5 | **Capture-only for navigation:** SBF blocks are framed, CRC-checked, and raw-persisted; live navigation decode is planned. One block of receiver telemetry is decoded: ReceiverStatus, for its front-end gains ([DEFENSE-PNT.md §2](DEFENSE-PNT.md)). |
 | **RTCM3** | any RTCM source / caster | **Capture-only:** ephemeris/SSR messages are framed, CRC-checked, and raw-persisted; live navigation/SSR decode is planned. |
 
 The `gnss/frame` navigation decoders and orbit propagation live centrally. ESP32
