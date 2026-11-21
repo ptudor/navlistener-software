@@ -11,15 +11,38 @@ static panel_lamps_t at(const panel_boot_t *b, uint32_t ms)
 }
 static bool same(panel_lamps_t a, uint8_t status, uint8_t green, uint8_t yellow)
 { return a.status == status && a.green == green && a.yellow == yellow; }
+static unsigned lit(panel_lamps_t a)
+{ return (unsigned)(__builtin_popcount(a.status) + __builtin_popcount(a.green) + __builtin_popcount(a.yellow)); }
+
+// The chase, step by step: every lamp of the panel is lit for PANEL_BOOT_CHASE_LAMPS steps in a
+// row and no others, the run is never longer than that, and the sequence ends dark.
+static void every_lamp_once(const panel_boot_t *b, unsigned lamps)
+{
+    const unsigned steps = lamps + PANEL_BOOT_CHASE_LAMPS - 1 + PANEL_BOOT_CHASE_DARK;
+    unsigned steps_lit[24] = {0}, first[24], last[24];
+    for (unsigned step = 0; step < steps; step++) {
+        const panel_lamps_t early = at(b, step * PANEL_BOOT_CHASE_MS), late = at(b, step * PANEL_BOOT_CHASE_MS + PANEL_BOOT_CHASE_MS - 1);
+        assert(same(late, early.status, early.green, early.yellow)); // a step holds for its whole time
+        assert(lit(early) <= PANEL_BOOT_CHASE_LAMPS);
+        const uint32_t bits = (uint32_t)early.status << 16 | (uint32_t)early.yellow << 8 | early.green;
+        for (unsigned bit = 0; bit < 24; bit++) {
+            if (!(bits >> bit & 1)) continue;
+            if (!steps_lit[bit]++) first[bit] = step;
+            last[bit] = step;
+        }
+    }
+    unsigned seen = 0;
+    for (unsigned bit = 0; bit < 24; bit++) {
+        if (!steps_lit[bit]) continue;
+        seen++;
+        assert(steps_lit[bit] == PANEL_BOOT_CHASE_LAMPS && last[bit] - first[bit] == PANEL_BOOT_CHASE_LAMPS - 1);
+    }
+    assert(seen == lamps);
+    for (unsigned dark = 0; dark < PANEL_BOOT_CHASE_DARK; dark++) assert(same(at(b, (steps - 1 - dark) * PANEL_BOOT_CHASE_MS), 0, 0, 0));
+}
 
 int main(void)
 {
-    // Boots 1-10 test the lamps, then every tenth; an unknown count does too.
-    for (uint32_t boot = 0; boot <= 10; boot++) assert(panel_boot_lamp_test(boot));
-    for (uint32_t boot = 11; boot < 20; boot++) assert(!panel_boot_lamp_test(boot));
-    assert(panel_boot_lamp_test(20) && !panel_boot_lamp_test(21) && panel_boot_lamp_test(1000));
-    assert(!panel_boot_lamp_test(UINT32_MAX) && panel_boot_lamp_test(4294967290u));
-
     const uint8_t serial[16] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
                                 0x90, 0xa0, 0xb0, 0xc0, 0x89, 0xab, 0xcd, 0xef};
     assert(panel_boot_identity(serial, sizeof serial) == 0x89abcdefu);
@@ -49,35 +72,39 @@ int main(void)
     sweep.status_byte = true;
     assert(panel_boot_ms(&sweep) == 3200 && same(at(&sweep, 0), 0, 0x01, 0));
 
-    // A 24-bit panel's lamp test: 18 single lamps of 250 ms, three 750 ms rows, a 250 ms dark
-    // step, then the sweep.
-    panel_boot_t full = {.lamp_test = true, .status_byte = true, .identity_valid = true, .identity = 0x89abcdefu};
-    assert(panel_boot_ms(&full) == 18 * 250 + 3 * 750 + 250 + 3200);
-    for (unsigned i = 0; i < 8; i++) {
-        assert(same(at(&full, i * 250), 0, (uint8_t)(1u << i), 0));
-        assert(same(at(&full, i * 250 + 249), 0, (uint8_t)(1u << i), 0));
-        assert(same(at(&full, 2000 + i * 250 + 125), 0, 0, (uint8_t)(1u << i)));
-    }
-    assert(same(at(&full, 4000), PANEL_STATUS_RTK, 0, 0));
-    assert(same(at(&full, 4250), PANEL_STATUS_ATTENTION, 0, 0));
-    assert(same(at(&full, 4500), 0, 0xff, 0) && same(at(&full, 5249), 0, 0xff, 0));
-    assert(same(at(&full, 5250), 0, 0, 0xff) && same(at(&full, 5999), 0, 0, 0xff));
-    assert(same(at(&full, 6000), PANEL_STATUS_RTK | PANEL_STATUS_ATTENTION, 0xff, 0xff));
-    assert(same(at(&full, 6749), PANEL_STATUS_RTK | PANEL_STATUS_ATTENTION, 0xff, 0xff));
-    assert(same(at(&full, 6750), 0, 0, 0) && same(at(&full, 6999), 0, 0, 0));
-    assert(same(at(&full, 7000), 0, 0x01, 0) && same(at(&full, 7100), 0, 0, 0x02));
-    assert(same(at(&full, 10199), 0, 0x80, 0) && !panel_boot_lamps(&full, 10200, &untouched));
+    // A 24-bit panel's chase: a run of five lamps, one lamp per 150 ms, along the top row (the
+    // eight green lamps, then RTK) and then the bottom row (the eight amber lamps, then
+    // ATTENTION); four steps for the run to leave, two dark steps, then the sweep.
+    panel_boot_t full = {.chase = true, .status_byte = true, .identity_valid = true, .identity = 0x89abcdefu};
+    assert(panel_boot_ms(&full) == (18 + 4 + 2) * 150 + 3200);
+    assert(same(at(&full, 0), 0, 0x01, 0) && same(at(&full, 149), 0, 0x01, 0)); // the head enters alone
+    assert(same(at(&full, 150), 0, 0x03, 0) && same(at(&full, 4 * 150), 0, 0x1f, 0));
+    assert(same(at(&full, 5 * 150), 0, 0x3e, 0) && same(at(&full, 7 * 150), 0, 0xf8, 0));
+    assert(same(at(&full, 8 * 150), PANEL_STATUS_RTK, 0xf0, 0));        // the head on RTK, at the top row's end
+    assert(same(at(&full, 9 * 150), PANEL_STATUS_RTK, 0xe0, 0x01));     // and down to the bottom row's first lamp
+    assert(same(at(&full, 12 * 150), PANEL_STATUS_RTK, 0, 0x0f));
+    assert(same(at(&full, 13 * 150), 0, 0, 0x1f) && same(at(&full, 16 * 150), 0, 0, 0xf8));
+    assert(same(at(&full, 17 * 150), PANEL_STATUS_ATTENTION, 0, 0xf0)); // the head on ATTENTION, the last lamp
+    assert(same(at(&full, 18 * 150), PANEL_STATUS_ATTENTION, 0, 0xe0));
+    assert(same(at(&full, 21 * 150), PANEL_STATUS_ATTENTION, 0, 0));    // the run's last lamp, alone
+    assert(same(at(&full, 22 * 150), 0, 0, 0) && same(at(&full, 24 * 150 - 1), 0, 0, 0));
+    assert(same(at(&full, 3600), 0, 0x01, 0) && same(at(&full, 3700), 0, 0, 0x02));
+    assert(same(at(&full, 6799), 0, 0x80, 0) && !panel_boot_lamps(&full, 6800, &untouched));
+    every_lamp_once(&full, 18);
 
-    // A 16-bit chain has no status lamps: the rows follow the amber singles directly.
-    panel_boot_t chain16 = {.lamp_test = true, .identity_valid = true, .identity = 0x89abcdefu};
-    assert(panel_boot_ms(&chain16) == 16 * 250 + 3 * 750 + 250 + 3200);
-    assert(same(at(&chain16, 3999), 0, 0, 0x80) && same(at(&chain16, 4000), 0, 0xff, 0));
-    assert(same(at(&chain16, 5500), 0, 0xff, 0xff) && same(at(&chain16, 6250), 0, 0, 0));
-    assert(same(at(&chain16, 6500), 0, 0x01, 0));
+    // A 16-bit chain has no status lamps: the run goes from the last green lamp to the first amber one.
+    panel_boot_t chain16 = {.chase = true, .identity_valid = true, .identity = 0x89abcdefu};
+    assert(panel_boot_ms(&chain16) == (16 + 4 + 2) * 150 + 3200);
+    assert(same(at(&chain16, 7 * 150), 0, 0xf8, 0) && same(at(&chain16, 8 * 150), 0, 0xf0, 0x01));
+    assert(same(at(&chain16, 15 * 150), 0, 0, 0xf8) && same(at(&chain16, 19 * 150), 0, 0, 0x80));
+    assert(same(at(&chain16, 20 * 150), 0, 0, 0) && same(at(&chain16, 3299), 0, 0, 0));
+    assert(same(at(&chain16, 3300), 0, 0x01, 0));
+    every_lamp_once(&chain16, 16);
 
-    // A lamp test without a board identity ends after the dark step.
-    panel_boot_t unread = {.lamp_test = true, .status_byte = true};
-    assert(panel_boot_ms(&unread) == 7000 && same(at(&unread, 6999), 0, 0, 0));
-    assert(!panel_boot_lamps(&unread, 7000, &untouched));
+    // A chase without a board identity ends after the dark steps.
+    panel_boot_t unread = {.chase = true, .status_byte = true};
+    assert(panel_boot_ms(&unread) == 3600 && same(at(&unread, 3599), 0, 0, 0));
+    assert(!panel_boot_lamps(&unread, 3600, &untouched));
+    every_lamp_once(&unread, 18);
     puts("panel boot sequence tests passed");
 }

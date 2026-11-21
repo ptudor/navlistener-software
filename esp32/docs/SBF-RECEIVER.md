@@ -370,9 +370,10 @@ this rate, under its raw retention.
    against 22 C on an open bench.
 10. **Signals and masks.** After the first configuration the log lists the signals tracked,
     those the observer enabled and any the receiver does not offer, then the two elevation
-    masks, 0 and 10 degrees, and what each was before (section 4). Reset the ESP32 alone,
-    with SW1: the list and the masks come back with nothing enabled or set, the receiver
-    status line shows an uptime that kept running, and the next tracked counts are the ones
-    before the reset. Once a minute the log names the satellites and counts them per signal
+    masks, 0 and 10 degrees, and what each was before (section 4). Restart the ESP32 alone,
+    by a reset from its USB serial port: the list and the masks come back with nothing
+    enabled or set, the receiver status line shows an uptime that kept running, and the next
+    tracked counts are the ones before the reset. A power cycle restarts the receiver as
+    well, and then the signals and masks are set again. Once a minute the log names the satellites and counts them per signal
     (section 6); with sky in view the added signals count satellites within a few minutes,
     and with a clear horizon satellites under 5 degrees are named.

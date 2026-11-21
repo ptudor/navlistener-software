@@ -248,20 +248,30 @@ nonzero C/N0 and no unhealthy flag. Yellow means supported and expected, but
 not tracked. Data older than 15 seconds cannot leave an indicator green.
 Uplink is green while the collector connection is up, otherwise yellow.
 
-Before it shows reception, the panel plays a boot sequence (`panel_boot.h`). Every
-boot sweeps the board identity: one column per 100 ms, left to right, four passes,
+Before it shows reception, the panel plays a boot sequence (`panel_boot.h`) in two
+parts, at every boot.
+
+First a lamp chase, to show that each lamp lights. A run of five lit lamps moves one
+lamp every 150 ms along the top row from left to right, then along the bottom row: the
+eight green lamps and, on a 24-bit panel, RTK at the end of that row; then the eight
+amber lamps and ATTENTION. The run enters one lamp at a time and leaves past the last,
+so every lamp is lit once, for 750 ms, and a lamp that does not light is a gap in the
+run as it passes. No step lights every lamp. Two dark steps end the chase: 3.6 s in
+all on a 24-bit panel and 3.3 s on a 16-bit one. PWR and PPS are wired to the supply
+and the pulse, not to the drivers, so they are not in it.
+
+Then the board identity is swept: one column per 100 ms, left to right, four passes,
 green for each 1 bit and amber for each 0 bit of the manifest EEPROM serial's last 32
 bits, its final eight hex digits, most significant first. For `…89abcdef` that is
 `10001001 10101011 11001101 11101111`. The same board shows the same sweep at every
 boot and a board whose identity was not read shows none, so the sweep is the panel's
-sign that the I2C bus and the EEPROM answered. The first ten boots, and every tenth
-boot after, start with a slow lamp test: each green lamp alone left to right for
-250 ms, then each amber lamp, then RTK and ATTENTION on a 24-bit panel; every green,
-every amber and every lamp together for 750 ms each; then 250 ms dark. The boot count
-is kept in the `nvf_panel` NVS namespace, one commit per boot, and a count that cannot
-be read runs the lamp test. The console names each boot's choice, for example
-`panel boot 3: lamp test, identity sweep of serial ...89abcdef; 10200 ms`. A board
-without a usable manifest drives no panel and shows neither.
+sign that the I2C bus and the EEPROM answered.
+
+Boots are counted in the `nvf_panel` NVS namespace, one commit per boot, and the
+console names the count with the sequence, for example
+`panel boot 12: lamp chase, identity sweep of serial ...89abcdef; 6800 ms`, so a board
+that keeps restarting shows a count that keeps climbing. A count that cannot be read is
+named `unknown`. A board without a usable manifest drives no panel and shows neither.
 
 Without a valid, recent position, all supported constellations remain expected.
 After NAV-PVT supplies a valid position, broad regional envelopes suppress

@@ -1331,21 +1331,21 @@ static esp_err_t board_inputs(void)
     }
     return ESP_OK;
 }
-// Counts the boot and chooses the boot sequence: the lamp test on the first boots and every
-// tenth after, an unknown count included, then the identity sweep where the identity was read.
+// Counts the boot and starts the boot sequence of a board that drives a panel: the lamp chase
+// at every boot, then the identity sweep where the identity was read. The count is for whoever
+// reads the log: a board that keeps restarting shows it as a number that keeps climbing.
 static void panel_boot_start(void)
 {
     uint32_t boot = 0;
     esp_err_t err = panel_boot_count(&boot);
     if (err != ESP_OK) ESP_LOGW(TAG, "could not count panel boots: %s", esp_err_to_name(err));
-    boot_sequence.lamp_test = panel_boot_lamp_test(boot);
+    boot_sequence.chase = true;
     boot_sequence.status_byte = board->panel_status_byte;
     char count[12] = "unknown", sweep[48] = "no identity sweep (board identity not read)";
     if (boot) snprintf(count, sizeof count, "%lu", (unsigned long)boot);
     if (boot_sequence.identity_valid)
         snprintf(sweep, sizeof sweep, "identity sweep of serial ...%08lx", (unsigned long)boot_sequence.identity);
-    ESP_LOGI(TAG, "panel boot %s: %s, %s; %lu ms", count, boot_sequence.lamp_test ? "lamp test" : "no lamp test",
-             sweep, (unsigned long)panel_boot_ms(&boot_sequence));
+    ESP_LOGI(TAG, "panel boot %s: lamp chase, %s; %lu ms", count, sweep, (unsigned long)panel_boot_ms(&boot_sequence));
 }
 esp_err_t observer_board_start(void)
 {

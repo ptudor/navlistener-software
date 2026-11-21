@@ -103,11 +103,15 @@
   ID, `receiver.antenna` fails an antenna SHORT or OPEN (and on the ZED/X20 anything but
   OK), and `receiver.signals` reports the bands tracked. The tool is version 5; its
   reports remain bench report v1.
-- The S3 panel plays a boot sequence before it shows reception. Every boot sweeps the
-  last 32 bits of the board's EEPROM serial across the columns, green for 1 and amber
-  for 0, so a board shows the same sweep at every boot and none when its identity was
-  not read. The first ten boots, and every tenth after, start with a slow lamp test of
-  every LED. The count is kept in NVS (esp32/README.md, Custom-board status LEDs).
+- The S3 panel plays a boot sequence before it shows reception, the same at every boot.
+  A lamp chase comes first: a run of five lit lamps moves along the top row from left to
+  right, then along the bottom row, with RTK and ATTENTION at the ends of their rows on a
+  24-bit panel, so every lamp is lit once and one that does not light is a gap in the
+  run. It takes about three and a half seconds and never lights every lamp at once.
+  Then the last 32 bits of the board's EEPROM serial are swept across the columns, green
+  for 1 and amber for 0, so a board shows the same sweep at every boot and none when its
+  identity was not read. Boots are counted in NVS and the console names the count, so a
+  board that keeps restarting shows it (esp32/README.md, Custom-board status LEDs).
 - The ZED/X20 console reports the receiver's RTK_STAT pin, which drives the panel's RTK
   lamp: high (no carrier-phase solution), low (RTK fixed) or toggling (corrections in use,
   no fix), one line whenever that changes over 10-second windows.

@@ -336,14 +336,15 @@ unit to that same identity.
        --build-dir build/s3-layout3 --expect zed-x20
    ```
 
-5. Watch the panel during these boots. A board's first ten boots start with the
-   lamp test ([Custom-board status LEDs](../README.md#custom-board-status-leds)):
-   each green lamp alone left to right, each amber lamp, RTK and ATTENTION on the
-   162mm panel, then the rows. A dark, misplaced or wrong-colour lamp is a panel or
-   driver fault the console cannot show. The identity sweep that follows shows the
-   serial's last eight hex digits, which the console names (`panel boot 2: lamp
-   test, identity sweep of serial ...89abcdef`), so it confirms the serial was read
-   over I2C.
+5. Watch the panel during these boots. Every boot starts with the lamp chase
+   ([Custom-board status LEDs](../README.md#custom-board-status-leds)): a run of
+   five lit lamps along the top row from left to right, then along the bottom row,
+   RTK and ATTENTION included on the 162mm panel. A lamp that stays dark is a gap
+   in the run as it passes; that, or a misplaced or wrong-colour lamp, is a panel
+   or driver fault the console cannot show. The identity sweep that follows shows
+   the serial's last eight hex digits, which the console names (`panel boot 2:
+   lamp chase, identity sweep of serial ...89abcdef`), so it confirms the serial
+   was read over I2C.
 
 For an X20 revision-B assembly, use `NVF_MANIFEST_INIT=zed-x20-b` above and
 `--expect zed-x20-b` for QA; plain `zed-x20` remains revision A.
@@ -372,7 +373,7 @@ What the test does not prove:
   the firmware does not report at boot;
 - an Ethernet link, Wi-Fi range, RTC accuracy, backup batteries, power rails or
   the antenna supply: the hand bring-up checks of each board's review stay;
-- the LEDs themselves: the report reads only the console, so the lamp test in
+- the LEDs themselves: the report reads only the console, so the lamp chase in
   step 5 is checked by eye;
 - anything a collector would see.
 
