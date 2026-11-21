@@ -6,7 +6,9 @@
 //   pseudorange and a C/N0 of at least 1 dB-Hz; its C/N0 is the strongest such signal's. Each
 //   signal with a counterpart in the reception space is listed under that ID. Elevations come
 //   from the latest SatVisibility, unknown (127) after 5 s. An epoch scrambled for want of the
-//   Measurement Availability permission is not used.
+//   Measurement Availability permission is not used. The adapter also counts, for every signal
+//   number, the satellites tracked on it by the same rule: that is where a signal without a
+//   counterpart (GPS L1C, BeiDou B2b, SBAS L5) shows that it is received.
 // - PVTGeodetic: a GNSS position solution (sbf_pvt_t.position) is a fix.
 // - ReceiverTime: the UTC calendar, written into pvt_utc in the NAV-PVT byte layout the RTC
 //   policy reads, and only for the epoch of the PVT block just received. The date and time are
@@ -41,6 +43,10 @@ typedef struct {
     uint32_t pvt_tow;
     sbf_time_t time;
     uint32_t scrambled_epochs; // MeasEpochs not used for want of the measurement permission
+    // Satellites tracked on each signal number in the latest usable MeasEpoch, received at signals_ms.
+    uint8_t signal_satellites[SBF_SIGNALS];
+    bool signals_valid;
+    int64_t signals_ms;
 } sbf_status_t;
 
 void sbf_status_init(sbf_status_t *a);

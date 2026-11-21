@@ -197,4 +197,20 @@ bool sbf_svid(uint8_t svid, uint8_t *gnss, uint8_t *sv);
 // numbers and L-band.
 bool sbf_signal(uint8_t number, uint8_t *gnss, uint8_t *canonical);
 #define SBF_NO_CANONICAL 255u
+// Signal numbers run below SBF_SIGNALS, so a set of them fits a 64-bit mask: bit n is signal n.
+#define SBF_SIGNALS 40u
+// A signal number's name as setSignalTracking spells it (3.2, GPSL1CA to NAVICL5), and in the
+// same style for the numbers that command does not name on this receiver. NULL for a reserved
+// number and for L-band.
+const char *sbf_signal_name(uint8_t number);
+// The signal number that the n characters at name spell exactly, or -1.
+int sbf_signal_number(const char *name, size_t n);
+// The names of a mask's signals, constellation by constellation in the reference guide's
+// order, separated by spaces: "GPSL1CA GPSL2C GALE1BC". Returns the length written, without
+// the NUL it always adds when size is not zero. A list too long for out ends after the last
+// name that fits whole.
+size_t sbf_signal_names(uint64_t mask, char *out, size_t size);
+// The same list for a count per signal number, as "GPSL1CA 7, GPSL2C 5, GALE1BC 6". A signal
+// that counts nothing is left out.
+size_t sbf_signal_counts(const uint8_t counts[SBF_SIGNALS], char *out, size_t size);
 #endif

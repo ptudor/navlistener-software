@@ -6,27 +6,45 @@
 
 // A simulated receiver COM2 in command input mode (reference guide 3.1.3): each command line
 // gets "$R: " and the command, a settings line and the prompt; a failing command gets "$R?"
-// and the prompt. A silent receiver answers nothing.
+// and the prompt. A silent receiver answers nothing. It tracks `signals`, lists them for gnt,
+// and adds one for "snt, +NAME" when it is among those it offers, restarting its tracking
+// loops as the real one does; a name it does not offer is an invalid argument. One in
+// `ignored` is taken and listed no differently.
 typedef struct {
     bool silent, flow_control, mismatch;
+    bool deaf_to_signals; // falls silent at the first snt
     const char *fail; // the command (first word) answered with an error
     unsigned sent, escapes, resets;
+    uint64_t signals, offered, ignored;
+    unsigned adds, restarts; // snt commands received, and those that restarted the tracking loops
     char last[256];
 } rx_t;
+static void signal_list(const rx_t *rx, char *out, size_t size)
+{
+    char names[400];
+    sbf_signal_names(rx->signals, names, sizeof names);
+    for (char *p = names; *p; p++) if (*p == ' ') *p = '+';
+    snprintf(out, size, "  SignalTracking, %s", rx->signals ? names : "none");
+}
 static void deliver(sbf_control_t *c, rx_t *rx, const char *text)
 {
     snprintf(rx->last, sizeof rx->last, "%s", text);
     rx->sent++;
     if (!strcmp(text, "SSSSSSSSSS\r")) rx->escapes++;
+    if (rx->deaf_to_signals && !strncmp(text, "snt", 3)) rx->silent = true;
     if (rx->silent) return;
     char command[256];
     snprintf(command, sizeof command, "%s", text);
     command[strcspn(command, "\r")] = 0;
-    char line[300];
+    char line[512];
     const size_t word = strcspn(command, ",");
+    const int added = !strncmp(command, "snt, +", 6) ? sbf_signal_number(command + 6, strlen(command + 6)) : -1;
+    if (!strncmp(command, "snt", 3)) rx->adds++;
     if (rx->fail && strlen(rx->fail) == word && !strncmp(command, rx->fail, word)) {
         snprintf(line, sizeof line, "$R? %s: Invalid command!", command);
         sbf_control_line(c, line);
+    } else if (!strncmp(command, "snt", 3) && (added < 0 || !(rx->offered >> added & 1))) {
+        sbf_control_line(c, "$R? setSignalTracking: Argument 'Signal' is invalid!");
     } else {
         snprintf(line, sizeof line, "$R: %s%s", command, rx->mismatch ? " extra" : "");
         sbf_control_line(c, line);
@@ -34,6 +52,13 @@ static void deliver(sbf_control_t *c, rx_t *rx, const char *text)
         else if (!strcmp(command, "gst")) {
             sbf_control_line(c, "  SatelliteTracking, G01+G02+G03+R01+R02+E01+E36");
             sbf_control_line(c, "  +S120+S158+C01+C63+J01+J10+I01+I14");
+        } else if (!strcmp(command, "gnt") || added >= 0) {
+            if (added >= 0) {
+                rx->restarts++;
+                if (!(rx->ignored >> added & 1)) rx->signals |= 1ull << added;
+            }
+            signal_list(rx, line, sizeof line);
+            sbf_control_line(c, line);
         } else sbf_control_line(c, "  done");
     }
     sbf_control_prompt(c);
@@ -177,6 +202,107 @@ static void recovery_test(void)
     assert(c.state == SBF_CONTROL_RUNNING);
 }
 
+// A mosaic-G5 as shipped tracks 20 of the 30 signals setSignalTracking names (firmware 1.0.0).
+#define B(n) (1ull << (n))
+static const uint64_t factory = B(0) | B(2) | B(3) | B(4) | B(8) | B(11) | B(17) | B(19) | B(20) | B(21) | B(24) |
+                                B(28) | B(29) | B(30) | B(13) | B(14) | B(6) | B(7) | B(26) | B(15);
+static void signals_test(void)
+{
+    const char *const *list;
+    const size_t steps = sbf_control_commands(&list);
+    const uint64_t all = sbf_control_wanted(), e5 = B(22);
+    assert(__builtin_popcountll(all) == 30 && (all & factory) == factory && __builtin_popcountll(factory) == 20);
+    assert(!(all & (B(1) | B(9) | B(23) | B(37) | B(39)))); // no name in setSignalTracking on a mosaic-G5
+
+    // A P3 as shipped, its permissions without Galileo E5 AltBOC: the ten missing signals are
+    // asked for one by one, nine arrive, and the refusal is no command error.
+    sbf_control_t c;
+    rx_t rx = {.signals = factory, .offered = all & ~e5};
+    esp_t esp = {0};
+    int64_t now = 0;
+    sbf_control_init(&c, true, 0);
+    sbf_control_prompt(&c);
+    run(&c, &rx, &esp, &now, 1000, 100);
+    assert(c.state == SBF_CONTROL_RUNNING && c.configurations == 1 && !c.command_errors && esp.cts);
+    assert(rx.sent == steps + 10 && rx.adds == 10 && rx.restarts == 9 && !strcmp(rx.last, "gst\r"));
+    assert(c.signals_known && c.signals == (all & ~e5) && rx.signals == c.signals);
+    assert(c.signals_added == (all & ~e5 & ~factory) && c.signals_refused == e5 && !c.adding);
+
+    // Configured again with its settings kept (COM2 fell silent): it is asked what it tracks and
+    // nothing else, so no tracking loop restarts.
+    uint8_t b[64];
+    size_t n = status_block(b, 100, 0, 0);
+    sbf_control_block(&c, b, n, now);
+    run(&c, &rx, &esp, &now, now + SBF_CONTROL_SILENCE_MS + 2000, 100);
+    assert(c.configurations == 2 && rx.sent == 2 * steps + 10 && rx.adds == 10 && rx.restarts == 9);
+    assert(!c.signals_added && c.signals == (all & ~e5)); // nothing added by this configuration
+
+    // The receiver restarts and comes back as shipped: the nine are added again, and the one
+    // it refused is not asked for.
+    rx.signals = factory;
+    sbf_control_block(&c, b, status_block(b, 5000, 0, 0), now);
+    sbf_control_block(&c, b, status_block(b, 3, 0, 0), now + 1000);
+    assert(c.state == SBF_CONTROL_CONFIGURING);
+    run(&c, &rx, &esp, &now, now + 2000, 100);
+    assert(c.configurations == 3 && rx.sent == 3 * steps + 19 && rx.adds == 19 && rx.restarts == 18);
+    assert(c.signals == (all & ~e5) && c.signals_refused == e5 && !c.command_errors);
+    assert(c.signals_added == (all & ~e5 & ~factory));
+
+    // The ESP32 restarts beside a receiver that kept its settings: the refused signal is asked
+    // for once more and refused again, which restarts nothing, and nothing counts as added.
+    sbf_control_init(&c, true, 0);
+    sbf_control_prompt(&c);
+    rx.sent = rx.adds = 0; now = 0; esp = (esp_t){0};
+    run(&c, &rx, &esp, &now, 1000, 100);
+    assert(c.state == SBF_CONTROL_RUNNING && rx.sent == steps + 1 && rx.adds == 1 && rx.restarts == 18);
+    assert(c.signals == (all & ~e5) && c.signals_refused == e5 && !c.signals_added && !c.command_errors);
+
+    // A receiver with every signal on is asked what it tracks and left alone.
+    sbf_control_init(&c, true, 0);
+    sbf_control_prompt(&c);
+    rx = (rx_t){.signals = all, .offered = all}; now = 0; esp = (esp_t){0};
+    run(&c, &rx, &esp, &now, 1000, 100);
+    assert(c.state == SBF_CONTROL_RUNNING && rx.sent == steps && !rx.adds && c.signals == all && !c.signals_refused);
+
+    // One that takes a name and does not track it is asked once, not again in this boot.
+    sbf_control_init(&c, true, 0);
+    sbf_control_prompt(&c);
+    rx = (rx_t){.signals = all & ~e5, .offered = all, .ignored = e5}; now = 0; esp = (esp_t){0};
+    run(&c, &rx, &esp, &now, 1000, 100);
+    assert(c.state == SBF_CONTROL_RUNNING && rx.adds == 1 && c.signals_refused == e5 && !c.signals_added);
+    sbf_control_block(&c, b, n, now);
+    run(&c, &rx, &esp, &now, now + SBF_CONTROL_SILENCE_MS + 2000, 100);
+    assert(c.configurations == 2 && rx.adds == 1);
+
+    // gnt refused, or naming no signal: nothing is asked for, and only the refusal is an error.
+    sbf_control_init(&c, true, 0);
+    sbf_control_prompt(&c);
+    rx = (rx_t){.signals = factory, .offered = all, .fail = "gnt"}; now = 0; esp = (esp_t){0};
+    run(&c, &rx, &esp, &now, 1000, 100);
+    assert(c.state == SBF_CONTROL_RUNNING && c.command_errors == 1 && !c.signals_known && !rx.adds && rx.sent == steps);
+    sbf_control_init(&c, true, 0);
+    sbf_control_prompt(&c);
+    rx = (rx_t){.offered = all}; now = 0; esp = (esp_t){0};
+    run(&c, &rx, &esp, &now, 1000, 100);
+    assert(c.state == SBF_CONTROL_RUNNING && !c.command_errors && !c.signals_known && !rx.adds);
+
+    // An added signal that gets no answer is retried like any command: the escape, then the
+    // same signal again, and the rest once the receiver answers.
+    sbf_control_init(&c, true, 0);
+    sbf_control_prompt(&c);
+    rx = (rx_t){.signals = factory, .offered = all, .deaf_to_signals = true}; now = 0; esp = (esp_t){0};
+    run(&c, &rx, &esp, &now, SBF_CONTROL_REPLY_MS + 100, 100);
+    assert(c.adding && c.state == SBF_CONTROL_CONFIGURING && rx.escapes == 1 && !rx.adds && rx.signals == factory);
+    rx.deaf_to_signals = rx.silent = false;
+    run(&c, &rx, &esp, &now, now + SBF_CONTROL_ESCAPE_MS + 1000, 100);
+    assert(c.state == SBF_CONTROL_RUNNING && rx.adds == 10 && c.signals == all && !c.signals_refused && !esp.reset_pulses);
+
+    // The list is read by whole names.
+    assert(sbf_control_signals("  SignalTracking, GPSL1CA+GPSL2PY+GALE5a") == (B(0) | B(2) | B(20)));
+    assert(sbf_control_signals("+BDSB2b+QZSL1CB") == (B(34) | B(38)) && sbf_control_signals("SignalTracking, none") == 0);
+    assert(sbf_control_signals("XGPSL1CA GPSL1CAX GALE5A gpsl1ca") == 0 && sbf_control_signals("") == 0);
+}
+
 // The blocks forwarded to the collector are exactly those the sso commands request: every name
 // in them maps to a forwarded number (4.2), and no other number is forwarded.
 static void forwarded_test(void)
@@ -215,9 +341,10 @@ int main(void)
     configuration_test();
     reply_test();
     recovery_test();
+    signals_test();
     forwarded_test();
     puts("SBF control: configuration sequence, CTS only after RTS|CTS is confirmed, constellations, error and "
-         "foreign replies, silence and restart recovery, escape, reset pulses and their 10-minute spacing, and the "
-         "forwarded blocks passed");
+         "foreign replies, silence and restart recovery, escape, reset pulses and their 10-minute spacing, signals "
+         "added once and never twice, and the forwarded blocks passed");
     return 0;
 }

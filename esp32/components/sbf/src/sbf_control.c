@@ -1,10 +1,12 @@
 #include "sbf_control.h"
 #include "sbf.h"
+#include <stdio.h>
 #include <string.h>
 
 static const char *const commands[] = {
     "scs, COM2, baud115200, bits8, No, bit1, RTS|CTS\r",
     "sdio, COM2, CMD, SBF\r",
+    "gnt\r",
     "scst, usec500\r",
     "spps, , , , , , 100\r",
     "sso, Res1, COM2, PVTGeodetic+ReceiverTime+MeasEpoch+SatVisibility+ReceiverStatus+RFStatus, sec1\r",
@@ -12,7 +14,19 @@ static const char *const commands[] = {
     "sso, Res3, COM2, GPSRawCA+GPSRawL2C+GPSRawL5+GLORawCA+GALRawFNAV+GALRawINAV+GEORawL1+BDSRaw+BDSRawB2a+QZSRawL1CA+QZSRawL2C+QZSRawL5, OnChange\r",
     "gst\r",
 };
-enum { STEP_FLOW_CONTROL = 0, STEP_TRACKING = 7, STEPS = sizeof commands / sizeof commands[0] };
+enum { STEP_FLOW_CONTROL = 0, STEP_SIGNALS = 2, STEP_TRACKING = 8, STEPS = sizeof commands / sizeof commands[0] };
+
+// The signals setSignalTracking names on a mosaic-G5 (reference guide 3.2), by signal number
+// (4.1.10), in the command's order. A missing one is asked for in this order.
+static const uint8_t wanted[] = {
+    0, 2, 3, 4, 5,                 // GPS L1C/A, L2P(Y), L2C, L5, L1C
+    8, 10, 11, 12,                 // GLONASS L1C/A, L2P, L2C/A, L3
+    17, 19, 20, 21, 22,            // Galileo E1, E6, E5a, E5b, E5 AltBOC
+    24, 25,                        // SBAS L1, L5
+    28, 29, 30, 13, 14, 34,        // BeiDou B1I, B2I, B3I, B1C, B2a, B2b
+    6, 7, 26, 27, 32, 33, 38,      // QZSS L1C/A, L2C, L5, L6, L1C, L1S, L1C/B
+    15,                            // NavIC L5
+};
 
 bool sbf_control_forwarded(uint16_t number)
 {
@@ -45,11 +59,49 @@ uint8_t sbf_control_constellations(const char *text)
     return mask;
 }
 
+static bool word(char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'); }
+uint64_t sbf_control_signals(const char *text)
+{
+    // Whole words only: "SignalTracking" and "none" name no signal, and neither does part of a name.
+    uint64_t mask = 0;
+    for (const char *p = text; *p;) {
+        size_t n = 0;
+        while (word(p[n])) n++;
+        if (!n) { p++; continue; }
+        const int number = sbf_signal_number(p, n);
+        if (number >= 0) mask |= 1ull << number;
+        p += n;
+    }
+    return mask;
+}
+
+uint64_t sbf_control_wanted(void)
+{
+    uint64_t mask = 0;
+    for (size_t i = 0; i < sizeof wanted; i++) mask |= 1ull << wanted[i];
+    return mask;
+}
+
+// The next wanted signal that is neither tracked nor already asked for in vain, as the command
+// that adds it. False when there is none.
+static bool next_signal(sbf_control_t *c)
+{
+    for (size_t i = 0; i < sizeof wanted; i++) {
+        if ((c->signals | c->signals_refused) >> wanted[i] & 1) continue;
+        c->add = wanted[i];
+        snprintf(c->command, sizeof c->command, "snt, +%s\r", sbf_signal_name(wanted[i]));
+        return true;
+    }
+    return false;
+}
+static const char *command(const sbf_control_t *c) { return c->adding ? c->command : commands[c->step]; }
+
 static void configure(sbf_control_t *c, int64_t now)
 {
     c->state = SBF_CONTROL_CONFIGURING;
     c->step = c->tries = 0;
-    c->sent = c->escaping = c->escape_next = c->collecting = false;
+    c->sent = c->escaping = c->escape_next = c->collecting = c->adding = false;
+    c->signals_added = 0;
     c->cts_off_due = true;
     c->cts_on_due = false;
     c->deadline = now;
@@ -68,18 +120,20 @@ void sbf_control_line(sbf_control_t *c, const char *line)
     if (!c->sent) return;
     if (!strncmp(line, "$R:", 3)) {
         // The first line of a reply is an exact copy of the command (3.1.3); another is not ours.
-        const char *echo = line + 3, *command = commands[c->step];
+        const char *echo = line + 3, *sent = command(c);
         while (*echo == ' ') echo++;
-        const size_t length = strlen(command) - 1; // without the CR
-        if (strlen(echo) != length || strncmp(echo, command, length)) return;
+        const size_t length = strlen(sent) - 1; // without the CR
+        if (strlen(echo) != length || strncmp(echo, sent, length)) return;
         c->reply_ok = true;
-        c->collecting = c->step == STEP_TRACKING;
+        c->collecting = c->adding || c->step == STEP_SIGNALS || c->step == STEP_TRACKING;
         c->collected = 0;
+        c->listed = 0;
     } else if (!strncmp(line, "$R?", 3)) {
         c->reply_error = true;
         c->collecting = false;
     } else if (c->collecting) {
-        c->collected |= sbf_control_constellations(line);
+        if (c->adding || c->step == STEP_SIGNALS) c->listed |= sbf_control_signals(line);
+        else c->collected |= sbf_control_constellations(line);
     }
 }
 void sbf_control_prompt(sbf_control_t *c)
@@ -161,17 +215,36 @@ sbf_action_t sbf_control_poll(sbf_control_t *c, int64_t now)
         c->sent = true;
         c->reply_ok = c->reply_error = c->prompt = c->collecting = false;
         c->deadline = now + SBF_CONTROL_REPLY_MS;
-        return act(SBF_ACTION_SEND, commands[c->step]);
+        return act(SBF_ACTION_SEND, command(c));
     }
     if ((c->reply_ok || c->reply_error) && c->prompt) {
-        if (c->reply_error) c->command_errors++;
-        if (c->step == STEP_FLOW_CONTROL && c->reply_ok) c->cts_on_due = true;
-        if (c->step == STEP_TRACKING && c->reply_ok && c->collected) {
-            c->supported = c->collected;
-            c->supported_known = true;
-        }
         c->sent = false;
         c->tries = 0;
+        bool more = false;
+        if (c->adding) {
+            // The reply to a signal added lists what is tracked now. A signal refused, or taken
+            // and still not listed, is not offered by this receiver.
+            const uint64_t bit = 1ull << c->add;
+            if (c->reply_ok && c->listed) c->signals = c->listed;
+            if (c->signals & bit) c->signals_added |= bit;
+            else c->signals_refused |= bit;
+            more = next_signal(c);
+        } else {
+            if (c->reply_error) c->command_errors++;
+            if (c->step == STEP_FLOW_CONTROL && c->reply_ok) c->cts_on_due = true;
+            if (c->step == STEP_SIGNALS && c->reply_ok && c->listed) {
+                c->signals = c->listed;
+                c->signals_known = true;
+                more = next_signal(c);
+            }
+            if (c->step == STEP_TRACKING && c->reply_ok && c->collected) {
+                c->supported = c->collected;
+                c->supported_known = true;
+            }
+        }
+        // Each missing signal has its turn before the step after gnt.
+        c->adding = more;
+        if (more) return act(SBF_ACTION_NONE, NULL);
         if (++c->step == STEPS) {
             c->state = SBF_CONTROL_RUNNING;
             c->configurations++;

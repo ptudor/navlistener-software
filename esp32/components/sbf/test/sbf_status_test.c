@@ -47,6 +47,13 @@ static void tracking_test(void)
     assert((o = find(status.signals, status.signal_count, 0, 5, 3)) && o->cno == 37);
     assert(!find(status.signals, status.signal_count, 0, 5, 6)); // L5 had no pseudorange
     assert(find(status.signals, status.signal_count, 2, 12, 0) && find(status.signals, status.signal_count, 5, 3, 1));
+    // The satellites on each signal number: G05 alone on L1C/A (G09 has no pseudorange) and on
+    // L2C, none on L5 (no pseudorange), E12 on E1, and J03 on L1S, whose number 33 is in ObsInfo.
+    unsigned on_signals = 0;
+    for (unsigned i = 0; i < SBF_SIGNALS; i++) on_signals += adapter.signal_satellites[i];
+    assert(adapter.signals_valid && adapter.signals_ms == 1500 && on_signals == 4);
+    assert(adapter.signal_satellites[0] == 1 && adapter.signal_satellites[3] == 1 && !adapter.signal_satellites[4] &&
+           adapter.signal_satellites[17] == 1 && adapter.signal_satellites[33] == 1);
 
     // Elevations older than 5 s are unknown; tracking still counts.
     n = meas_block(b, 345601000, 0, masters, 4, slaves);
@@ -56,6 +63,7 @@ static void tracking_test(void)
     // A scrambled epoch is not used; the last status stands to go stale on its own.
     n = meas_block(b, 345602000, SBF_MEAS_SCRAMBLED, masters, 4, slaves);
     assert(!sbf_status_feed(&adapter, &status, b, n, 9000) && adapter.scrambled_epochs == 1 && status.satellites_ms != 9000);
+    assert(adapter.signals_ms != 9000 && adapter.signal_satellites[0] == 1);
 
     // An auxiliary antenna's signal is not the observer's antenna.
     const test_master_t aux[] = {{7, 0, 140, true, 0}};

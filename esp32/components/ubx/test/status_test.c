@@ -114,10 +114,39 @@ static void rf_and_signals(void)
     gnss_status_feed(&s, 1, 0x43, none, sizeof none, 1000);
     assert(!s.signal_locked[0] && !s.signal_other); // each NAV-SIG replaces the last
 }
+static void satellites_by_name(void)
+{
+    static gnss_status_t s;
+    char text[160];
+    memset(&s, 0, sizeof s);
+    // Nothing is written for a list that is not valid.
+    s.satellite_count = 1; s.satellites[0] = (gnss_observation_t){0, 5, NR_SATELLITE, 45, 61};
+    assert(gnss_status_satellites_text(&s, text, sizeof text) == 0 && !text[0]);
+    // GPS, GLONASS, Galileo, BeiDou, QZSS, NavIC and SBAS in that order, by number within each,
+    // whatever order the receiver reported them in; an unknown elevation is a dash.
+    const gnss_observation_t reported[] = {
+        {1, 131, NR_SATELLITE, 41, 42}, {0, 12, NR_SATELLITE, 38, 23}, {3, 36, NR_SATELLITE, 40, 9},
+        {0, 5, NR_SATELLITE, 45, 61}, {6, 3, NR_SATELLITE, 31, 127}, {2, 7, NR_SATELLITE, 44, -2},
+        {5, 2, NR_SATELLITE, 33, 4}, {7, 14, NR_SATELLITE, 30, 3},
+    };
+    s.satellite_count = sizeof reported / sizeof reported[0];
+    memcpy(s.satellites, reported, sizeof reported);
+    s.satellites_valid = true;
+    const char *expected = "G05 61/45, G12 23/38, R03 -/31, E07 -2/44, C36 9/40, J02 4/33, I14 3/30, S131 42/41";
+    assert(gnss_status_satellites_text(&s, text, sizeof text) == strlen(expected) && !strcmp(text, expected));
+    // A list too long for the text ends after the last satellite that fits whole.
+    char two[24];
+    assert(gnss_status_satellites_text(&s, two, sizeof two) == strlen("G05 61/45, G12 23/38") && !strcmp(two, "G05 61/45, G12 23/38"));
+    assert(gnss_status_satellites_text(&s, two, 0) == 0);
+    // No satellite: an empty text, for the caller to word.
+    s.satellite_count = 0;
+    assert(gnss_status_satellites_text(&s, text, sizeof text) == 0 && !text[0]);
+}
 int main(void)
 {
     reception_evidence();
     rf_and_signals();
+    satellites_by_name();
     gnss_status_t timing={0}; uint8_t tp[16]={0}; tp[14]=3; tp[15]=0x10;
     gnss_status_feed(&timing,0x0d,1,tp,sizeof tp,100);
     assert(timing.tp_valid && timing.tp_flags==3 && timing.tp_ref==0x10 && timing.tp_ms==100);
@@ -179,5 +208,5 @@ int main(void)
     assert(gnss_status_same_place(377000000,-1224000000,377010000,-1224010000));
     assert(!gnss_status_same_place(377000000,-1224000000,357000000,1397000000));
     assert(gnss_status_same_place(0,1799999000,0,-1799999000));
-    puts("GNSS status: tracking, stale data, regional expectations, learned override, movement, RF blocks, SEC-SIG jamming and signal kinds passed");
+    puts("GNSS status: tracking, stale data, regional expectations, learned override, movement, RF blocks, SEC-SIG jamming, signal kinds and satellites by name passed");
 }

@@ -433,10 +433,52 @@ static bool sbf_log_front_ends(int64_t now)
     ESP_LOGI(TAG, "front ends (gain dB/variance/blanked %%): %s; receiver temperature %s, CPU %s", text, temperature, cpu);
     return true;
 }
+// After a configuration: the signals the receiver tracks, when its list has changed; those the
+// configuration added, each time it added any, since that restarted the tracking loops; and
+// those the receiver does not offer, when that set has changed.
+static void sbf_log_signals(void)
+{
+    static bool logged;
+    static uint64_t tracked, refused;
+    static char names[320];
+    const sbf_control_t *c = &sbf_ctl;
+    if (!c->signals_known) return;
+    if (!logged || tracked != c->signals) {
+        sbf_signal_names(c->signals, names, sizeof names);
+        ESP_LOGI(TAG, "receiver signal tracking: %d signals: %s", __builtin_popcountll(c->signals), names);
+    }
+    if (c->signals_added) {
+        sbf_signal_names(c->signals_added, names, sizeof names);
+        ESP_LOGI(TAG, "receiver signal tracking: enabled by the observer: %s", names);
+    }
+    if (c->signals_refused != refused) {
+        sbf_signal_names(c->signals_refused, names, sizeof names);
+        ESP_LOGI(TAG, "receiver signal tracking: not offered by this receiver: %s", names);
+    }
+    logged = true;
+    tracked = c->signals; refused = c->signals_refused;
+}
+// The satellites behind the counts, by name, and how many of them each signal is tracked on:
+// which satellite a count gained or lost, and whether a signal that was switched on is heard.
+// False while no measurement epoch is recent enough to speak for now.
+static bool sbf_log_satellites(int64_t now)
+{
+    static char text[1280];
+    if (!health.satellites_valid || now - health.satellites_ms > 5000) return false;
+    if (!gnss_status_satellites_text(&health, text, sizeof text)) snprintf(text, sizeof text, "none");
+    ESP_LOGI(TAG, "satellites (elevation deg/C/N0 dB-Hz): %s", text);
+    if (sbf_adapter.signals_valid && now - sbf_adapter.signals_ms <= 5000) {
+        if (!sbf_signal_counts(sbf_adapter.signal_satellites, text, sizeof text)) snprintf(text, sizeof text, "none");
+        ESP_LOGI(TAG, "satellites per signal: %s", text);
+    }
+    return true;
+}
 static void sbf_on_line(const char *line, void *ctx)
 {
     (void)ctx;
-    if (!strncmp(line, "$R?", 3)) ESP_LOGW(TAG, "receiver refused a command: %s", line);
+    // A signal this receiver does not offer is refused by design (sbf_control.h), and reported
+    // once with the signal list; any other refusal is a fault in the configuration.
+    if (!strncmp(line, "$R?", 3) && !sbf_ctl.adding) ESP_LOGW(TAG, "receiver refused a command: %s", line);
     sbf_control_line(&sbf_ctl, line);
 }
 static void sbf_on_prompt(const char *prompt, void *ctx) { (void)ctx; (void)prompt; sbf_control_prompt(&sbf_ctl); }
@@ -477,7 +519,7 @@ static void sbf_task(void *arg)
 {
     (void)arg;
     uint8_t buf[512];
-    int64_t next_log = 0, next_front_ends = 0;
+    int64_t next_log = 0, next_front_ends = 0, next_satellites = 0;
     unsigned configurations = 0;
     sbf_reader_init(sbf_reader, sbf_on_block, sbf_on_line, sbf_on_prompt, NULL);
     sbf_status_init(&sbf_adapter);
@@ -502,6 +544,7 @@ static void sbf_task(void *arg)
                 sbf_publish();
                 ESP_LOGI(TAG, "receiver tracks constellations 0x%02x (UBX gnssId bits)", health.supported);
             }
+            sbf_log_signals();
         }
         if (now >= next_log) {
             static const char *const states[] = {"starting", "configuring", "running", "waiting to retry", "resetting"};
@@ -519,6 +562,7 @@ static void sbf_task(void *arg)
                          health.tracked[0], health.tracked[1], health.tracked[2], health.tracked[3], health.tracked[5],
                          health.tracked[6], health.tracked[7], gnss_status_position_fresh(&health, now) ? "valid" : "unavailable");
             if (now >= next_front_ends && sbf_log_front_ends(now)) next_front_ends = now + 30000;
+            if (now >= next_satellites && sbf_log_satellites(now)) next_satellites = now + 60000;
             next_log = now + 10000;
         }
     }

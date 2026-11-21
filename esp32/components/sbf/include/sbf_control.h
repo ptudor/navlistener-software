@@ -17,6 +17,19 @@
 // Res1 and Res2 are the streams the receiver never saves and resets at boot, so the observer's
 // output never lands in a saved configuration or in a stream someone set up on another port.
 //
+// Signals. A mosaic-G5 starts with a third of its signals off (GPS L1C, GLONASS L2P and L3,
+// Galileo E5 AltBOC, SBAS L5, BeiDou B2b, QZSS L6, L1C, L1S and L1C/B), and an observer is there
+// to hear everything its receiver can. After sdio the observer asks which signals are tracked
+// and adds each one that is missing, a command apiece:
+//   gnt                                                the signals it tracks (3.2, getSignalTracking)
+//   snt, +GPSL1C                                       one signal added to that list (3.1 for the "+")
+// setSignalTracking stops and restarts every tracking loop, so it is sent only for a signal
+// that is not on. A configuration repeated on a receiver that kept its settings (the ESP32
+// restarted, or COM2 fell silent) finds them all on and sends none: the receiver keeps every
+// satellite it has. One name per command, so that a name a receiver does not accept costs
+// only that signal: a refused command changes nothing. A signal refused, or accepted and still
+// not in the list, is not asked for again until the ESP32 restarts.
+//
 // The receiver starts with flow control off, and its RTS output is then of no meaning, so the
 // ESP32 honors CTS only after the receiver has confirmed RTS|CTS, and stops before every new
 // configuration. Its own RTS runs throughout. A command that gets no reply is retried after the
@@ -77,6 +90,15 @@ typedef struct {
     uint8_t collected;
     bool supported_known;
     uint8_t supported; // UBX gnssId bits the receiver may track (gst)
+    // Signal tracking, as masks of signal numbers (sbf.h): what the receiver's last list named,
+    // what the latest configuration added to it, and what was asked for since the ESP32
+    // started and not given.
+    bool signals_known;
+    uint64_t signals, signals_added, signals_refused;
+    uint64_t listed;  // the list being read from a reply
+    bool adding;      // the command out is command[], one signal's snt
+    uint8_t add;      // that signal's number
+    char command[32];
     unsigned configurations, resets, command_errors;
 } sbf_control_t;
 
@@ -92,4 +114,9 @@ size_t sbf_control_commands(const char *const **list);
 bool sbf_control_forwarded(uint16_t number);
 // gst's satellite list ("G01+...+R24+E36+...") as a UBX gnssId mask; 0 when it names none.
 uint8_t sbf_control_constellations(const char *text);
+// The signals a line of gnt's or snt's reply names ("SignalTracking, GPSL1CA+GPSL2PY+..."), as
+// a mask of signal numbers; 0 when it names none.
+uint64_t sbf_control_signals(const char *text);
+// Every signal the observer wants tracked: all that setSignalTracking names on a mosaic-G5.
+uint64_t sbf_control_wanted(void);
 #endif

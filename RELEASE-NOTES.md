@@ -1,5 +1,18 @@
 # Unreleased
 
+- A mosaic-G5 P3 observer has its receiver track every signal it offers. The receiver starts
+  with 20 of its 30 signals on. The firmware now asks which are tracked and adds each missing
+  one by name: GPS L1C, GLONASS L2P and L3, Galileo E5 AltBOC, SBAS L5, BeiDou B2b and QZSS
+  L6, L1C, L1S and L1C/B. Like the rest of the configuration this is in the receiver's RAM and
+  repeated when needed. The command restarts the receiver's tracking loops, so it is sent only
+  for a signal that is not on: an observer that restarts beside a running receiver sends
+  none, and the receiver keeps its satellites. A signal the receiver does not offer is named
+  once in the log and is not a command error. The added signals' measurements are in the
+  forwarded MeasEpoch blocks, which grow by about a tenth; their navigation pages are not
+  requested yet. A satellite's C/N0 is still its strongest signal's, so it can read a little
+  higher where an added signal is the strongest. Once a minute the console names the tracked
+  satellites, with elevation and C/N0, and counts the satellites on each signal
+  (`esp32/docs/SBF-RECEIVER.md` §4 and §6).
 - Station RF baselines heal themselves. A band or front end that has sat away from its
   learned baseline for a day without a break is now learned again at the level it holds:
   the departure is reported for that day, then `rf_trust` returns to 1 and the events clear,

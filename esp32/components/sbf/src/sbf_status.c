@@ -62,6 +62,8 @@ static void measurement(const sbf_meas_t *m, void *ctx)
     const uint8_t cno = (uint8_t)(centi / 100 > 255 ? 255 : centi / 100);
     const int8_t elevation = elevation_of(e, gnss, sv);
     gnss_status_t *s = e->s;
+    // A satellite has one sub-block per signal, so each signal's entries are its satellites.
+    if (m->signal < SBF_SIGNALS && e->a->signal_satellites[m->signal] < 255) e->a->signal_satellites[m->signal]++;
     if (!observe(s->satellites, &s->satellite_count, gnss, sv, NR_SATELLITE, cno, elevation)) e->overflow = true;
     if (sbf_signal(m->signal, &signal_gnss, &canonical) && signal_gnss == gnss && canonical != SBF_NO_CANONICAL &&
         !observe(s->signals, &s->signal_count, gnss, sv, canonical, cno, elevation)) e->overflow = true;
@@ -72,6 +74,9 @@ static bool meas_epoch(sbf_status_t *a, gnss_status_t *s, const uint8_t *b, size
     if (!sbf_meas_epoch(b, n, &flags, NULL, NULL)) return false;
     if (flags & SBF_MEAS_SCRAMBLED) { a->scrambled_epochs++; return false; }
     s->satellite_count = s->signal_count = 0;
+    memset(a->signal_satellites, 0, sizeof a->signal_satellites);
+    a->signals_valid = true;
+    a->signals_ms = now;
     epoch_t e = {.a = a, .s = s, .now = now};
     (void)sbf_meas_epoch(b, n, NULL, measurement, &e);
     memset(s->tracked, 0, sizeof s->tracked);

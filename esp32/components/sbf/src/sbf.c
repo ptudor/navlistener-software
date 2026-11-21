@@ -371,3 +371,68 @@ bool sbf_signal(uint8_t number, uint8_t *gnss, uint8_t *canonical)
     *canonical = table[number][1];
     return true;
 }
+
+// The named signals in the reference guide's order (setSignalTracking, 3.2): GPS, GLONASS,
+// Galileo, SBAS, BeiDou, QZSS, NavIC. GPSL1PY, GLOL1P, QZSL5S and NAVICL1 have numbers (4.1.10)
+// and no place in that command on a mosaic-G5; they are named in its style.
+static const struct { uint8_t number; const char *name; } signal_names[] = {
+    {0, "GPSL1CA"}, {1, "GPSL1PY"}, {2, "GPSL2PY"}, {3, "GPSL2C"}, {4, "GPSL5"}, {5, "GPSL1C"},
+    {8, "GLOL1CA"}, {9, "GLOL1P"}, {10, "GLOL2P"}, {11, "GLOL2CA"}, {12, "GLOL3"},
+    {17, "GALE1BC"}, {19, "GALE6BC"}, {20, "GALE5a"}, {21, "GALE5b"}, {22, "GALE5"},
+    {24, "GEOL1"}, {25, "GEOL5"},
+    {28, "BDSB1I"}, {29, "BDSB2I"}, {30, "BDSB3I"}, {13, "BDSB1C"}, {14, "BDSB2a"}, {34, "BDSB2b"},
+    {6, "QZSL1CA"}, {7, "QZSL2C"}, {26, "QZSL5"}, {27, "QZSL6"}, {32, "QZSL1C"}, {33, "QZSL1S"},
+    {38, "QZSL1CB"}, {39, "QZSL5S"},
+    {15, "NAVICL5"}, {37, "NAVICL1"},
+};
+#define SIGNAL_NAMES (sizeof signal_names / sizeof signal_names[0])
+
+const char *sbf_signal_name(uint8_t number)
+{
+    for (size_t i = 0; i < SIGNAL_NAMES; i++)
+        if (signal_names[i].number == number) return signal_names[i].name;
+    return NULL;
+}
+
+int sbf_signal_number(const char *name, size_t n)
+{
+    for (size_t i = 0; i < SIGNAL_NAMES; i++)
+        if (strlen(signal_names[i].name) == n && !memcmp(signal_names[i].name, name, n)) return signal_names[i].number;
+    return -1;
+}
+
+// Appends text after a separator when out already holds something. False when it does not fit.
+static bool append(char *out, size_t size, size_t *used, const char *separator, const char *text)
+{
+    const size_t gap = *used ? strlen(separator) : 0, length = strlen(text);
+    if (*used + gap + length >= size) return false;
+    memcpy(out + *used, separator, gap);
+    memcpy(out + *used + gap, text, length + 1);
+    *used += gap + length;
+    return true;
+}
+
+size_t sbf_signal_names(uint64_t mask, char *out, size_t size)
+{
+    size_t used = 0;
+    if (!size) return 0;
+    out[0] = 0;
+    for (size_t i = 0; i < SIGNAL_NAMES; i++)
+        if (mask >> signal_names[i].number & 1 && !append(out, size, &used, " ", signal_names[i].name)) break;
+    return used;
+}
+
+size_t sbf_signal_counts(const uint8_t counts[SBF_SIGNALS], char *out, size_t size)
+{
+    size_t used = 0;
+    if (!size) return 0;
+    out[0] = 0;
+    for (size_t i = 0; i < SIGNAL_NAMES; i++) {
+        char entry[24];
+        const unsigned count = counts[signal_names[i].number];
+        if (!count) continue;
+        snprintf(entry, sizeof entry, "%s %u", signal_names[i].name, count);
+        if (!append(out, size, &used, ", ", entry)) break;
+    }
+    return used;
+}

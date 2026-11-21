@@ -1,5 +1,6 @@
 #include "gnss_status.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 static uint32_t le32(const uint8_t *p)
 { return p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
@@ -217,4 +218,36 @@ void gnss_status_leds(const gnss_status_t *s, int64_t now, uint8_t learned,
         if (current && s->tracked[g]) *green |= 1u << i;
         else if (expected & (1u << g)) *yellow |= 1u << i;
     }
+}
+
+size_t gnss_status_satellites_text(const gnss_status_t *s, char *out, size_t size)
+{
+    // RINEX's letter for each UBX gnssId, in the order the list is written.
+    static const struct { uint8_t gnss; char letter; } order[] = {
+        {0, 'G'}, {6, 'R'}, {2, 'E'}, {3, 'C'}, {5, 'J'}, {7, 'I'}, {1, 'S'},
+    };
+    size_t used = 0;
+    if (!size) return 0;
+    out[0] = 0;
+    if (!s->satellites_valid) return 0;
+    for (size_t g = 0; g < sizeof order / sizeof order[0]; g++) {
+        // Ascending by satellite number: the smallest one above the last written, until none is left.
+        for (int last = -1;;) {
+            const gnss_observation_t *next = NULL;
+            for (unsigned i = 0; i < s->satellite_count; i++) {
+                const gnss_observation_t *o = &s->satellites[i];
+                if (o->gnss == order[g].gnss && o->sv > last && (!next || o->sv < next->sv)) next = o;
+            }
+            if (!next) break;
+            last = next->sv;
+            char entry[24], elevation[8] = "-";
+            if (next->elevation != 127) snprintf(elevation, sizeof elevation, "%d", (int)next->elevation);
+            const int length = snprintf(entry, sizeof entry, "%s%c%02u %s/%u", used ? ", " : "", order[g].letter,
+                                        (unsigned)next->sv, elevation, (unsigned)next->cno);
+            if (length < 0 || (size_t)length >= sizeof entry || used + (size_t)length >= size) return used;
+            memcpy(out + used, entry, (size_t)length + 1);
+            used += (size_t)length;
+        }
+    }
+    return used;
 }

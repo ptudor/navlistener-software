@@ -57,6 +57,8 @@ its reply.
 |---|---|
 | `scs, COM2, baud115200, bits8, No, bit1, RTS\|CTS` | hardware flow control; on success the ESP32 starts honoring CTS |
 | `sdio, COM2, CMD, SBF` | commands in, SBF out and nothing else on this port |
+| `gnt` | the signals it tracks (3.2, `getSignalTracking`) |
+| `snt, +GPSL1C` | one signal added to that list: sent once for each signal the receiver could track and does not (see Signal tracking below), so usually not at all |
 | `scst, usec500` | the receiver time within 0.5 ms of GNSS time once FINETIME is set (2.3), which bounds the time accuracy in section 6 |
 | `spps, , , , , , 100` | a 100 ms xPPS pulse in place of the default 5 ms (3.2, `setPPSParameters`), so the board's PPS lamp and the panel's show each pulse, as they do on the u-blox boards. Only the width is named: the interval, polarity, delay, time scale and sync age stay as the receiver has them, and the pulse's leading edge, which carries the time, does not move |
 | `sso, Res1, COM2, PVTGeodetic+ReceiverTime+MeasEpoch+SatVisibility+ReceiverStatus+RFStatus, sec1` | the 1 Hz stream |
@@ -70,6 +72,33 @@ configuration. `Res1` to `Res3` are streams the receiver never saves and resets 
 over a stream someone set up for the receiver's own USB port. A command answered with an
 error is logged and counted, and the configuration carries on; a refused `setCOMSettings`
 leaves CTS ignored.
+
+**Signal tracking.** A mosaic-G5 starts with 20 of the 30 signals `setSignalTracking` names.
+GPS L1C, GLONASS L2P and L3, Galileo E5 AltBOC, SBAS L5, BeiDou B2b and QZSS L6, L1C, L1S and
+L1C/B are off. An observer is there to hear everything its receiver can, wherever it stands,
+so after `gnt` it adds each signal that is missing, by name and one command per signal: a `+`
+before a name adds it to the list the receiver has (3.1).
+
+`setSignalTracking` stops and restarts every tracking loop (3.2), so it is sent only for a
+signal that is not on. The first configuration after the receiver starts adds them, while it
+has no satellite to lose. A configuration repeated on a receiver that kept its settings, after
+the ESP32 restarted or COM2 fell silent, finds every signal on and sends none: the receiver
+keeps each satellite it has. On a P3 a restart of the ESP32 alone left the receiver's uptime
+running and the same 22 satellites tracked.
+
+One name per command, so that a name a receiver does not accept costs only that signal: a
+refused command changes nothing. A signal that is refused, or accepted and still missing
+from the reply's list, is not asked for again until the ESP32 restarts; the log names it once,
+and the refusal is not a command error. The P3 accepted all ten. Within minutes GPS L1C,
+GLONASS L2P and L3, SBAS L5 and BeiDou B2b each carried satellites. Galileo E5 AltBOC was
+listed and carried none while five Galileo satellites were tracked on E5a: the permission
+file read from a P3 lists AltBOC tracking as not permitted. No QZSS satellite was in view to
+show its four.
+
+Tracking a signal does not put it in the receiver's position solution: `setSignalUsage` stays
+as the receiver has it. The satellites allowed (`setSatelliteTracking`) and the elevation mask
+also stay as they are, and the receiver's default allows every satellite of every
+constellation.
 
 ## 5. Recovery
 
@@ -91,8 +120,8 @@ for each path.
   enough to pass any push-button debounce. The receiver's GPIO pins stay in input mode for
   about 2 s after a reset (4.9), well inside the boot wait.
 
-The ESP32 never resets the receiver at its own boot: an observer that restarts for an update
-keeps the receiver tracking.
+The ESP32 never resets the receiver at its own boot, and adds no signal that is already on
+(section 4): an observer that restarts for an update keeps the receiver tracking.
 
 ## 6. From SBF to the receiver status
 
@@ -103,7 +132,7 @@ CRC-checked, and every field is bounds-checked against the block's Length and SB
 
 | Block | Number | Status it feeds |
 |---|---:|---|
-| MeasEpoch | 4027 | Tracking: a satellite counts when a signal on the main antenna has a pseudorange and a C/N0 of at least 1 dB-Hz; its C/N0 is the strongest such signal's. An epoch scrambled for want of the Measurement Availability permission (CommonFlags bit 7) is not used |
+| MeasEpoch | 4027 | Tracking: a satellite counts when a signal on the main antenna has a pseudorange and a C/N0 of at least 1 dB-Hz; its C/N0 is the strongest such signal's. The satellites on each signal number are counted by the same rule for the log. An epoch scrambled for want of the Measurement Availability permission (CommonFlags bit 7) is not used |
 | SatVisibility | 4012 | Elevations, rounded to whole degrees; unknown (127) when older than 5 s |
 | PVTGeodetic | 4007 | A fix: a GNSS solution type (1, 2, 4-8, 10, not 3 "fixed location", which reports entered coordinates) with Error 0 |
 | ReceiverTime | 5914 | The UTC calendar for the RTC, paired with the PVT of the same epoch |
@@ -166,6 +195,27 @@ every board:
 **Constellations.** The `gst` reply's satellite list sets the supported mask: G, S, E, C, J, R
 and I are GPS, SBAS, Galileo, BeiDou, QZSS, GLONASS and NavIC. Until it arrives, the default
 mask stands.
+
+**Satellites and signals by name.** The 10 s log line counts the tracked satellites of each
+constellation. Once a minute the observer also names them, constellation by constellation and
+by number, each with its elevation in degrees and its C/N0 in dB-Hz, and counts the satellites
+tracked on each signal:
+
+```
+satellites (elevation deg/C/N0 dB-Hz): G05 61/45, G12 23/38, R03 -/31, E07 12/44, C36 9/40,
+J02 4/33, S131 42/41
+satellites per signal: GPSL1CA 2, GPSL2C 2, GPSL5 1, GPSL1C 1, GLOL1CA 1, GALE1BC 1, GALE5a 1,
+GEOL1 1, GEOL5 1, BDSB1I 1, BDSB1C 1, BDSB2b 1, QZSL1CA 1, QZSL1S 1
+```
+
+G, R, E, C, J, I and S are GPS, GLONASS, Galileo, BeiDou, QZSS, NavIC and SBAS; a GLONASS
+satellite is named by its slot and an SBAS one by its PRN. An elevation the receiver has not
+given reads `-`. The first line shows which satellite a count gained or lost, and a low
+elevation marks one seen from far away. The second shows whether a signal that was switched on
+is being received: a signal counting no satellite is left out. Signals are named as
+`setSignalTracking` names them, and the counts include the signals section 6's table has no
+reception ID for. Both lines are for the bench; the collector has the same facts in the
+forwarded MeasEpoch and SatVisibility blocks.
 
 **Front ends.** ReceiverStatus ends with one AGCState sub-block for each RF front end (4.2):
 the front end's code and antenna, its AGC gain in dB, the normalized variance of its IF samples
@@ -236,7 +286,10 @@ needs neither: the gains come back to the baseline they left.
 1 Hz stream is about 2.7 KB/s, most of it MeasEpoch, and the navigation pages about 1.7 KB/s,
 more where BeiDou's geostationary satellites send a page every 0.6 s. That is under half of
 COM2's 11.5 KB/s at 115200 baud; ReceiverStatus's output-congestion flag, which the observer
-logs, says when it is not. The PSRAM spool's 4 MiB holds about 15 minutes of this output
+logs, says when it is not. Each added signal (section 4) is 12 more bytes of MeasEpoch for
+every satellite that sends it: on a P3 tracking 22 satellites indoors the line carried about
+2.4 KB/s with every signal on, against about 2.2 KB/s for as many satellites before. The
+PSRAM spool's 4 MiB holds about 15 minutes of this output
 through a collector outage, and the historian keeps every block, about 0.4 GB a day per P3 at
 this rate, under its raw retention.
 
@@ -256,6 +309,10 @@ this rate, under its raw retention.
   ReceiverStatus blocks, where it keeps their series and a baseline of each gain. They are
   not in ObserverDetails, whose RF fields carry u-blox MON-RF's scales, so the panel and the
   board report do not show them.
+- **Navigation pages of the added signals.** GPS L1C, SBAS L5, BeiDou B2b and QZSS L6, L1C and
+  L1S are tracked and measured (section 4), and their measurements are in the forwarded
+  MeasEpoch. Their navigation page blocks are not in `Res3`'s list, so their messages are not
+  forwarded yet.
 - **PPS.** The PPS metadata u-blox gives in TIM-TP has no counterpart here, so tag 8's TIM-TP
   validity stays clear.
 - **Higher baud rates.** 115200 baud carries the streams above. A faster stream needs a higher
@@ -288,3 +345,9 @@ this rate, under its raw retention.
    and 50 dB and every variance near 100; moving the antenna away from interference raises the
    gains. The receiver's temperature reads a few degrees above the board's sensors: 27 C
    against 22 C on an open bench.
+10. **Signals.** After the first configuration the log lists the signals tracked, those the
+    observer enabled and any the receiver does not offer (section 4). Reset the ESP32 alone,
+    with SW1: the list comes back with nothing enabled, the receiver status line shows an
+    uptime that kept running, and the next tracked counts are the ones before the reset. Once
+    a minute the log names the satellites and counts them per signal (section 6); with sky in
+    view the added signals count satellites within a few minutes.

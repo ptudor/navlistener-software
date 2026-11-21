@@ -66,4 +66,11 @@ void gnss_status_leds(const gnss_status_t *s, int64_t now_ms, uint8_t learned,
 // Build fresh match evidence; an incomplete report invalidates its comparison.
 void gnss_status_compare(const gnss_status_t *s, const nr_expectation_t *e,
                          nr_sample_t *sample, int64_t now_ms);
+// The tracked satellites by name for a log line, constellation by constellation (GPS, GLONASS,
+// Galileo, BeiDou, QZSS, NavIC, SBAS) and by number within each, every one with its elevation
+// in degrees and C/N0 in dB-Hz: "G05 61/45, G12 23/38, R03 -/31, S131 42/41". The elevation is
+// "-" when the receiver has not given one. Returns the length written, without the NUL it
+// always adds when size is not zero; a list too long for out ends after the last satellite
+// that fits whole. Nothing is written for a list that is not valid.
+size_t gnss_status_satellites_text(const gnss_status_t *s, char *out, size_t size);
 #endif

@@ -368,9 +368,49 @@ static void robustness_test(void)
     }
 }
 
+static void signal_names_test(void)
+{
+    // Every name setSignalTracking takes on a mosaic-G5 (3.2), with its signal number (4.1.10).
+    static const struct { const char *name; uint8_t number; } named[] = {
+        {"GPSL1CA", 0}, {"GPSL2PY", 2}, {"GPSL2C", 3}, {"GPSL5", 4}, {"GPSL1C", 5}, {"GLOL1CA", 8}, {"GLOL2P", 10},
+        {"GLOL2CA", 11}, {"GLOL3", 12}, {"GALE1BC", 17}, {"GALE6BC", 19}, {"GALE5a", 20}, {"GALE5b", 21},
+        {"GALE5", 22}, {"GEOL1", 24}, {"GEOL5", 25}, {"BDSB1I", 28}, {"BDSB2I", 29}, {"BDSB3I", 30}, {"BDSB1C", 13},
+        {"BDSB2a", 14}, {"BDSB2b", 34}, {"QZSL1CA", 6}, {"QZSL2C", 7}, {"QZSL5", 26}, {"QZSL6", 27}, {"QZSL1C", 32},
+        {"QZSL1S", 33}, {"QZSL1CB", 38}, {"NAVICL5", 15},
+    };
+    for (size_t i = 0; i < sizeof named / sizeof named[0]; i++) {
+        assert(sbf_signal_number(named[i].name, strlen(named[i].name)) == named[i].number);
+        assert(!strcmp(sbf_signal_name(named[i].number), named[i].name));
+    }
+    // A name is matched whole and exactly: GALE5 is not GALE5a's start, and case counts.
+    assert(sbf_signal_number("GALE5a", 5) == 22 && sbf_signal_number("GALE5A", 6) == -1);
+    assert(sbf_signal_number("GPSL1", 5) == -1 && sbf_signal_number("GPSL1CAX", 8) == -1 && sbf_signal_number("", 0) == -1);
+    // A number has a name exactly when it is a signal: not the reserved ones, L-band or beyond the table.
+    for (unsigned n = 0; n < 256; n++) {
+        uint8_t gnss, canonical;
+        assert(sbf_signal((uint8_t)n, &gnss, &canonical) == (sbf_signal_name((uint8_t)n) != NULL));
+        assert(!sbf_signal_name((uint8_t)n) || n < SBF_SIGNALS);
+    }
+    assert(!sbf_signal_name(16) && !sbf_signal_name(23) && !sbf_signal_name(31) && !sbf_signal_name(40));
+    // A mask's names in the reference guide's order, whatever the numbers' order.
+    const uint64_t mask = 1ull << 0 | 1ull << 34 | 1ull << 5 | 1ull << 17;
+    char text[64], small[12];
+    assert(sbf_signal_names(mask, text, sizeof text) == 29 && !strcmp(text, "GPSL1CA GPSL1C GALE1BC BDSB2b"));
+    assert(sbf_signal_names(0, text, sizeof text) == 0 && !text[0]);
+    assert(sbf_signal_names(mask, small, sizeof small) == 7 && !strcmp(small, "GPSL1CA")); // the last that fits whole
+    assert(sbf_signal_names(mask, small, 0) == 0);
+    // Counts per signal number, those counting nothing left out.
+    uint8_t counts[SBF_SIGNALS] = {0};
+    counts[0] = 7; counts[22] = 6; counts[38] = 1;
+    assert(sbf_signal_counts(counts, text, sizeof text) == 29 && !strcmp(text, "GPSL1CA 7, GALE5 6, QZSL1CB 1"));
+    assert(sbf_signal_counts(counts, small, sizeof small) == 9 && !strcmp(small, "GPSL1CA 7"));
+    memset(counts, 0, sizeof counts);
+    assert(sbf_signal_counts(counts, text, sizeof text) == 0 && !text[0]);
+}
 int main(void)
 {
     crc_test();
+    signal_names_test();
     reader_test();
     pvt_test();
     time_test();
@@ -379,7 +419,7 @@ int main(void)
     identity_test();
     robustness_test();
     puts("SBF CRC, reader resynchronization and replies, PVTGeodetic, ReceiverTime, MeasEpoch, SatVisibility, "
-         "RFStatus, ReceiverStatus with its front ends and temperature, ReceiverSetup, identity maps and "
-         "random-input bounds passed");
+         "RFStatus, ReceiverStatus with its front ends and temperature, ReceiverSetup, identity maps, signal "
+         "names and random-input bounds passed");
     return 0;
 }
