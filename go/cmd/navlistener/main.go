@@ -172,7 +172,7 @@ func run() int {
 	audienceRegistry.SetLogger(log)
 	audienceRegistry.Register(identity.Audience{Kind: identity.AudiencePublic}, publicLive, audience.PublicSources(cfg.Ingest))
 	audienceRegistry.Register(identity.Audience{Kind: identity.AudienceOperator, ID: cfg.Collector.InstanceID}, live, cfg.Ingest)
-	integrityCfg, err := state.NewIntegrityConfig(integrity.DefaultProfile(), cfg.IntegrityStations())
+	integrityCfg, err := state.NewIntegrityConfig(cfg.IntegrityProfile(), cfg.IntegrityStations())
 	if err != nil {
 		log.Error("station integrity configuration invalid", "error", err)
 		return 1

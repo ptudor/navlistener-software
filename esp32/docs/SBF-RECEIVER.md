@@ -226,8 +226,11 @@ amplifier or cable giving less looks like, is `station_rf_degraded` and never a 
 claim. The station's row in the collector's `observers` feed lists every front end with its
 gain and departure, and the blocks themselves are kept with the station's other RF evidence
 ([DEFENSE-PNT.md §2](../../docs/DEFENSE-PNT.md#2-jamming-detection-the-rf-front-end)). Changing
-the antenna, its amplifier or its cable moves every gain: give the station a new
-`power_model_epoch` at the collector when you do, so the baselines are learned again.
+the antenna, its amplifier or its cable moves every gain. The collector reports the station
+as degraded while a gain sits away from its baseline and, by default, learns the new level
+once it has held for a day; give the station a new `power_model_epoch` at the collector to
+have the baselines learned again at once. An antenna unplugged and put back within the day
+needs neither: the gains come back to the baseline they left.
 
 **Line budget.** Estimated from the block sizes in 4.2 for about 45 tracked satellites: the
 1 Hz stream is about 2.7 KB/s, most of it MeasEpoch, and the navigation pages about 1.7 KB/s,

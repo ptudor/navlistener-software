@@ -30,6 +30,17 @@ Either edge or collector reception alarms contribute a warning,
 including held alarms during stale or unknown coverage. A healthy communication
 path does not establish correct navigation or accurate UTC.
 
+A baseline that healed itself is a mark beside the station, never a status. For
+48 hours after a station's RF baseline accepts a held departure as its normal,
+the collector serves `rf.baseline_relearned_at` ([OUTPUT.md](OUTPUT.md) §1.3). A
+client shows the station as recently self-healed and leaves its health, its
+conditions and the roll-up exactly as they are. The field's presence is the whole
+rule: the collector keeps the 48 hours, so a client applies no window of its own
+and shows the timestamp only as an age. `rf` is not served to the public
+audience, so neither is the mark. Integrity Station shows a grey "Self-healed"
+badge beside the station's health and, in the station's RF card, a note with its
+age, with the departure that was accepted on the band or front end that healed.
+
 ## Sample freshness
 
 Board, timing and reception thresholds are 660, 5 and 15 seconds respectively.

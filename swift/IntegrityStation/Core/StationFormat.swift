@@ -38,6 +38,23 @@ enum StationFormat {
         value.map { "\($0) dB-Hz" } ?? unknown
     }
 
+    /// A Septentrio front end's gain against its learned baseline. The collector
+    /// serves baseline less gain, so a positive value is a gain below the baseline.
+    static func gainDeparture(_ value: Double?) -> String {
+        guard let value, value.isFinite else { return unknown }
+        let magnitude = abs(value).formatted(.number.precision(.fractionLength(0...1)))
+        if abs(value) < 0.05 { return String(localized: "format.gain.at_baseline") }
+        return String(format: String(localized: value > 0 ? "format.gain.below" : "format.gain.above"), magnitude)
+    }
+
+    /// The departure a self-healed front end accepted as its normal: positive for a
+    /// gain cut, negative for a rise.
+    static func gainDepartureAccepted(_ value: Double?) -> String {
+        guard let value, value.isFinite else { return unknown }
+        let magnitude = abs(value).formatted(.number.precision(.fractionLength(0...1)))
+        return String(format: String(localized: value >= 0 ? "format.gain.cut" : "format.gain.rise"), magnitude)
+    }
+
     /// The fused assurance score in [−1, +1], signed so its direction reads at a
     /// glance.
     static func assuranceScore(_ value: Double?) -> String {

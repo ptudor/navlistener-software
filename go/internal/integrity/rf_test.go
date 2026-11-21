@@ -3,6 +3,7 @@ package integrity
 import (
 	"slices"
 	"testing"
+	"time"
 )
 
 func TestCn0Uniformity(t *testing.T) {
@@ -131,6 +132,25 @@ func TestAGCGainProfileValidated(t *testing.T) {
 		edit(&bad)
 		if err := bad.Validate(); err == nil {
 			t.Errorf("%s: profile accepted", name)
+		}
+	}
+}
+
+// TestBaselineRelearnProfileValidated: the self-healing hold is a day by default; zero
+// means a gain cut is never learned; anything shorter than the fifteen minutes a band
+// above its baseline has always taken is refused, and so is a negative hold.
+func TestBaselineRelearnProfileValidated(t *testing.T) {
+	if got := DefaultProfile().AGC.BaselineRelearnAfter; got != 24*time.Hour {
+		t.Fatalf("default hold = %s", got)
+	}
+	for hold, valid := range map[time.Duration]bool{
+		0: true, MinBaselineRelearnAfter: true, time.Hour: true, 30 * 24 * time.Hour: true,
+		MinBaselineRelearnAfter - time.Second: false, time.Nanosecond: false, -time.Hour: false,
+	} {
+		p := DefaultProfile()
+		p.AGC.BaselineRelearnAfter = hold
+		if err := p.Validate(); (err == nil) != valid {
+			t.Errorf("hold %s: err = %v, want valid %v", hold, err, valid)
 		}
 	}
 }

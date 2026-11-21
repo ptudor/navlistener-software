@@ -102,6 +102,14 @@ final class StationStore {
         return boardServerTime.addingTimeInterval(fetchedAt.duration(to: .now).timeInterval)
     }
 
+    /// How long ago a collector epoch-second timestamp was: on the collector's own
+    /// clock when the feed gave one, and on this device's otherwise. A timestamp
+    /// ahead of that clock reads as now.
+    func currentAge(sinceCollectorEpoch seconds: TimeInterval?) -> TimeInterval? {
+        guard let seconds, seconds.isFinite else { return nil }
+        return max(0, (collectorTime ?? .now).timeIntervalSince1970 - seconds)
+    }
+
     func handleExternalReadFailure(_ error: Error, session: ReadSession) async {
         guard activeSession == session else { return }
         _ = await handleAuthorizationLoss(error, session: session, generation: generation)

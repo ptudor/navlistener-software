@@ -117,8 +117,8 @@ func TestFrontEndBaselineWarmUp(t *testing.T) {
 
 // TestFrontEndGainRise: a gain that rises is measured as a negative departure. It is
 // less power arriving, not interference, so it neither lowers the station's vote nor
-// counts as a departure for neighbours. Held for fifteen minutes it starts the
-// baseline learning again, as an AGC band's does.
+// counts as a departure for neighbours. Half an hour of it is not learned: a front
+// end's rise is held as long as a cut is (rf_relearn_test.go).
 func TestFrontEndGainRise(t *testing.T) {
 	s := New(1)
 	now := time.Unix(1_700_000_000, 0)
@@ -140,8 +140,8 @@ func TestFrontEndGainRise(t *testing.T) {
 		t.Fatalf("a gain rise read as interference: departed=%v signs=%d severe=%v", departed, signs, severe)
 	}
 	at = quietGains(s, "p3", 52, 48, at, 27*time.Minute)
-	if e := frontEnd(t, s, "p3", feL5, at); !near(e.GainDeparture, 0, 0) {
-		t.Fatalf("after relearning: %+v, want about 0", e)
+	if e := frontEnd(t, s, "p3", feL5, at); !near(e.GainDeparture, -12, 0) {
+		t.Fatalf("half an hour into the rise: %+v, want it still measured against the old baseline", e)
 	}
 }
 
@@ -245,7 +245,7 @@ func TestFrontEndBaselineCheckpointRestore(t *testing.T) {
 	}
 
 	restarted := New(1)
-	if n := restarted.RestoreAGCBaselines("p3", saved, at); n != 2 {
+	if n := restarted.RestoreAGCBaselines("p3", saved, at, at); n != 2 {
 		t.Fatalf("restored %d baselines", n)
 	}
 	if got := restarted.FeedStationRF(at); len(got) != 0 {
@@ -255,14 +255,14 @@ func TestFrontEndBaselineCheckpointRestore(t *testing.T) {
 	if e := frontEnd(t, restarted, "p3", feL1, at); !near(e.GainDeparture, 10, 1) {
 		t.Fatalf("departure after restore = %+v, want about 10 at once", e)
 	}
-	if again := restarted.RestoreAGCBaselines("p3", saved, at); again != 0 {
+	if again := restarted.RestoreAGCBaselines("p3", saved, at, at); again != 0 {
 		t.Fatal("a front end that already reported was overwritten by a restore")
 	}
 
 	// A front end's baseline is never installed on a band of the same number, nor a
 	// band's on a front end.
 	crossed := New(1)
-	crossed.RestoreAGCBaselines("x", []AGCBaseline{{Block: 0, FrontEnd: true, Baseline: 40, BaselineAt: at}, {Block: 5, Baseline: 4000, BaselineAt: at}}, at)
+	crossed.RestoreAGCBaselines("x", []AGCBaseline{{Block: 0, FrontEnd: true, Baseline: 40, BaselineAt: at}, {Block: 5, Baseline: 4000, BaselineAt: at}}, at, at)
 	crossed.Apply(rfSample("x", 0, 4000, 0, 2, at))
 	crossed.Apply(statusFrame("x", at, gainOf(feL5, 36)))
 	x := crossed.FeedStationRF(at)["x"]
@@ -275,7 +275,6 @@ func TestFrontEndBaselineRestoreRejects(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	s := New(1)
 	bad := []AGCBaseline{
-		{Block: 0, FrontEnd: true, Baseline: 40, BaselineAt: now.Add(-25 * time.Hour)},
 		{Block: 1, FrontEnd: true, Baseline: math.NaN(), BaselineAt: now},
 		{Block: 2, FrontEnd: true, Baseline: -128, BaselineAt: now}, // the value that means "not locked"
 		{Block: 3, FrontEnd: true, Baseline: 128, BaselineAt: now},
@@ -283,11 +282,11 @@ func TestFrontEndBaselineRestoreRejects(t *testing.T) {
 		{Block: -1, FrontEnd: true, Baseline: 40, BaselineAt: now},
 		{Block: 4, FrontEnd: true, Baseline: 40, BaselineAt: now.Add(time.Hour)},
 	}
-	if n := s.RestoreAGCBaselines("p3", bad, now); n != 0 {
+	if n := s.RestoreAGCBaselines("p3", bad, now, now); n != 0 {
 		t.Fatalf("restored %d invalid baselines", n)
 	}
 	// A gain may be negative: only the range of the byte bounds it.
-	if n := s.RestoreAGCBaselines("p3", []AGCBaseline{{Block: 0, FrontEnd: true, Baseline: -5.5, BaselineAt: now}}, now); n != 1 {
+	if n := s.RestoreAGCBaselines("p3", []AGCBaseline{{Block: 0, FrontEnd: true, Baseline: -5.5, BaselineAt: now}}, now, now); n != 1 {
 		t.Fatal("a negative gain baseline was refused")
 	}
 	s.Reset()

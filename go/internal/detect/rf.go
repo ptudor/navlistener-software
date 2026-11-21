@@ -2,6 +2,7 @@ package detect
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/ptudor/navlistener/internal/state"
 )
@@ -12,7 +13,7 @@ import (
 // baselines); this only classifies and debounces. A lone metric departure is reported as a
 // degradation, not an attack. spoofing_suspected fuses evidence domains instead (integrity.go).
 // Thresholds are conservative/observational in v1 (docs/DEFENSE-PNT.md §4).
-func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc) {
+func (d *Detector) detectStationRF(id string, rf state.StationRF, now time.Time, emit emitFunc) {
 	// Aggregate the per-band signals: the worst AGC departure, any CW spike, any
 	// antenna fault, and whether the receiver itself flags jamming.
 	var maxDep float64
@@ -40,6 +41,18 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 	// cut is the same evidence as a band's AGC departure, on its own thresholds; a
 	// rise is less power arriving, which only ever degrades.
 	gain := frontEndGain(rf.FrontEnds)
+	// A baseline that started being learned again within the time a recovery takes to
+	// confirm: a departure that ends or eases then has not gone away. The level it held
+	// at became the station's normal (the self-healing hold, docs/DEFENSE-PNT.md §2),
+	// and the event that steps down says so. An event that steps up in that time is
+	// new evidence and carries no such note.
+	relearned := false
+	if at := rf.BaselineRelearnedAt; at != nil {
+		// The mark is in whole seconds, so one from this very second may read a
+		// fraction ahead of now.
+		age := now.Sub(time.Unix(*at, 0))
+		relearned = age > -time.Second && age <= 2*d.policy(familyStationRF).clear
+	}
 
 	// jamming_detected: a broadband AGC collapse is unambiguous on its own; a lesser
 	// departure must be corroborated by CW, the receiver's own jam flag, a
@@ -72,8 +85,9 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 			gain.addParams(params)
 			return Event{
 				Type: "jamming_detected", OldValue: old, NewValue: jamBand, Severity: jamSev,
-				Message: fmt.Sprintf("station %s jamming %s (%s)", id, jamBand, departureText(maxDep, gain)),
-				Params:  params,
+				Message: fmt.Sprintf("station %s jamming %s (%s)", id, jamBand, departureText(maxDep, gain)) +
+					relearnedNote(params, relearned && jamRank(jamBand) < jamRank(old)),
+				Params: params,
 			}
 		})
 	}
@@ -119,11 +133,36 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 			return Event{
 				Type: "station_rf_degraded", OldValue: old, NewValue: boolState(degraded, "degraded", "ok"),
 				Severity: degradedSev,
-				Message:  fmt.Sprintf("station %s RF degraded (%s, cw=%v, rx_jam=%v, cn0_drop=%v)", id, departureText(maxDep, gain), cwHigh, rxJam, cn0Drop),
-				Params:   params,
+				Message: fmt.Sprintf("station %s RF degraded (%s, cw=%v, rx_jam=%v, cn0_drop=%v)", id, departureText(maxDep, gain), cwHigh, rxJam, cn0Drop) +
+					relearnedNote(params, relearned && !degraded && old == "degraded"),
+				Params: params,
 			}
 		})
 	}
+}
+
+// relearnedNote marks a station RF event that steps down while a baseline has just
+// been learned again: it sets baseline_relearned in the event's parameters and returns
+// the words for its message. An event without it keeps the parameters and message it
+// always had.
+func relearnedNote(params map[string]any, relearned bool) string {
+	if !relearned {
+		return ""
+	}
+	params["baseline_relearned"] = true
+	return "; baseline relearned at the level held"
+}
+
+// jamRank orders the jamming machine's states, so a step down can be told from a step
+// up; a state it does not know (none before the first) ranks with ok.
+func jamRank(band string) int {
+	switch band {
+	case "warn":
+		return 1
+	case "crit":
+		return 2
+	}
+	return 0
 }
 
 // frontEndGains is a Septentrio station's gain evidence: the largest cut and the largest

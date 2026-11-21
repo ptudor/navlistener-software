@@ -127,19 +127,28 @@ struct StationSignal: Codable, Sendable {
 struct StationRF: Codable, Sendable {
     let id: String?
     let lastSeen: TimeInterval?
+    /// A u-blox receiver's RF blocks; a Septentrio receiver has `frontEnds` instead.
     let bands: [StationRFBand]?
+    let frontEnds: [StationFrontEnd]?
     let cn0MeanDbHz: Double?
     let cn0ElevResidVar: Double?
     let numSats: Int?
     let rfTrust: Double?
+    /// The collector's mark on a station whose RF baseline healed itself: the epoch
+    /// second a band or front end last had a held departure accepted as its normal.
+    /// The collector serves it for 48 hours and then drops it (docs/OUTPUT.md §1.3),
+    /// so its presence alone means "recently self-healed".
+    let baselineRelearnedAt: TimeInterval?
 
     enum CodingKeys: String, CodingKey {
         case id, bands
+        case frontEnds = "front_ends"
         case lastSeen = "last_seen"
         case cn0MeanDbHz = "cn0_mean_db_hz"
         case cn0ElevResidVar = "cn0_elev_resid_var"
         case numSats = "num_sats"
         case rfTrust = "rf_trust"
+        case baselineRelearnedAt = "baseline_relearned_at"
     }
 }
 
@@ -153,6 +162,11 @@ struct StationRFBand: Codable, Sendable {
     let noiseLevel: Int?
     let jamState: Int?
     let antStatus: Int?
+    /// Set, for 48 hours, on the block whose baseline healed itself.
+    let baselineRelearnedAt: TimeInterval?
+    /// The departure that became this block's normal, in AGC counts: positive for
+    /// a gain cut. Absent until the new baseline stands.
+    let agcDepartureAccepted: Double?
 
     enum CodingKeys: String, CodingKey {
         case block, agc
@@ -161,6 +175,39 @@ struct StationRFBand: Codable, Sendable {
         case noiseLevel = "noise_level"
         case jamState = "jam_state"
         case antStatus = "ant_status"
+        case baselineRelearnedAt = "baseline_relearned_at"
+        case agcDepartureAccepted = "agc_departure_accepted"
+    }
+}
+
+/// One Septentrio RF front end (docs/OUTPUT.md §1.3). Its gain is in dB and is not a
+/// u-blox AGC count. `gainDepartureDb` is the learned baseline less the current gain:
+/// positive when the receiver has turned its gain down (more power arriving), negative
+/// when it has turned it up (the antenna path giving less). A front end whose PLL is
+/// not locked has neither a gain nor a departure.
+struct StationFrontEnd: Codable, Sendable {
+    let id: Int?
+    let name: String?
+    let antenna: Int?
+    let locked: Bool?
+    let gainDb: Int?
+    let gainDepartureDb: Double?
+    let sampleVariance: Int?
+    let blankedPercent: Int?
+    /// Set, for 48 hours, on the front end whose baseline healed itself.
+    let baselineRelearnedAt: TimeInterval?
+    /// The departure that became this front end's normal, in dB: positive for a gain
+    /// cut, negative for a rise. Absent until the new baseline stands.
+    let gainDepartureAcceptedDb: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, antenna, locked
+        case gainDb = "gain_db"
+        case gainDepartureDb = "gain_departure_db"
+        case sampleVariance = "sample_variance"
+        case blankedPercent = "blanked_percent"
+        case baselineRelearnedAt = "baseline_relearned_at"
+        case gainDepartureAcceptedDb = "gain_departure_accepted_db"
     }
 }
 

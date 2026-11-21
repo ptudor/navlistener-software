@@ -226,3 +226,73 @@ func audienceDiscoveryRequiresAuthorizationRevisionForPrivateGrants() throws {
     )
     #expect(missingRevision.validated() == nil)
 }
+
+/// A Septentrio station serves front ends in dB where a u-blox one serves bands in
+/// counts, and a station whose RF baseline healed itself carries the collector's
+/// 48-hour mark with what it accepted. Every one of these fields is optional: an
+/// older collector, or a station that never healed, simply has none.
+@Test
+func stationRFDecodesFrontEndsAndTheSelfHealedMark() throws {
+    let data = Data(#"""
+    {
+      "ok": true,
+      "time": "2026-11-20T12:00:00Z",
+      "data": {
+        "schema": "2.0",
+        "audience": "operator:collector-a",
+        "observers": [{
+          "id": "p3",
+          "rf": {
+            "id": "p3", "last_seen": 1795000000, "num_sats": 0, "rf_trust": 1,
+            "front_ends": [
+              {"id": 0, "name": "GPSL1/E1", "antenna": 0, "locked": true, "gain_db": 30, "gain_departure_db": 0.5,
+               "sample_variance": 98, "blanked_percent": 1,
+               "baseline_relearned_at": 1794990000, "gain_departure_accepted_db": 10},
+              {"id": 5, "name": "L5/E5a/B2a", "antenna": 0, "locked": false, "blanked_percent": 0}
+            ],
+            "baseline_relearned_at": 1794990000
+          }
+        }, {
+          "id": "ublox",
+          "rf": {
+            "rf_trust": 0.3,
+            "bands": [{"block": 0, "agc": 5500, "agc_departure": 0, "cw_suppress": 0, "noise_level": 20,
+                       "jam_state": 1, "ant_status": 2,
+                       "baseline_relearned_at": 1794999000, "agc_departure_accepted": -1500}],
+            "baseline_relearned_at": 1794999000
+          }
+        }, {
+          "id": "quiet",
+          "rf": {"rf_trust": 1, "bands": [{"block": 0, "agc": 4000, "agc_departure": 3}]}
+        }]
+      }
+    }
+    """#.utf8)
+
+    let observers = try #require(try JSONDecoder().decode(APIEnvelope<ObserversPayload>.self, from: data).data?.observers)
+    let p3 = try #require(observers.first { $0.id == "p3" }?.rf)
+    #expect(p3.bands == nil)
+    #expect(p3.baselineRelearnedAt == 1_794_990_000)
+    let l1 = try #require(p3.frontEnds?.first)
+    #expect(l1.name == "GPSL1/E1")
+    #expect(l1.gainDb == 30)
+    #expect(l1.gainDepartureDb == 0.5)
+    #expect(l1.sampleVariance == 98)
+    #expect(l1.baselineRelearnedAt == 1_794_990_000)
+    #expect(l1.gainDepartureAcceptedDb == 10)
+    let l5 = try #require(p3.frontEnds?.last)
+    #expect(l5.locked == false)
+    #expect(l5.gainDb == nil)
+    #expect(l5.gainDepartureDb == nil)
+    #expect(l5.baselineRelearnedAt == nil)
+
+    let ublox = try #require(observers.first { $0.id == "ublox" }?.rf)
+    #expect(ublox.frontEnds == nil)
+    #expect(ublox.baselineRelearnedAt == 1_794_999_000)
+    #expect(ublox.bands?.first?.agcDepartureAccepted == -1500)
+
+    let quiet = try #require(observers.first { $0.id == "quiet" }?.rf)
+    #expect(quiet.baselineRelearnedAt == nil)
+    #expect(quiet.bands?.first?.baselineRelearnedAt == nil)
+    #expect(quiet.bands?.first?.agcDepartureAccepted == nil)
+}

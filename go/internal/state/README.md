@@ -190,9 +190,15 @@ per-station detection metrics:
   has its own noise floor. The baseline is a six-hour median of per-minute medians with a
   ten-minute warm-up, a bounded drift rate and relearning after a jammed start
   (`docs/DEFENSE-PNT.md §2`); `AGCBaselines`/`RestoreAGCBaselines` checkpoint and restore it.
-  One learner serves both receiver families on its own scale (`baselineScale`): a u-blox band's
+  One learner serves both receiver families under its own rules (`baselineRules`): a u-blox band's
   AGC in counts, and each Septentrio front end's gain in dB, where a gain above the baseline
-  is served too, as a negative departure, because it is how a lost antenna shows.
+  is served too, as a negative departure, because it is how a lost antenna shows. A level
+  that holds away from the baseline for the profile's `BaselineRelearnAfter` (a day by
+  default; zero never) is learned as the new baseline, so no station stays degraded for
+  good. The hold is of watched time (silence counts for nothing) and is checkpointed with the
+  baseline, and `StationRF` serves when a baseline was last learned again for two days
+  afterwards (`baseline_relearned_at`, with the departure accepted on the band or front
+  end), which is also how the detector knows a clear came from a relearn.
 - **spoofing**: the C/N₀-vs-elevation gate. Real satellites show a characteristic C/N₀ rise with
   elevation; a ground transmitter doesn't. `Cn0Stats` carries the per-constellation fit.
 

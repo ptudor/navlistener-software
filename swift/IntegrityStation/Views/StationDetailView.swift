@@ -90,6 +90,9 @@ struct StationDetailView: View {
             if let rf = observer?.rf {
                 VStack(alignment: .leading, spacing: 10) {
                     rfVerdict
+                    if let relearnedAt = rf.baselineRelearnedAt {
+                        selfHealedNote(relearnedAt: relearnedAt)
+                    }
                     MetricRow(label: "station.rf.trust", value: formatRFTrust(rf.rfTrust))
                     MetricRow(
                         label: "station.rf.cn0_mean",
@@ -101,6 +104,12 @@ struct StationDetailView: View {
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         MetricRow(label: "station.rf.agc_departure", value: formatMeasurement(band.agcDeparture, unit: ""))
+                        if band.baselineRelearnedAt != nil {
+                            MetricRow(
+                                label: "station.rf.agc_departure_accepted",
+                                value: formatMeasurement(band.agcDepartureAccepted, unit: "")
+                            )
+                        }
                         MetricRow(
                             label: "station.rf.cw_indicator",
                             value: band.cwSuppress.map {
@@ -110,6 +119,38 @@ struct StationDetailView: View {
                         MetricRow(label: "station.rf.noise", value: band.noiseLevel.map(String.init) ?? StationFormat.unknown)
                         MetricRow(label: "station.rf.jam_state", value: jamStateName(band.jamState))
                     }
+                    ForEach(Array((rf.frontEnds ?? []).enumerated()), id: \.offset) { _, frontEnd in
+                        Divider()
+                        Text(frontEnd.name ?? frontEnd.id.map {
+                            String(format: String(localized: "station.rf.front_end"), String($0))
+                        } ?? StationFormat.unknown)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        if frontEnd.locked == false {
+                            MetricRow(label: "station.rf.gain", value: String(localized: "station.rf.pll_unlocked"))
+                        } else {
+                            MetricRow(
+                                label: "station.rf.gain",
+                                value: frontEnd.gainDb.map {
+                                    String(format: String(localized: "station.rf.db_value"), String($0))
+                                } ?? StationFormat.unknown
+                            )
+                            MetricRow(label: "station.rf.gain_vs_baseline", value: StationFormat.gainDeparture(frontEnd.gainDepartureDb))
+                        }
+                        if frontEnd.baselineRelearnedAt != nil {
+                            MetricRow(
+                                label: "station.rf.gain_change_accepted",
+                                value: StationFormat.gainDepartureAccepted(frontEnd.gainDepartureAcceptedDb)
+                            )
+                        }
+                        MetricRow(label: "station.rf.sample_variance", value: frontEnd.sampleVariance.map(String.init) ?? StationFormat.unknown)
+                        MetricRow(
+                            label: "station.rf.blanked",
+                            value: frontEnd.blankedPercent.map {
+                                String(format: String(localized: "station.rf.percent_value"), $0)
+                            } ?? StationFormat.unknown
+                        )
+                    }
                 }
             } else {
                 Text("station.rf.not_reported")
@@ -117,6 +158,26 @@ struct StationDetailView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// The two days of grey: the station's normal RF level changed, stayed changed and
+    /// was accepted, so nothing is raised any more, but an operator who missed the
+    /// event can still see that it happened and when.
+    private func selfHealedNote(relearnedAt: TimeInterval) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("station.rf.self_healed", systemImage: "asterisk")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 12)
+                Text(StationFormat.age(seconds: controller.store.currentAge(sinceCollectorEpoch: relearnedAt)))
+                    .font(.callout.monospacedDigit())
+            }
+            Text("station.rf.self_healed.detail")
+                .font(.caption)
+        }
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("station.rf.selfHealed")
     }
 
     private var rfVerdict: some View {

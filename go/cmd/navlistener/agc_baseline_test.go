@@ -63,8 +63,10 @@ func TestAGCBaselineCheckpointRoundTrip(t *testing.T) {
 	// this collector's to restore.
 	mem.rows["obs-c"] = store.AGCBaselineCheckpoint{CollectorInstanceID: collector, SourceID: "obs-c", Data: json.RawMessage(`{"not":"bands"}`)}
 	mem.rows["obs-d"] = store.AGCBaselineCheckpoint{CollectorInstanceID: "collector-b", SourceID: "obs-d", Epoch: "antenna-1", Data: mem.rows["obs-a"].Data}
+	// The restart is now: a checkpoint is dated by when it was saved, and one saved
+	// after the collector's own clock would be refused.
 	restarted := state.New(1)
-	if err := restoreAGCBaselines(ctx, mem, collector, restarted, map[string]string{"obs-a": "antenna-1", "obs-b": "antenna-2", "obs-d": "antenna-1"}, at, log); err != nil {
+	if err := restoreAGCBaselines(ctx, mem, collector, restarted, map[string]string{"obs-a": "antenna-1", "obs-b": "antenna-2", "obs-d": "antenna-1"}, time.Now(), log); err != nil {
 		t.Fatal(err)
 	}
 	for station, want := range map[string]bool{"obs-a": true, "obs-b": false, "obs-d": false} {

@@ -101,7 +101,9 @@ drowned out; the receiver's own front-end is the best jamming sensor we have. Tw
   counts an hour, so a jammer ramping more slowly than the learn band still shows as a departure
   instead of dragging the baseline along. A band that stays more than 400 counts *above* its
   baseline (quieter) for fifteen minutes learned that baseline under interference, for example
-  after starting jammed, and starts learning again.
+  after starting jammed, and starts learning again. A band that stays more than 400 counts
+  *below* it without a break for a day is learned again too, at the level it holds
+  (**Self-healing**, below).
 - **Narrowband (CW) jamming.** A discrete high-amplitude tone (e.g. near 1575.42 MHz) drives the
   receiver's notch filters; the **CW-suppression indicator** spikes toward 100%. The metric is
   the CW-suppression level crossing a band, debounced.
@@ -111,7 +113,8 @@ ReceiverStatus block gives each RF front end's AGC gain in whole dB, and a mosai
 front ends (L1, GLONASS L1, B1, L5, E5b, L2, GLONASS L2, B3, E6). The collector decodes that
 block and learns a baseline for every front end by the rules above on a dB scale: a sample more
 than 2 dB from the baseline is measured but not learned, the baseline moves at most 0.75 dB an
-hour, and a gain more than 2 dB above it for fifteen minutes starts the learning again. A gain
+hour, and a gain held more than 2 dB from it, either way, is learned again only after the
+self-healing hold below. A gain
 is never converted to a u-blox count, and a station has bands or front ends, by its receiver.
 
 ```
@@ -134,14 +137,51 @@ The thresholds come from one receiver so far and are observational like the rest
 mosaic-G5 P3 indoors held every front end within 1 dB over eight hours, and bench noise that
 cost it all tracking lowered every gain by 8 to 10 dB.
 
-The learning rules have one consequence to know before working on an antenna. A rise that
-lasts fifteen minutes restarts the learning, so an antenna that stays disconnected stops
-showing as a departure fifteen minutes after it went and its event clears five minutes
-later; twenty-five minutes after it went, the higher gain is the new baseline. Reconnecting it then reads
-as a gain cut against that baseline, and a cut is never learned: it stays, as a degradation
-or a collapse, until the station's baselines are discarded. The same holds for an AGC band.
-Announce work on the antenna path, and its completion, with the station's
-`power_model_epoch` (§6).
+**Self-healing.** A departure is reported for as long as it lasts, but not for ever. A band
+or front end that has sat more than its learn band away from its baseline for a day, without
+once coming back inside it, starts learning again at the level it holds. Ten minutes later
+that level is its baseline, the station's `rf_trust` is whole again and its events clear. The
+event that clears carries `baseline_relearned`, because the departure has not gone away: the
+station's normal has moved to it. A changed antenna, a repair nobody announced or a noise
+source that has come to stay therefore costs a station one day of being reported, and not its
+standing from then on. A jammer that outlasts the day is learned the same way; when it
+leaves, the band or front end reads above its new baseline, and that is treated as any rise
+is.
+
+A station that has healed is not simply back to normal: for 48 hours it carries a mark in the
+`observers` feed, `rf.baseline_relearned_at`, and the band or front end that healed carries
+the same mark with the departure it accepted (§6). An operator who missed the event and its
+clearing still has two days to see that this station's normal moved, and by how much.
+
+The hold is `rf_baseline_relearn` under `[integrity]`: a duration of fifteen minutes or more,
+`"24h"` when unset. `"never"` is for an installation whose hardware is the operator's own,
+where a change nobody announced should stay an alarm: a gain cut is then never learned and
+stays until the station's `power_model_epoch` changes (§6), and a Septentrio front end's
+risen gain is not learned either. The setting is part of the operating profile, so a
+station's `config_hash` shows which rule it is under.
+
+- **A u-blox band above its baseline keeps its fifteen-minute rule** under either setting.
+  Nothing is raised for it, and a baseline learned under interference would hide later
+  jamming for as long as it stood. The cost is that an antenna unplugged from a u-blox
+  receiver for more than a quarter of an hour is learned, and plugging it back in reads as a
+  departure until the hold has passed.
+- **A Septentrio front end's rise is held as long as a cut.** It is reported, and it is the
+  only sign of a lost antenna, so an antenna unplugged for an hour comes back to the baseline
+  it left. Under a short rule the unplugged level would be learned and the reconnection read
+  as a gain collapse.
+- **The hold is unbroken time.** A band that comes back inside its learn band, even for a
+  minute, has not held, and the hold starts again when it next leaves.
+- **The hold is watched time.** Only time in which the station was reporting counts: the
+  time between two reports no more than five minutes apart. A station that falls silent
+  while it is away from its baseline is owed nothing for the silence, because nobody saw
+  what its level was, so it does not come back healed. It heals when it has been seen away
+  for a day, however long that takes.
+- **A restart does not reset it.** The checkpoint carries how long the departure has been
+  watched, and is restored by its own age, so a restart costs the hold only the time the
+  collector was down, and after a crash the minutes since its last checkpoint as well.
+
+Announcing work on the antenna path with `power_model_epoch` (§6) is still the quicker way:
+the baselines are discarded at once and no departure is reported at all.
 
 **Derived metrics (per station × RF band), computed centrally:**
 
@@ -321,7 +361,11 @@ Constellation/station scope: these are **station-scoped** events (the threat is 
 antenna), unlike the SV-scoped broadcast events. `jamming_detected`, `station_rf_degraded` and
 `antenna_fault` carry the station id and the aggregate RF indicators; for a Septentrio station
 the first two add `gain_cut_db` and `gain_rise_db`, the largest of each among its front ends,
-and name the front end showing each (`gain_cut_front_end`, `gain_rise_front_end`). `spoofing_suspected` and
+and name the front end showing each (`gain_cut_front_end`, `gain_rise_front_end`). Either
+carries `baseline_relearned` when it clears, or a jamming claim eases, within ten minutes of
+a baseline being learned again: the level was accepted as the station's normal and did not
+go away (§2). An event that begins or worsens in those ten minutes is new evidence and
+carries no such note. `spoofing_suspected` and
 `station_assurance` carry the station's whole assessment: fused state and score, unassured
 domains, every available check's state, measured values, thresholds, version and reasons, the
 names of unavailable checks, the engine version and the configuration hash. Station RF machines
@@ -367,8 +411,10 @@ The receiver flag is therefore **one weighted input** into the fusion rule (§3)
   scalar (how much this station's votes are currently down-weighted); `noise_level` is the
   receiver's raw MON-RF indicator, not a dB measurement. A Septentrio station has
   `front_ends` in place of bands: each front end's name, `gain_db`, `gain_departure_db`,
-  `sample_variance` and `blanked_percent`. Confirmed events go to the
-  SSE stream and `gnss_events` like every other integrity event.
+  `sample_variance` and `blanked_percent`. A station whose baseline healed itself carries
+  `baseline_relearned_at` for 48 hours, with the accepted departure on the band or front end
+  it happened to (`agc_departure_accepted`, `gain_departure_accepted_db`). Confirmed events
+  go to the SSE stream and `gnss_events` like every other integrity event.
 - **Station events keep their evidence.** When a station event confirms, the collector copies
   that station's stored inputs from ten minutes before to one minute after into retention-less
   evidence tables, so the inputs outlive raw retention like the event itself. Private audiences
@@ -382,8 +428,10 @@ The receiver flag is therefore **one weighted input** into the fusion rule (§3)
   own CRC-protected model in local NVS. The AGC baselines, and a Septentrio station's
   front-end gain baselines with them, are checkpointed in
   `agc_baselines` every five minutes and at orderly shutdown and restored at startup
-  (when under a day old), so a restart does not repeat the warm-up; a restored band or
-  front end is installed when it first reports. Changing a station's `power_model_epoch`
+  (when the checkpoint is under a day old), so a restart does not repeat the warm-up; a
+  restored band or front end is installed when it first reports, with how long it had been
+  watched away from its baseline, so the self-healing hold carries on across the restart.
+  Changing a station's `power_model_epoch`
   discards its stored baselines too, which is how a change of antenna, amplifier or cable
   is announced: every gain moves with one, and the old baselines no longer describe the
   station. Scoped audience views learn their own baselines. Threshold

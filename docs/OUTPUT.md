@@ -236,6 +236,16 @@ absent until a baseline exists. While `locked` is false the front end's PLL is n
 and it has neither `gain_db` nor a departure. Front ends are listed in `id` order. A gain is
 in dB and is never served as a u-blox AGC count, nor a count as a gain.
 
+`rf.baseline_relearned_at` marks a station whose RF baseline healed itself (DEFENSE-PNT.md
+§2): the epoch second a band or front end last started learning its baseline again at a level
+that had held. It is present for 48 hours after that and then absent, so a client can show
+the station as recently self-healed to an operator who missed the event. The band or front
+end it happened to carries `baseline_relearned_at` too, and, once its new baseline stands
+(about ten minutes later), the departure that became its normal: `agc_departure_accepted` in
+counts on a band, `gain_departure_accepted_db` on a front end, each the baseline it replaced
+less the new one, so positive for a gain cut that was accepted and negative for a rise. The
+mark is information, not a state: it changes neither `rf_trust` nor any event.
+
 Authorized operator, organization and collection rows add `integrity`, the
 station's assurance assessment ([proposal](proposals/STATION-ASSURANCE.md)):
 `state` (`unavailable`, `unassured`, `inconsistent` or `assured`), the fused
@@ -719,7 +729,12 @@ baselines as JSON (per band: baseline, when it last moved, and the per-minute me
 last six hours) and the `power_model_epoch` they were learned under, checkpointed every five
 minutes and at orderly shutdown. A Septentrio station's front-end gain baselines are entries
 of the same list with `"front_end": true`: `block` is then the receiver's FrontEndID and the
-values are in dB.
+values are in dB. An entry whose band or front end is being held away from its baseline has
+`departed_for_ns`, how long it has been watched there, and `departed_below` when it is held
+below, so the self-healing hold (DEFENSE-PNT.md §2) continues across a restart; `relearned_at` dates a baseline that was
+learned again after such a hold and `relearned_from` is the baseline it replaced, so the
+station's 48-hour mark (§1.3) survives one too. A checkpoint is restored when it was saved within the last
+day, whatever the age of the baselines in it.
 
 `reception_power_models` is durable point state, not a telemetry history. It
 keeps the latest versioned model blob per `source_id`, its update time and the

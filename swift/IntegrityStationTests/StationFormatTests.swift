@@ -37,3 +37,18 @@ func measurementFormattingPreservesUnknown() {
     #expect(StationFormat.age(seconds: 86_400) == "1d ago")
     #expect(StationFormat.uptime(seconds: 86_400) == "1d 0h")
 }
+
+/// A front end's gain against its baseline reads in words, since the collector's sign
+/// (baseline less gain, positive for a cut) is not one to make an operator decode.
+@Test
+func frontEndGainFormattingNamesTheDirection() {
+    #expect(StationFormat.gainDeparture(nil) == "—")
+    #expect(StationFormat.gainDeparture(.nan) == "—")
+    #expect(StationFormat.gainDeparture(0) == "at baseline")
+    #expect(StationFormat.gainDeparture(0.04) == "at baseline")
+    #expect(StationFormat.gainDeparture(5) == "5 dB below")
+    #expect(StationFormat.gainDeparture(-12.5) == "12.5 dB above")
+    #expect(StationFormat.gainDepartureAccepted(nil) == "—")
+    #expect(StationFormat.gainDepartureAccepted(10) == "10 dB cut")
+    #expect(StationFormat.gainDepartureAccepted(-12) == "12 dB rise")
+}

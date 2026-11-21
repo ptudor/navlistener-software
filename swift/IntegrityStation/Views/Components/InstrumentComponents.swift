@@ -140,3 +140,19 @@ struct StationDisabledBadge: View {
             .background(.primary.opacity(0.06), in: Capsule())
     }
 }
+
+/// The grey mark beside a station whose RF baseline healed itself in the last two
+/// days: its normal level changed, stayed changed, and was accepted without anyone
+/// resetting it. It is information for an operator who missed the event, not a state.
+struct StationSelfHealedBadge: View {
+    var body: some View {
+        Label("station.self_healed", systemImage: "asterisk")
+            .labelStyle(.titleAndIcon)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(.primary.opacity(0.06), in: Capsule())
+            .accessibilityIdentifier("station.selfHealed")
+    }
+}

@@ -1,5 +1,26 @@
 # Unreleased
 
+- Station RF baselines heal themselves. A band or front end that has sat away from its
+  learned baseline for a day without a break is now learned again at the level it holds:
+  the departure is reported for that day, then `rf_trust` returns to 1 and the events clear,
+  carrying `baseline_relearned` so a clear of that kind is not read as the interference
+  going away. Before, a gain cut was never learned, so a changed antenna or a repair nobody
+  announced left a station degraded until its `power_model_epoch` was changed. Set
+  `rf_baseline_relearn = "never"` under `[integrity]` to keep that behaviour where the
+  hardware is your own and an unannounced change should stay an alarm, or give it another
+  duration of at least fifteen minutes. A u-blox band above its baseline still starts again
+  after fifteen minutes; a Septentrio front end's risen gain is now held as long as a cut,
+  so an antenna unplugged for an hour comes back to the baseline it left. The hold counts
+  only time in which the station was reporting, so a station that falls silent while it is
+  away from its baseline does not come back healed. The hold survives a collector restart,
+  and a baseline checkpoint is now restored by when it was saved (within a day) instead of
+  by when its baseline last moved. The setting is part of the operating profile, so every
+  station's `config_hash` changes (`docs/DEFENSE-PNT.md §2`). A station that has healed is
+  marked for 48 hours: `rf.baseline_relearned_at` in the `observers` feed, with the
+  departure that was accepted on the band or front end it happened to, and Integrity
+  Station shows it beside the station as recently self-healed. Its RF card now lists a
+  Septentrio station's front ends too: gain, gain against the baseline, sample variance and
+  pulse blanking.
 - The collector decodes a Septentrio receiver's ReceiverStatus block (SBF 4014) and learns a
   baseline for each RF front end's AGC gain, by the AGC baseline's rules on a dB scale. A gain
   cut of 4 dB makes a front end interference-suspect and one of 10 dB is a gain collapse, with

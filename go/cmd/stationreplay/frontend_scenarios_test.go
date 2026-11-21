@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,11 +82,17 @@ func TestFrontEndScenarios(t *testing.T) {
 			return gain
 		}
 	}
+	// The front ends an L1/L5 antenna passes: the ones that rise when it is unplugged.
+	passed := []uint8{5, 0, 1, 11}
 	scenarios := []struct {
-		name            string
-		seconds         int
+		name    string
+		seconds int
+		// until is the second the change ends at; zero keeps it to the end.
+		until           int
 		adjust          func(id uint8, gain int) int
 		want, forbidden []string
+		// last is the state each named machine must end in, as "type=new_value".
+		last []string
 	}{
 		{name: "quiet", seconds: warm + 900,
 			forbidden: []string{"station_rf_degraded", "jamming_detected", "antenna_fault", "spoofing_suspected"}},
@@ -97,10 +104,17 @@ func TestFrontEndScenarios(t *testing.T) {
 			// What a noisy bench did to this receiver, and more: a gain collapse.
 			want:      []string{"jamming_detected=crit"},
 			forbidden: []string{"station_rf_degraded", "antenna_fault", "spoofing_suspected"}},
-		{name: "the antenna's amplifier stops", seconds: warm + 600, adjust: shift(12, 5, 0, 1, 11),
+		{name: "the antenna's amplifier stops", seconds: warm + 600, adjust: shift(12, passed...),
 			// The front ends the antenna passes all rise: less power, not interference.
 			want:      []string{"station_rf_degraded=degraded"},
 			forbidden: []string{"jamming_detected", "antenna_fault", "spoofing_suspected"}},
+		{name: "the antenna is unplugged for an hour", seconds: warm + 3600 + 900, until: warm + 3600, adjust: shift(12, passed...),
+			// The rise is reported while it lasts. Nothing is learned from an hour of
+			// it, so plugging the antenna back in is a return to the baseline: the
+			// degradation clears, and the reconnection is never read as a gain collapse.
+			want:      []string{"station_rf_degraded=degraded", "station_rf_degraded=ok"},
+			forbidden: []string{"jamming_detected", "antenna_fault", "spoofing_suspected"},
+			last:      []string{"station_rf_degraded=ok"}},
 	}
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
@@ -111,7 +125,7 @@ func TestFrontEndScenarios(t *testing.T) {
 			r := newReplayer(cfg, 15*time.Second, func(record) {})
 			for i := 0; i < sc.seconds; i++ {
 				var adjust func(uint8, int) int
-				if i >= warm {
+				if i >= warm && (sc.until == 0 || i < sc.until) {
 					adjust = sc.adjust
 				}
 				local := scenarioT0.Add(time.Duration(i) * time.Second)
@@ -125,7 +139,7 @@ func TestFrontEndScenarios(t *testing.T) {
 				r.apply(f)
 			}
 			r.finish(scenarioT0.Add(time.Duration(sc.seconds) * time.Second))
-			seen := map[string]bool{}
+			seen, final := map[string]bool{}, map[string]string{}
 			onset := scenarioT0.Add(warm * time.Second)
 			for _, e := range r.events {
 				key := e.Type + "=" + e.NewValue
@@ -137,10 +151,19 @@ func TestFrontEndScenarios(t *testing.T) {
 				if !e.Time.Before(onset) {
 					seen[key] = true
 				}
+				final[e.Type] = key
+				if strings.Contains(e.Message, "relearned") {
+					t.Errorf("%s at %s says a baseline was relearned: %s", key, e.Time.Sub(scenarioT0), e.Message)
+				}
 			}
 			for _, w := range sc.want {
 				if !seen[w] {
 					t.Errorf("%s not confirmed after onset; events %v", w, eventList(r))
+				}
+			}
+			for _, w := range sc.last {
+				if typ, _, _ := strings.Cut(w, "="); final[typ] != w {
+					t.Errorf("%s ended as %q, want %s; events %v", typ, final[typ], w, eventList(r))
 				}
 			}
 		})

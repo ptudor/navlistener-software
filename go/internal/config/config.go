@@ -131,6 +131,10 @@ type Config struct {
 	// one, from [[integrity.station]] and [[reception.station]]. Populated by
 	// finalize; read through IntegrityStations.
 	integrityStations map[string]integrity.StationProfile
+	// integrityProfile is the station checks' operating profile with this
+	// configuration's settings applied. Populated by finalize; read through
+	// IntegrityProfile.
+	integrityProfile *integrity.Profile
 }
 
 // Collector names this deployment's stable trust/authorization realm. It is

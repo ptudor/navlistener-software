@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -202,5 +203,162 @@ func TestBandEventsUnchangedByFrontEnds(t *testing.T) {
 	crit, ok := find(confirm(New(0), station("s", band(0, 0, 2, 0)), station("s", band(2500, 0, 2, 0))), "jamming_detected")
 	if !ok || crit.Message != "station s jamming crit (AGC departure 2500)" || len(crit.Params) != 7 {
 		t.Fatalf("jamming event = %+v", crit)
+	}
+}
+
+// clearEvent ticks the detector on quiet read models from at until the given event
+// type clears, and returns that event.
+func clearEvent(t *testing.T, d *Detector, typ string, at time.Time, quiet func(now time.Time) map[string]state.StationRF) Event {
+	t.Helper()
+	for step := time.Duration(0); step <= 20*time.Minute; step += 15 * time.Second {
+		now := at.Add(step)
+		if e, ok := find(d.TickStations(now, quiet(now)), typ); ok {
+			return e
+		}
+	}
+	t.Fatalf("%s never cleared", typ)
+	return Event{}
+}
+
+// TestClearAfterRelearnSaysSo: a departure that ends because its baseline was learned
+// again at the level held has not gone away, and the event that clears it says so. One
+// that ends because the gain came back carries no such note.
+func TestClearAfterRelearnSaysSo(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	relearn := t0.Add(80 * time.Second)
+	mark := relearn.Unix()
+
+	// A Septentrio station: the cut held, learning restarted, and the front end has no
+	// departure while its new baseline is learned.
+	d := New(0)
+	if _, ok := find(confirm(d, quietP3, p3("p3", end(0, "GPSL1/E1", 5))), "station_rf_degraded"); !ok {
+		t.Fatal("the cut did not confirm")
+	}
+	gain := 35
+	learning := func(time.Time) map[string]state.StationRF {
+		return map[string]state.StationRF{"p3": {ID: "p3", RFTrust: 1, BaselineRelearnedAt: &mark,
+			FrontEnds: []state.StationFrontEnd{{ID: 0, Name: "GPSL1/E1", Locked: true, GainDB: &gain}}}}
+	}
+	e := clearEvent(t, d, "station_rf_degraded", relearn, learning)
+	if e.NewValue != "ok" || e.Severity != SevInfo || e.Params["baseline_relearned"] != true {
+		t.Fatalf("clear after a relearn = %+v", e)
+	}
+	if want := "station p3 RF degraded (gain cut 0.0 dB, gain rise 0.0 dB, cw=false, rx_jam=false, cn0_drop=false); baseline relearned at the level held"; e.Message != want {
+		t.Fatalf("message %q, want %q", e.Message, want)
+	}
+	if got := e.Time.Sub(relearn); got < StationClearDwell || got > StationClearDwell+30*time.Second {
+		t.Fatalf("cleared %v after the relearn, want the clear dwell", got)
+	}
+
+	// The same station, but the gain simply came back.
+	d = New(0)
+	confirm(d, quietP3, p3("p3", end(0, "GPSL1/E1", 5)))
+	back := clearEvent(t, d, "station_rf_degraded", relearn, func(time.Time) map[string]state.StationRF { return quietP3 })
+	if _, has := back.Params["baseline_relearned"]; has || back.NewValue != "ok" {
+		t.Fatalf("clear after the gain returned = %+v", back)
+	}
+	if strings.Contains(back.Message, "relearned") {
+		t.Fatalf("message %q carries a relearn note", back.Message)
+	}
+
+	// A u-blox station's collapse, relearned after its hold: the critical event clears
+	// with the note too.
+	d = New(0)
+	if e, ok := find(confirm(d, station("s", band(0, 0, 2, 0)), station("s", band(2500, 0, 2, 0))), "jamming_detected"); !ok || e.NewValue != "crit" {
+		t.Fatalf("the collapse did not confirm: %+v", e)
+	}
+	relearning := func(time.Time) map[string]state.StationRF {
+		return map[string]state.StationRF{"s": {ID: "s", RFTrust: 1, BaselineRelearnedAt: &mark,
+			Bands: []state.StationRFBand{{Block: 0, AGC: 1500, AntStatus: 2}}}}
+	}
+	jam := clearEvent(t, d, "jamming_detected", relearn, relearning)
+	if jam.NewValue != "ok" || jam.Params["baseline_relearned"] != true ||
+		jam.Message != "station s jamming ok (AGC departure 0); baseline relearned at the level held" {
+		t.Fatalf("jamming clear after a relearn = %+v", jam)
+	}
+}
+
+// TestOldRelearnIsNotNoted: a baseline learned again hours ago has nothing to do with a
+// departure that ends now.
+func TestOldRelearnIsNotNoted(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	old := t0.Add(-3 * time.Hour).Unix()
+	with := func(m map[string]state.StationRF) map[string]state.StationRF {
+		out := map[string]state.StationRF{}
+		for id, st := range m {
+			st.BaselineRelearnedAt = &old
+			out[id] = st
+		}
+		return out
+	}
+	d := New(0)
+	onset, ok := find(confirm(d, with(quietP3), with(p3("p3", end(0, "GPSL1/E1", 5)))), "station_rf_degraded")
+	if !ok {
+		t.Fatal("the cut did not confirm")
+	}
+	if _, has := onset.Params["baseline_relearned"]; has {
+		t.Fatalf("onset three hours after a relearn carries the note: %+v", onset)
+	}
+	e := clearEvent(t, d, "station_rf_degraded", t0.Add(80*time.Second), func(time.Time) map[string]state.StationRF { return with(quietP3) })
+	if _, has := e.Params["baseline_relearned"]; has {
+		t.Fatalf("clear three hours after a relearn carries the note: %+v", e)
+	}
+}
+
+// marked is a read model whose station carries a relearn mark from the given second.
+func marked(m map[string]state.StationRF, at int64) map[string]state.StationRF {
+	out := map[string]state.StationRF{}
+	for id, st := range m {
+		st.BaselineRelearnedAt = &at
+		out[id] = st
+	}
+	return out
+}
+
+// TestOnsetAfterRelearnIsNotNoted: the note belongs to an event that steps down. A
+// departure that begins minutes after another front end's baseline was learned again
+// is new evidence, and its event reads as any onset does.
+func TestOnsetAfterRelearnIsNotNoted(t *testing.T) {
+	recent := time.Unix(1_700_000_000, 0).Add(-time.Minute).Unix()
+	for name, c := range map[string]struct {
+		typ, state string
+		cut        float64
+	}{
+		"a degradation":   {"station_rf_degraded", "degraded", 5},
+		"a gain collapse": {"jamming_detected", "crit", 12},
+	} {
+		onset, ok := find(confirm(New(0), marked(quietP3, recent), marked(p3("p3", end(0, "GPSL1/E1", 0), end(5, "L5/E5a/B2a", c.cut)), recent)), c.typ)
+		if !ok || onset.NewValue != c.state {
+			t.Fatalf("%s did not confirm: %+v", name, onset)
+		}
+		if _, has := onset.Params["baseline_relearned"]; has || strings.Contains(onset.Message, "relearned") {
+			t.Fatalf("%s beginning a minute after a relearn carries the note: %+v", name, onset)
+		}
+	}
+}
+
+// TestStepDownAfterRelearnSaysSo: a station with two front ends cut, one of them a
+// collapse. When the collapsed one's level is learned as its normal the claim eases to
+// the lesser cut that remains, and the event that eases it says why: the collapse did
+// not go away.
+func TestStepDownAfterRelearnSaysSo(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	relearn := t0.Add(80 * time.Second)
+	mark := relearn.Unix()
+	both := p3("p3", end(0, "GPSL1/E1", 12), end(5, "L5/E5a/B2a", 5))
+	d := New(0)
+	if e, ok := find(confirm(d, quietP3, both), "jamming_detected"); !ok || e.NewValue != "crit" {
+		t.Fatalf("the collapse did not confirm: %+v", e)
+	}
+	// L1 is learning its new baseline and has no departure; L5 is still cut by 5 dB,
+	// with every signal's C/N₀ down, which is a corroborated departure.
+	gain := 28
+	eased := func(time.Time) map[string]state.StationRF {
+		return map[string]state.StationRF{"p3": {ID: "p3", RFTrust: 0.3, Cn0Drop: true, BaselineRelearnedAt: &mark,
+			FrontEnds: []state.StationFrontEnd{{ID: 0, Name: "GPSL1/E1", Locked: true, GainDB: &gain}, end(5, "L5/E5a/B2a", 5)}}}
+	}
+	e := clearEvent(t, d, "jamming_detected", relearn, eased)
+	if e.OldValue != "crit" || e.NewValue != "warn" || e.Params["baseline_relearned"] != true || !strings.HasSuffix(e.Message, "; baseline relearned at the level held") {
+		t.Fatalf("the claim easing after a relearn = %+v", e)
 	}
 }

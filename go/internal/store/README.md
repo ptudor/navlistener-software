@@ -331,7 +331,11 @@ antenna epoch (`power_model_epoch`), and the power-model blob carries its own co
 fingerprint; a row that no longer matches the station's current epoch is left in place for
 forensics and skipped with a log line, so that station relearns. Changing `power_model_epoch`
 after an antenna, cable or receiver change is therefore how an operator forces a clean relearn;
-a plain restart restores what was learned. This is the one piece of cross-restart state the
+a plain restart restores what was learned, including how long a band or front end has been
+watched away from its baseline, so the self-healing hold (`docs/DEFENSE-PNT.md §2`) runs on
+across it. A
+checkpoint is restored by its own age: one saved within the last day, whatever the age of the
+baselines in it. This is the one piece of cross-restart state the
 daemon keeps, and it lives in the historian rather than in a state file — live positions, discos
 and detector state are still rebuilt from the broadcast after a restart.
 

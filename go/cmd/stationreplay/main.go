@@ -33,9 +33,9 @@
 // [[reception.station]]), or from -mode, -position and -max-speed, which override
 // the configured one. Config parsing is strict, but replay loads only station
 // installations and does not read the daemon's TLS keys or authority files.
-// Thresholds are this build's (integrity.DefaultProfile), so a replay of old inputs
-// under a newer build shows what the newer checks conclude; the timeline's
-// config_hash names the profile used.
+// Thresholds are this build's (integrity.DefaultProfile, with -config's
+// rf_baseline_relearn applied), so a replay of old inputs under a newer build shows
+// what the newer checks conclude; the timeline's config_hash names the profile used.
 package main
 
 import (
@@ -98,12 +98,13 @@ func main() {
 
 func run(ctx context.Context, o options, stdout, stderr io.Writer) (int, error) {
 	stations := map[string]integrity.StationProfile{}
+	operating := integrity.DefaultProfile()
 	if o.configPath != "" {
 		cfg, err := config.LoadForReplay(o.configPath)
 		if err != nil {
 			return 0, err
 		}
-		stations = cfg.IntegrityStations()
+		stations, operating = cfg.IntegrityStations(), cfg.IntegrityProfile()
 		if o.dsn == "" {
 			o.dsn = cfg.Store.DSN
 		}
@@ -159,7 +160,7 @@ func run(ctx context.Context, o options, stdout, stderr io.Writer) (int, error) 
 	if err != nil {
 		return 0, err
 	}
-	cfg, err := state.NewIntegrityConfig(integrity.DefaultProfile(), map[string]integrity.StationProfile{o.station: profile})
+	cfg, err := state.NewIntegrityConfig(operating, map[string]integrity.StationProfile{o.station: profile})
 	if err != nil {
 		return 0, err
 	}

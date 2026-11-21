@@ -253,7 +253,7 @@ func (d *Detector) TickStations(now time.Time, stations map[string]state.Station
 	defer d.mu.Unlock()
 	return d.run(now, familyStationRF, func(emit emitFunc) {
 		for id, rf := range stations {
-			d.detectStationRF(id, rf, emit)
+			d.detectStationRF(id, rf, now, emit)
 		}
 	})
 }

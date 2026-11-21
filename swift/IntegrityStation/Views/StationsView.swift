@@ -124,10 +124,7 @@ private struct StationCardView: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
-                    HStack(spacing: 8) {
-                        HealthLabel(state: health)
-                        if observer?.disabled == true { StationDisabledBadge() }
-                    }
+                    statusRow
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 4) {
@@ -156,6 +153,36 @@ private struct StationCardView: View {
             }
         }
         .opacity(health == .offline ? 0.62 : 1)
+    }
+
+    /// The health label and the grey marks beside it. They share a line where that
+    /// fits. On a narrow card (a phone, or larger text) the marks drop to a line of
+    /// their own, and then one to a line, before any of them is squeezed into
+    /// breaking its own word.
+    @ViewBuilder private var statusRow: some View {
+        if observer?.disabled == true || observer?.rf?.baselineRelearnedAt != nil {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    HealthLabel(state: health)
+                    marks
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    HealthLabel(state: health)
+                    HStack(spacing: 8) { marks }
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    HealthLabel(state: health)
+                    marks
+                }
+            }
+        } else {
+            HealthLabel(state: health)
+        }
+    }
+
+    @ViewBuilder private var marks: some View {
+        if observer?.disabled == true { StationDisabledBadge() }
+        if observer?.rf?.baselineRelearnedAt != nil { StationSelfHealedBadge() }
     }
 }
 

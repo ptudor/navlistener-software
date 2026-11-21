@@ -32,7 +32,7 @@ func neighbourFleet(tb testing.TB, s *Store, n int, stepDeg float64) time.Time {
 	now := integrityT0
 	for i := 0; i < n; i++ {
 		id := fmt.Sprintf("n%04d", i)
-		if got := s.RestoreAGCBaselines(id, []AGCBaseline{{Block: 0, Baseline: 4000, BaselineAt: now}}, now); got != 1 {
+		if got := s.RestoreAGCBaselines(id, []AGCBaseline{{Block: 0, Baseline: 4000, BaselineAt: now}}, now, now); got != 1 {
 			tb.Fatalf("%s: restored %d baselines, want 1", id, got)
 		}
 	}

@@ -52,7 +52,7 @@ func restoreAGCBaselines(ctx context.Context, historian agcBaselineStore, collec
 			log.Warn("stored AGC baseline is unreadable; relearning", "observer", c.SourceID, "error", err)
 			continue
 		}
-		if n := live.RestoreAGCBaselines(c.SourceID, bands, now); n < len(bands) {
+		if n := live.RestoreAGCBaselines(c.SourceID, bands, c.UpdatedAt, now); n < len(bands) {
 			log.Info("some stored AGC baselines are too old or invalid; relearning those", "observer", c.SourceID,
 				"restored", n, "stored", len(bands))
 		}

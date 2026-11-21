@@ -31,6 +31,17 @@ import (
 // more slowly than the learn band still cannot drag it along. A band persistently
 // quieter than its baseline (gain above it by more than the learn band) for
 // agcRelearnAfter learned its baseline under interference; it starts learning again.
+//
+// A departure that lasts is the station's new normal in the end. A band that has sat
+// below its baseline without a break for the profile's BaselineRelearnAfter (a day by
+// default) starts learning again at the level it holds, so a changed antenna or a
+// repair nobody announced does not leave the station degraded for good; the
+// departure is reported for all of that time first. A profile that sets no hold never
+// learns a gain cut, and it stays until the station's baselines are discarded.
+//
+// Either hold is of watched time (awayRun): the band has to be seen away from its
+// baseline for that long. Time in which it went unreported counts for nothing, so a
+// station that falls silent while it is away does not come back healed.
 const (
 	agcLearnBand        = 400 // AGC counts; departures beyond this don't update the baseline
 	agcMinuteMinSamples = 3   // a minute needs this many quiet samples to count
@@ -48,6 +59,12 @@ const (
 	// keeps the proportion to it that the AGC bound keeps to its own departure.
 	gainLearnBandDB    = 2.0
 	gainDriftDBPerHour = 0.75
+	// baselineRelearnNotice is how long a station, and the band or front end it
+	// happened to, stays marked after a baseline was learned again at a level that
+	// had held. The departure was reported while it lasted and its event has cleared;
+	// the mark gives an operator who missed both two days to see that this station's
+	// normal has moved.
+	baselineRelearnNotice = 48 * time.Hour
 	// rfStaleAfter is THE staleness operating point for station-scoped feeds —
 	// and, through the feed.go alias `sbasStaleAfter = rfStaleAfter`, for the
 	// served SBAS feed as well. two other constants are pinned to this
@@ -65,17 +82,48 @@ const (
 	cn0MinSats   = 5 // fewest tracked SVs before the C/N₀-vs-elevation gate is meaningful
 )
 
-// baselineScale carries the two operating points of the baseline learner that depend on
-// the measurement's unit; every other rule is shared between the scales.
-type baselineScale struct {
+// baselineRules are the operating points of the baseline learner that differ between
+// a u-blox band and a Septentrio front end; every other rule is shared.
+type baselineRules struct {
 	learnBand    float64 // a sample further than this from the baseline is measured, not learned
 	driftPerHour float64 // the most an established baseline moves in an hour
+	// relearnRise and relearnCut are how long a level above or below the baseline must
+	// be watched there, without a sample back inside the band, before learning starts
+	// again at it; zero never.
+	relearnRise, relearnCut time.Duration
 }
 
-var (
-	agcCountScale = baselineScale{learnBand: agcLearnBand, driftPerHour: agcDriftPerHour}
-	gainDBScale   = baselineScale{learnBand: gainLearnBandDB, driftPerHour: gainDriftDBPerHour}
-)
+// bandRules are a u-blox band's: counts, the fifteen-minute rule for a band above
+// its baseline, and the profile's hold for one below it. A band above its baseline
+// raises nothing, and a baseline learned under interference would hide later jamming,
+// so that side keeps its short rule whatever the profile says.
+func (s *Store) bandRules() baselineRules {
+	return baselineRules{learnBand: agcLearnBand, driftPerHour: agcDriftPerHour,
+		relearnRise: agcRelearnAfter, relearnCut: s.agcProfile().BaselineRelearnAfter}
+}
+
+// frontEndRules are a Septentrio front end's: dB, and the profile's hold either way.
+// A risen gain is reported, and is the only sign of a lost antenna, so it is held as
+// long as a cut is: an antenna unplugged for an hour comes back to the baseline it
+// left, where a short rule would have learned the unplugged level and then read the
+// reconnection as a gain collapse.
+func (s *Store) frontEndRules() baselineRules {
+	hold := s.agcProfile().BaselineRelearnAfter
+	return baselineRules{learnBand: gainLearnBandDB, driftPerHour: gainDriftDBPerHour, relearnRise: hold, relearnCut: hold}
+}
+
+// defaultAGCProfile is the standard agc operating profile, for a store with no
+// integrity configuration.
+var defaultAGCProfile = integrity.DefaultProfile().AGC
+
+// agcProfile is the configured agc operating profile, or the standard one. The caller
+// holds rfMu.
+func (s *Store) agcProfile() integrity.AGCProfile {
+	if s.integrityCfg != nil {
+		return s.integrityCfg.profile.AGC
+	}
+	return defaultAGCProfile
+}
 
 // rfBand is one RF path's learned state at a station: the latest receiver numbers plus
 // the quiet-time AGC baseline.
@@ -137,8 +185,55 @@ type agcBaseline struct {
 	baselineAt   time.Time   // when the baseline was last moved
 	minutes      []AGCMinute // completed minutes within agcBaselineWindow, oldest first
 	minuteStart  time.Time
-	current      []int     // quiet samples of the minute in progress
-	aboveSince   time.Time // start of a continuous run above baseline + agcLearnBand
+	current      []int   // quiet samples of the minute in progress
+	away         awayRun // the run the level is holding beyond the learn band, if any
+	// relearnedAt is when a level that had held made learning start again here, and
+	// relearnedFrom the baseline it replaced; relearnedAt is zero for a baseline that
+	// was only ever learned from quiet.
+	relearnedAt   time.Time
+	relearnedFrom float64
+}
+
+// awayRun is a run of samples beyond the learn band on one side of the baseline, with
+// none back inside it or on the other side. It is how a level is found to have held.
+type awayRun struct {
+	side int8          // -1 below the baseline (a gain cut), +1 above it, 0 no run
+	seen time.Time     // the run's latest sample; zero for a run restored from a checkpoint
+	held time.Duration // how long the level has been watched there
+}
+
+// extend takes a sample at at, beyond the learn band on the given side, into the run
+// and returns how long the level has now been watched there. Only the time between two
+// samples no further apart than rfStaleAfter is watched time: over a longer silence
+// nobody saw what the level was, so it adds nothing, though it does not end the run.
+func (r *awayRun) extend(at time.Time, side int8) time.Duration {
+	if r.side != side {
+		*r = awayRun{side: side, seen: at}
+		return 0
+	}
+	if gap := at.Sub(r.seen); gap > 0 {
+		if gap <= rfStaleAfter {
+			r.held += gap
+		}
+		r.seen = at
+	}
+	return r.held
+}
+
+// relearned reports the baseline's relearn for the read model, while it is within the
+// notice: when it happened, in epoch seconds, and the departure that was accepted (the
+// baseline it replaced less this one, positive for a gain cut), nil until this
+// baseline is established.
+func (b *agcBaseline) relearned(now time.Time) (at *int64, accepted *float64) {
+	if b.relearnedAt.IsZero() || b.relearnedAt.After(now) || now.Sub(b.relearnedAt) > baselineRelearnNotice {
+		return nil, nil
+	}
+	unix := b.relearnedAt.Unix()
+	if b.haveBaseline {
+		moved := b.relearnedFrom - b.baseline
+		accepted = &moved
+	}
+	return &unix, accepted
 }
 
 // rfStation is one observer's RF-environment state: per-band front-end state and the
@@ -183,6 +278,7 @@ func (s *Store) applyRF(f *ingest.RawFrame) {
 	}
 	st.lastSeen = recv
 
+	bandRules := s.bandRules()
 	for _, b := range f.RF.Bands {
 		band := st.bands[b.Block]
 		if band == nil {
@@ -196,7 +292,7 @@ func (s *Store) applyRF(f *ingest.RawFrame) {
 		band.agc, band.noise, band.cwSuppress = b.AGC, b.NoiseLevel, b.CWSuppress
 		band.jamState, band.antStatus = b.JamState, b.AntStatus
 		band.lastSeen = recv
-		band.learn(b.AGC, recv, agcCountScale)
+		band.learn(b.AGC, recv, bandRules)
 		if dep, ok := band.departure(); ok && dep >= integrity.DefaultAGCDeparture {
 			if band.departedSince.IsZero() {
 				band.departedSince = recv
@@ -224,6 +320,7 @@ func (s *Store) applyFrontEnds(st *rfStation, reported []ingest.SBFFrontEnd, rec
 	if len(reported) > 0 && st.frontEnds == nil {
 		st.frontEnds = map[uint8]*rfFrontEnd{}
 	}
+	rules := s.frontEndRules()
 	for _, r := range reported {
 		end := st.frontEnds[r.ID]
 		if end == nil {
@@ -241,7 +338,7 @@ func (s *Store) applyFrontEnds(st *rfStation, reported []ingest.SBFFrontEnd, rec
 			continue
 		}
 		end.gainDB = *r.GainDB
-		end.learn(end.gainDB, recv, gainDBScale)
+		end.learn(end.gainDB, recv, rules)
 		if dep, ok := end.departure(); ok && dep >= integrity.DefaultGainDepartureDB {
 			if end.cutSince.IsZero() {
 				end.cutSince = recv
@@ -274,34 +371,37 @@ func cn0ElevationResidualByConstellation(sats []ingest.SatCN0) map[int]Cn0Stats 
 }
 
 // learn folds a sample received at at into the quiet-time baseline: an AGC count, or a
-// front end's gain in dB, on its scale.
-func (b *agcBaseline) learn(agc int, at time.Time, scale baselineScale) {
+// front end's gain in dB, under its rules.
+func (b *agcBaseline) learn(agc int, at time.Time, rules baselineRules) {
 	if b.haveBaseline {
 		switch d := float64(agc) - b.baseline; {
-		case d < -scale.learnBand:
-			// A gain cut: a jamming departure, measured but never learned.
-			b.aboveSince = time.Time{}
-			return
-		case d > scale.learnBand:
-			// Quieter than the clear-sky reference. Brief excursions are not
-			// learned; a sustained one means the reference was learned under
-			// interference, so learning starts again.
-			if b.aboveSince.IsZero() {
-				b.aboveSince = at
-			}
-			if at.Sub(b.aboveSince) < agcRelearnAfter {
+		case d < -rules.learnBand:
+			// A gain cut: a jamming departure, measured and not learned, so it cannot
+			// poison the baseline it is measured against. One that has been watched
+			// for the whole relearn hold is the station's normal now, and learning
+			// starts again; with no hold it is never learned.
+			if held := b.away.extend(at, -1); rules.relearnCut <= 0 || held < rules.relearnCut {
 				return
 			}
-			*b = agcBaseline{}
+			*b = agcBaseline{relearnedAt: at, relearnedFrom: b.baseline}
+		case d > rules.learnBand:
+			// Quieter than the clear-sky reference. Brief excursions are not
+			// learned; a sustained one means the reference was learned under
+			// interference, or the antenna path has changed for good, so learning
+			// starts again.
+			if held := b.away.extend(at, +1); rules.relearnRise <= 0 || held < rules.relearnRise {
+				return
+			}
+			*b = agcBaseline{relearnedAt: at, relearnedFrom: b.baseline}
 		default:
-			b.aboveSince = time.Time{}
+			b.away = awayRun{}
 		}
 	}
 	if b.minuteStart.IsZero() {
 		b.minuteStart = at
 	}
 	if at.Sub(b.minuteStart) >= time.Minute {
-		b.closeMinute(at, scale)
+		b.closeMinute(at, rules)
 	}
 	if len(b.current) < agcMinuteMaxSamples {
 		b.current = append(b.current, agc)
@@ -310,7 +410,7 @@ func (b *agcBaseline) learn(agc int, at time.Time, scale baselineScale) {
 
 // closeMinute completes the minute in progress, drops minutes older than the window,
 // and moves the baseline toward the median of the remaining minutes.
-func (b *agcBaseline) closeMinute(at time.Time, scale baselineScale) {
+func (b *agcBaseline) closeMinute(at time.Time, rules baselineRules) {
 	if len(b.current) >= agcMinuteMinSamples {
 		b.minutes = append(b.minutes, AGCMinute{Start: b.minuteStart, Median: medianInt(b.current)})
 	}
@@ -320,12 +420,12 @@ func (b *agcBaseline) closeMinute(at time.Time, scale baselineScale) {
 		n++
 	}
 	b.minutes = b.minutes[n:]
-	b.update(at, scale)
+	b.update(at, rules)
 }
 
 // update moves the baseline toward the median of the learned minutes, establishing it
-// after the warm-up and then at most the scale's drift an hour.
-func (b *agcBaseline) update(at time.Time, scale baselineScale) {
+// after the warm-up and then at most the rules' drift an hour.
+func (b *agcBaseline) update(at time.Time, rules baselineRules) {
 	if len(b.minutes) == 0 {
 		return
 	}
@@ -340,7 +440,7 @@ func (b *agcBaseline) update(at time.Time, scale baselineScale) {
 			b.baseline, b.haveBaseline, b.baselineAt = target, true, at
 		}
 	default:
-		limit := scale.driftPerHour * at.Sub(b.baselineAt).Hours()
+		limit := rules.driftPerHour * at.Sub(b.baselineAt).Hours()
 		b.baseline += math.Max(-limit, math.Min(limit, target-b.baseline))
 		b.baselineAt = at
 	}
@@ -427,6 +527,14 @@ type StationRF struct {
 	// jamming classifier takes them as corroboration; neither is served.
 	Neighbours     []string `json:"-"`
 	NeighbourCount int      `json:"-"`
+	// BaselineRelearnedAt marks a station whose RF baseline healed itself: the epoch
+	// second a fresh band or front end last started learning its baseline again
+	// because a level away from it had held. It is served for baselineRelearnNotice
+	// (two days) and then dropped; the bands or front ends it happened to carry the
+	// same mark and what was accepted. A departure that ends this way has not gone:
+	// the station's normal has moved to it, and the station RF classifiers say so on
+	// the events they clear.
+	BaselineRelearnedAt *int64 `json:"baseline_relearned_at,omitempty"`
 	// Cn0Drop reports a simultaneous C/N₀ drop across the station's signals: served
 	// now by the integrity cn0_drop check (held through its recovery period), or
 	// served at some point during a band's current AGC departure, so it lasts as long
@@ -453,6 +561,13 @@ type StationRFBand struct {
 	NoiseLevel   int      `json:"noise_level"`
 	JamState     int      `json:"jam_state"`
 	AntStatus    int      `json:"ant_status"`
+	// BaselineRelearnedAt is when this band's baseline last started being learned
+	// again at a level that had held, for two days afterwards, and
+	// AGCDepartureAccepted the departure that became its normal: the baseline it
+	// replaced less the new one, positive for a gain cut, absent until the new
+	// baseline is established.
+	BaselineRelearnedAt  *int64   `json:"baseline_relearned_at,omitempty"`
+	AGCDepartureAccepted *float64 `json:"agc_departure_accepted,omitempty"`
 }
 
 // StationFrontEnd is one Septentrio front end's published metrics (docs/DEFENSE-PNT.md
@@ -472,6 +587,11 @@ type StationFrontEnd struct {
 	GainDeparture  *float64 `json:"gain_departure_db,omitempty"`
 	SampleVariance *int     `json:"sample_variance,omitempty"`
 	BlankedPercent int      `json:"blanked_percent"`
+	// BaselineRelearnedAt and GainDepartureAccepted are a band's mark and accepted
+	// departure, in dB: positive when a gain cut became this front end's normal,
+	// negative when a rise did.
+	BaselineRelearnedAt   *int64   `json:"baseline_relearned_at,omitempty"`
+	GainDepartureAccepted *float64 `json:"gain_departure_accepted_db,omitempty"`
 }
 
 // FeedStationRF builds the per-station RF-defense read model as of now, for the
@@ -530,7 +650,9 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 			if dep, ok := b.departure(); ok {
 				sb.AGCDeparture = &dep
 			}
+			sb.BaselineRelearnedAt, sb.AGCDepartureAccepted = b.relearned(now)
 			entry.Bands = append(entry.Bands, sb)
+			entry.BaselineRelearnedAt = laterMark(entry.BaselineRelearnedAt, sb.BaselineRelearnedAt)
 		}
 		for _, fid := range slices.Sorted(maps.Keys(st.frontEnds)) {
 			e := st.frontEnds[fid]
@@ -549,11 +671,21 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 			if dep, ok := e.departure(); ok {
 				fe.GainDeparture = &dep
 			}
+			fe.BaselineRelearnedAt, fe.GainDepartureAccepted = e.relearned(now)
 			entry.FrontEnds = append(entry.FrontEnds, fe)
+			entry.BaselineRelearnedAt = laterMark(entry.BaselineRelearnedAt, fe.BaselineRelearnedAt)
 		}
 		out[id] = entry
 	}
 	return out
+}
+
+// laterMark is the later of two relearn marks, either of which may be absent.
+func laterMark(a, b *int64) *int64 {
+	if a == nil || b != nil && *b > *a {
+		return b
+	}
+	return a
 }
 
 // rfTrust is how much the station's votes count given its front end: 0.3 while a
@@ -894,6 +1026,34 @@ type AGCBaseline struct {
 	Baseline   float64     `json:"baseline"`
 	BaselineAt time.Time   `json:"baseline_at"`
 	Minutes    []AGCMinute `json:"minutes"`
+	// DepartedFor is how long the band or front end has been watched away from this
+	// baseline in its current run, below it when DepartedBelow is set and above it
+	// otherwise; zero while it is within the learn band. It carries the relearn hold
+	// across a restart, which costs the hold only the time the collector was not
+	// watching.
+	DepartedFor   time.Duration `json:"departed_for_ns,omitempty"`
+	DepartedBelow bool          `json:"departed_below,omitempty"`
+	// RelearnedAt is when this baseline started being learned again after a level
+	// away from the previous one had held, and RelearnedFrom the baseline it replaced;
+	// both absent for one only ever learned from quiet. They carry the station's
+	// two-day mark across a restart. A band still warming up after a relearn has no
+	// baseline to checkpoint, so a restart in those ten minutes loses its mark.
+	RelearnedAt   *time.Time `json:"relearned_at,omitempty"`
+	RelearnedFrom *float64   `json:"relearned_from,omitempty"`
+}
+
+// checkpoint is the baseline as a checkpoint stores it.
+func (b *agcBaseline) checkpoint(block int, frontEnd bool) AGCBaseline {
+	out := AGCBaseline{Block: block, FrontEnd: frontEnd, Baseline: b.baseline, BaselineAt: b.baselineAt,
+		Minutes: append([]AGCMinute(nil), b.minutes...)}
+	if b.away.held > 0 {
+		out.DepartedFor, out.DepartedBelow = b.away.held, b.away.side < 0
+	}
+	if !b.relearnedAt.IsZero() {
+		at, from := b.relearnedAt, b.relearnedFrom
+		out.RelearnedAt, out.RelearnedFrom = &at, &from
+	}
+	return out
 }
 
 // AGCBaselines returns every station's established baselines: its bands in block
@@ -911,25 +1071,30 @@ func (s *Store) AGCBaselines() map[string][]AGCBaseline {
 		}
 		sort.Ints(blocks)
 		for _, block := range blocks {
-			b := st.bands[block]
-			out[id] = append(out[id], AGCBaseline{Block: block, Baseline: b.baseline, BaselineAt: b.baselineAt,
-				Minutes: append([]AGCMinute(nil), b.minutes...)})
+			out[id] = append(out[id], st.bands[block].checkpoint(block, false))
 		}
 		for _, fid := range slices.Sorted(maps.Keys(st.frontEnds)) {
 			if e := st.frontEnds[fid]; e.haveBaseline {
-				out[id] = append(out[id], AGCBaseline{Block: int(fid), FrontEnd: true, Baseline: e.baseline, BaselineAt: e.baselineAt,
-					Minutes: append([]AGCMinute(nil), e.minutes...)})
+				out[id] = append(out[id], e.checkpoint(int(fid), true))
 			}
 		}
 	}
 	return out
 }
 
-// RestoreAGCBaselines queues a station's checkpointed baselines. Each is installed
-// when its band or front end first reports, so a restored station is not live until it
-// is heard from. A baseline older than agcRestoreMaxAge, out of range, or for a band or
-// front end that has already reported is not restored; the count restored is returned.
-func (s *Store) RestoreAGCBaselines(id string, bands []AGCBaseline, now time.Time) int {
+// RestoreAGCBaselines queues a station's baselines from a checkpoint saved at savedAt.
+// Each is installed when its band or front end first reports, so a restored station
+// is not live until it is heard from. A checkpoint older than agcRestoreMaxAge is not
+// restored: the station was last live in a collector that long ago, and what it has
+// been since is unknown. That age is the checkpoint's, not the baseline's own: a
+// baseline that has not moved for days because its band has been held away from it is
+// still the one the band is being measured against. A baseline out of range, or for a
+// band or front end that has already reported, is not restored either; the count
+// restored is returned.
+func (s *Store) RestoreAGCBaselines(id string, bands []AGCBaseline, savedAt, now time.Time) int {
+	if savedAt.IsZero() || savedAt.After(now) || now.Sub(savedAt) > agcRestoreMaxAge {
+		return 0
+	}
 	s.rfMu.Lock()
 	defer s.rfMu.Unlock()
 	restored := 0
@@ -941,7 +1106,7 @@ func (s *Store) RestoreAGCBaselines(id string, bands []AGCBaseline, now time.Tim
 			low, high = -127, 127
 		}
 		if b.Block < 0 || b.Block > 255 || math.IsNaN(b.Baseline) || b.Baseline < low || b.Baseline > high ||
-			now.Sub(b.BaselineAt) > agcRestoreMaxAge || b.BaselineAt.After(now) {
+			b.BaselineAt.IsZero() || b.BaselineAt.After(savedAt) {
 			continue
 		}
 		st := s.rf[id]
@@ -957,6 +1122,20 @@ func (s *Store) RestoreAGCBaselines(id string, bands []AGCBaseline, now time.Tim
 			if !math.IsNaN(m.Median) && now.Sub(m.Start) <= agcBaselineWindow && !m.Start.After(now) {
 				baseline.minutes = append(baseline.minutes, m)
 			}
+		}
+		// A hold longer than the time since its baseline last moved, or a relearn
+		// dated after the checkpoint itself, is not this collector's record: a
+		// baseline does not move while its band is held away from it. The baseline
+		// is kept and the implausible part dropped.
+		if b.DepartedFor > 0 && b.DepartedFor <= savedAt.Sub(b.BaselineAt) {
+			baseline.away = awayRun{side: +1, held: b.DepartedFor}
+			if b.DepartedBelow {
+				baseline.away.side = -1
+			}
+		}
+		if at, from := b.RelearnedAt, b.RelearnedFrom; at != nil && from != nil && !at.IsZero() && !at.After(savedAt) &&
+			!math.IsNaN(*from) && *from >= low && *from <= high {
+			baseline.relearnedAt, baseline.relearnedFrom = *at, *from
 		}
 		if b.FrontEnd {
 			if s.gainRestore[id] == nil {

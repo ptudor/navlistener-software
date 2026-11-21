@@ -3,6 +3,7 @@ package integrity
 import (
 	"maps"
 	"slices"
+	"time"
 )
 
 // RF and receiver-verdict check names.
@@ -54,6 +55,16 @@ const (
 	// indoors, and bench noise that cost it all tracking lowered them by 8 to 10 dB.
 	DefaultGainDepartureDB       = 4.0
 	DefaultGainDepartureSevereDB = 10.0
+	// DefaultBaselineRelearnAfter is how long a band or front end must sit away from
+	// its learned baseline, without a break, before the level it holds is learned as
+	// the station's new normal. A departure is reported for as long as it lasts up to
+	// then, so a changed antenna or a repair nobody announced does not leave a
+	// station degraded for good. A day rides through an overnight fault and a
+	// working day of interference without learning either.
+	DefaultBaselineRelearnAfter = 24 * time.Hour
+	// MinBaselineRelearnAfter is the shortest such hold a profile may set: the time
+	// a band above its baseline has always taken to start learning again.
+	MinBaselineRelearnAfter = 15 * time.Minute
 	// DefaultCWSuppress is the CW-suppression indicator (0..255) above which a
 	// band is taken to hold a narrowband tone.
 	DefaultCWSuppress = 180
@@ -73,13 +84,18 @@ type Cn0UniformityProfile struct {
 }
 
 // AGCProfile holds the agc operating points: a band's departure in AGC counts, a
-// front end's in dB.
+// front end's in dB, and how the baseline they are measured against treats a
+// departure that lasts.
 type AGCProfile struct {
 	Departure             float64 `json:"departure"`
 	DepartureSevere       float64 `json:"departure_severe"`
 	CWSuppress            int     `json:"cw_suppress"`
 	GainDepartureDB       float64 `json:"gain_departure_db"`
 	GainDepartureSevereDB float64 `json:"gain_departure_severe_db"`
+	// BaselineRelearnAfter is the self-healing hold (DefaultBaselineRelearnAfter).
+	// Zero never relearns a gain cut: it stays until the station's baselines are
+	// discarded, for an installation where an unannounced change must stay an alarm.
+	BaselineRelearnAfter time.Duration `json:"baseline_relearn_after_ns"`
 }
 
 // cn0Uniformity applies the C/N₀-vs-elevation gate to the aggregate fit and to each

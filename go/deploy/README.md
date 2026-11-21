@@ -193,7 +193,9 @@ which the daemon checkpoints to the historian (`agc_baselines`, `reception_power
 five minutes and at shutdown and restores at the next start, **gated on the station's antenna
 epoch**: a checkpoint from another `power_model_epoch` is skipped and the station relearns, so
 bump that setting after an antenna, cable or receiver change when you want a clean relearn; a
-plain restart restores what was learned (`../internal/store/README.md`, "Point state"). The
+plain restart restores what was learned (`../internal/store/README.md`, "Point state"). A
+change nobody announces is reported and then learned on its own once it has held for
+`rf_baseline_relearn`, a day by default (`docs/DEFENSE-PNT.md §2`). The
 `nav_frames` hypertable is the durable record; offline replay is the recovery path. Check
 `navlistener_build_info` afterwards to confirm the fleet is on the version you think it is.
 

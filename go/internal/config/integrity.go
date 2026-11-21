@@ -12,8 +12,14 @@ import (
 // (docs/proposals/STATION-ASSURANCE.md). Every station is checked; an installation
 // profile adds the checks that depend on how the antenna is mounted.
 type Integrity struct {
-	Stations  []IntegrityStation  `toml:"station"`
-	Baselines []IntegrityBaseline `toml:"baseline"`
+	// RFBaselineRelearn is how long a station's RF band or front end must sit away
+	// from its learned baseline before the level it holds becomes the baseline: a
+	// duration of at least 15 minutes ("24h", the default when empty), or "never",
+	// which keeps a gain cut until the station's power_model_epoch changes
+	// (docs/DEFENSE-PNT.md §2).
+	RFBaselineRelearn string              `toml:"rf_baseline_relearn"`
+	Stations          []IntegrityStation  `toml:"station"`
+	Baselines         []IntegrityBaseline `toml:"baseline"`
 }
 
 // IntegrityBaseline pairs two co-located stations whose antennas are a known distance
@@ -73,6 +79,22 @@ type IntegritySurvey struct {
 // [[reception.station]] is a fixed site by definition, so one without an
 // [[integrity.station]] entry is a fixed installation at its surveyed position.
 func (c *Config) finalizeIntegrity() error {
+	profile := integrity.DefaultProfile()
+	switch relearn := c.Integrity.RFBaselineRelearn; relearn {
+	case "":
+	case "never":
+		profile.AGC.BaselineRelearnAfter = 0
+	default:
+		hold, err := time.ParseDuration(relearn)
+		if err != nil {
+			return fmt.Errorf(`integrity: rf_baseline_relearn %q is neither a duration such as "24h" nor "never"`, relearn)
+		}
+		if hold < integrity.MinBaselineRelearnAfter {
+			return fmt.Errorf("integrity: rf_baseline_relearn %q is shorter than %s, the least it may be", relearn, integrity.MinBaselineRelearnAfter)
+		}
+		profile.AGC.BaselineRelearnAfter = hold
+	}
+	c.integrityProfile = &profile
 	reception := make(map[string][]float64, len(c.Reception.Stations))
 	for _, site := range c.Reception.Stations {
 		reception[site.Observer] = site.Position
@@ -256,6 +278,16 @@ func slicesEqualFloat(a, b []float64) bool {
 		}
 	}
 	return true
+}
+
+// IntegrityProfile returns the station checks' operating profile: the standard one
+// with this configuration's settings applied. A configuration that was never loaded
+// has the standard one.
+func (c *Config) IntegrityProfile() integrity.Profile {
+	if c.integrityProfile == nil {
+		return integrity.DefaultProfile()
+	}
+	return *c.integrityProfile
 }
 
 // IntegrityStations returns the resolved installation profiles by observer id. The

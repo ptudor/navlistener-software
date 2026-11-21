@@ -90,7 +90,12 @@ it; alone, each is a degradation. A Septentrio station is classified from its fr
 (`StationRF.FrontEnds`) on dB thresholds: a gain cut of 4 dB stands where the AGC departure
 does and one of 10 dB where the collapse does, while a gain rise of 4 dB, which is less power
 arriving, is only ever a degradation. Such a station has no antenna status, so its
-`antenna` machine is not observed. Station liveness comes separately from `TickStationLiveness` → `station_offline`.
+`antenna` machine is not observed. An event that steps down (a clear, or a jamming claim
+easing from `crit` to `warn`) within two clear dwells of a baseline being learned again
+(`StationRF.BaselineRelearnedAt`) carries `baseline_relearned` and says so in its message:
+it is the self-healing hold accepting the level, not the departure going away. An event that
+steps up in that time is new evidence and carries no note. Station liveness comes separately
+from `TickStationLiveness` → `station_offline`.
 
 **Station integrity** (`TickIntegrity`): `spoofing_suspected`, `station_assurance`,
 `environment_sensor_health`, `environmental_change`, `regional_pressure_anomaly`, and

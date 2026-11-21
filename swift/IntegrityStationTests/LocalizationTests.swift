@@ -101,12 +101,26 @@ enum LocalizationKeyScan {
     defer {defaults.removePersistentDomain(forName:suite)}
     let store = StationStore()
     let controller = AppController(store:store,settings:AppSettings(defaults:defaults))
-    let payload = try JSONDecoder().decode(ObserversPayload.self,from:Data(#"{"schema":"2.0","audience":"public","observers":[{"id":"roof","remark":"User's unchanged label","last_seen_s":2,"svs":{"G07@0":{"name":"G07","gnssid":0,"azi_deg":45,"elev_deg":35,"cn0_db_hz":42}}}]}"#.utf8))
+    // Three stations: one with signals alone, a Septentrio one whose front ends
+    // carry the collector's self-healed mark, and a u-blox one whose band does, so
+    // every row of the RF card is drawn, format placeholders included.
+    let payload = try JSONDecoder().decode(ObserversPayload.self,from:Data(#"""
+    {"schema":"2.0","audience":"public","observers":[
+      {"id":"roof","remark":"User's unchanged label","last_seen_s":2,"svs":{"G07@0":{"name":"G07","gnssid":0,"azi_deg":45,"elev_deg":35,"cn0_db_hz":42}}},
+      {"id":"p3","last_seen_s":2,"rf":{"rf_trust":1,"baseline_relearned_at":1,"front_ends":[
+        {"id":0,"name":"GPSL1/E1","locked":true,"gain_db":40,"gain_departure_db":0.5,"sample_variance":98,"blanked_percent":1,"baseline_relearned_at":1,"gain_departure_accepted_db":10},
+        {"id":36,"locked":false,"blanked_percent":0}]}},
+      {"id":"neo","last_seen_s":2,"rf":{"rf_trust":0.9,"baseline_relearned_at":1,"bands":[
+        {"block":0,"agc_departure":3,"baseline_relearned_at":1,"agc_departure_accepted":-1500}]}}
+    ]}
+    """#.utf8))
     let key = AudienceCacheKey(server:"https://collector.invalid",principal:"anonymous",audience:.publicAudience,authorizationRevision:"public")
     try store.apply(ObserversSnapshot(receivedAt:Date(),scope:key,serverTime:nil,payload:payload),cached:false)
     var views: [AnyView] = [
         AnyView(OnboardingView()), AnyView(SettingsView()),
         AnyView(StationDetailView(stationID:"roof")),
+        AnyView(StationDetailView(stationID:"p3")), AnyView(StationDetailView(stationID:"neo")),
+        AnyView(HStack {StationDisabledBadge();StationSelfHealedBadge()}),
         AnyView(SkyPlotView(signals:payload.observers?.first?.svs ?? [:])),
         AnyView(StationAssuranceView(assessment:try JSONDecoder().decode(StationAssessment.self,from:Data(#"{"state":"inconsistent","score":0,"unassured_domains":["position"],"spoofing_indicated":false,"engine_version":1,"config_hash":"sha256:00ff","mode":"mobile","max_speed_mps":30,"checks":[{"check":"motion_bound","domain":"position","state":"unassured","candidate":"assured","recovering_since":1,"metrics":{"speed_mps":41.5},"thresholds":{"max_speed_mps":30},"reasons":["motion_bound"]}]}"#.utf8)))),
         AnyView(VStack {forEachHealth})

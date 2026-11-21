@@ -4679,6 +4679,186 @@
           }
         }
       }
+    },
+    "station.self_healed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Self-healed"
+          }
+        }
+      }
+    },
+    "station.rf.self_healed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recently self-healed"
+          }
+        }
+      }
+    },
+    "station.rf.self_healed.detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This station's normal RF level changed and stayed changed, so the collector accepted the new level as its normal. That change no longer raises an alert; this note stays for 48 hours."
+          }
+        }
+      }
+    },
+    "station.rf.agc_departure_accepted": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AGC departure accepted"
+          }
+        }
+      }
+    },
+    "station.rf.front_end": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Front end %@"
+          }
+        }
+      }
+    },
+    "station.rf.gain": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AGC gain"
+          }
+        }
+      }
+    },
+    "station.rf.gain_vs_baseline": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gain against baseline"
+          }
+        }
+      }
+    },
+    "station.rf.gain_change_accepted": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change accepted"
+          }
+        }
+      }
+    },
+    "station.rf.pll_unlocked": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PLL not locked"
+          }
+        }
+      }
+    },
+    "station.rf.sample_variance": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sample variance"
+          }
+        }
+      }
+    },
+    "station.rf.blanked": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pulse blanking"
+          }
+        }
+      }
+    },
+    "station.rf.db_value": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ dB"
+          }
+        }
+      }
+    },
+    "station.rf.percent_value": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld%%"
+          }
+        }
+      }
+    },
+    "format.gain.at_baseline": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "at baseline"
+          }
+        }
+      }
+    },
+    "format.gain.below": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ dB below"
+          }
+        }
+      }
+    },
+    "format.gain.above": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ dB above"
+          }
+        }
+      }
+    },
+    "format.gain.cut": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ dB cut"
+          }
+        }
+      }
+    },
+    "format.gain.rise": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ dB rise"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

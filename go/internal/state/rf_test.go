@@ -292,7 +292,7 @@ func TestRFBaselineCheckpointRestore(t *testing.T) {
 	}
 
 	restarted := New(1)
-	if n := restarted.RestoreAGCBaselines("stn1", saved, at); n != 1 {
+	if n := restarted.RestoreAGCBaselines("stn1", saved, at, at); n != 1 {
 		t.Fatalf("restored %d bands", n)
 	}
 	if got := restarted.FeedStationRF(at); len(got) != 0 {
@@ -302,7 +302,7 @@ func TestRFBaselineCheckpointRestore(t *testing.T) {
 	if dep := departure(t, restarted, "stn1", at); dep == nil || *dep < 1490 {
 		t.Fatalf("departure after restore = %v, want about 1500 at once", dep)
 	}
-	if again := restarted.RestoreAGCBaselines("stn1", saved, at); again != 0 {
+	if again := restarted.RestoreAGCBaselines("stn1", saved, at, at); again != 0 {
 		t.Fatal("a band that already reported was overwritten by a restore")
 	}
 }
@@ -311,16 +311,30 @@ func TestRFBaselineRestoreRejects(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	s := New(1)
 	bad := []AGCBaseline{
-		{Block: 0, Baseline: 4000, BaselineAt: now.Add(-25 * time.Hour)},
 		{Block: 1, Baseline: math.NaN(), BaselineAt: now},
 		{Block: 2, Baseline: 70000, BaselineAt: now},
 		{Block: -1, Baseline: 4000, BaselineAt: now},
-		{Block: 3, Baseline: 4000, BaselineAt: now.Add(time.Hour)},
+		{Block: 3, Baseline: 4000, BaselineAt: now.Add(time.Hour)}, // moved after the checkpoint was saved
+		{Block: 4, Baseline: 4000},                                 // no date at all
 	}
-	if n := s.RestoreAGCBaselines("stn1", bad, now); n != 0 {
+	if n := s.RestoreAGCBaselines("stn1", bad, now, now); n != 0 {
 		t.Fatalf("restored %d invalid baselines", n)
 	}
-	s.RestoreAGCBaselines("stn1", []AGCBaseline{{Block: 0, Baseline: 4000, BaselineAt: now}}, now)
+	// The age that counts is the checkpoint's: one saved more than a day ago, or
+	// dated ahead of this clock, is not restored whatever it holds.
+	good := []AGCBaseline{{Block: 0, Baseline: 4000, BaselineAt: now.Add(-26 * time.Hour)}}
+	for name, savedAt := range map[string]time.Time{
+		"a day and an hour old": now.Add(-25 * time.Hour), "from the future": now.Add(time.Minute), "undated": {},
+	} {
+		if n := s.RestoreAGCBaselines("stn1", good, savedAt, now); n != 0 {
+			t.Fatalf("restored a checkpoint %s", name)
+		}
+	}
+	// A baseline that last moved long ago, in a checkpoint saved just now, is the
+	// live one: its band has been held away from it, and it is restored.
+	if n := s.RestoreAGCBaselines("stn1", good, now.Add(-time.Minute), now); n != 1 {
+		t.Fatal("a fresh checkpoint of a long-held baseline was refused")
+	}
 	s.Reset()
 	s.Apply(rfSample("stn1", 0, 4000, 0, 2, now))
 	if dep := departure(t, s, "stn1", now); dep != nil {

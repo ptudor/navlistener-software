@@ -125,7 +125,8 @@ func DefaultProfile() Profile {
 			EveryDB: 1, InconsistentDB: 3, UnassuredDB: 6,
 		},
 		AGC: AGCProfile{Departure: DefaultAGCDeparture, DepartureSevere: DefaultAGCDepartureSevere, CWSuppress: DefaultCWSuppress,
-			GainDepartureDB: DefaultGainDepartureDB, GainDepartureSevereDB: DefaultGainDepartureSevereDB},
+			GainDepartureDB: DefaultGainDepartureDB, GainDepartureSevereDB: DefaultGainDepartureSevereDB,
+			BaselineRelearnAfter: DefaultBaselineRelearnAfter},
 		// After the PNT Integrity range-position check: the bands scale with the
 		// pair's combined 3D accuracy, like the static position bands.
 		Baseline: BaselineProfile{
@@ -272,6 +273,9 @@ func (p Profile) Validate() error {
 	}
 	if p.AGC.CWSuppress < 0 || p.AGC.CWSuppress > 255 {
 		errs = append(errs, fmt.Errorf("agc.cw_suppress must be within 0..255"))
+	}
+	if p.AGC.BaselineRelearnAfter != 0 && p.AGC.BaselineRelearnAfter < MinBaselineRelearnAfter {
+		errs = append(errs, fmt.Errorf("agc.baseline_relearn_after must be zero (never) or at least %s", MinBaselineRelearnAfter))
 	}
 	if p.Environment.BaselineMinSamples < 2 {
 		errs = append(errs, fmt.Errorf("environment.baseline_min_samples must be at least 2"))

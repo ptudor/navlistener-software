@@ -284,6 +284,17 @@ ack_interval = "1s"
 # power_mad_multiplier = 4
 # power_min_support_days = 3
 
+# How a station's RF baseline treats a change that lasts (docs/DEFENSE-PNT.md §2). A band
+# or front end that sits away from its learned baseline is reported for as long as it does;
+# once it has been seen there this long without a break, that level is learned as the
+# station's normal and the report clears, so a changed antenna or a repair nobody announced
+# does not leave a station degraded for good. Time in which the station was not reporting
+# does not count. Use "never" where the hardware is yours and an
+# unannounced change should stay an alarm: a gain cut then lasts until the station's
+# power_model_epoch changes. A duration of at least "15m"; the default is "24h".
+# [integrity]
+# rf_baseline_relearn = "24h"
+
 # Optional station installations for the integrity checks
 # (docs/proposals/STATION-ASSURANCE.md). Every station is checked without one; an
 # installation adds the static-position and stationary-velocity checks (fixed) or the

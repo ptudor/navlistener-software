@@ -15,7 +15,7 @@ validated. TOML at `/usr/local/etc/navlistener/navlistener.toml`, passed with `-
 | `replay_test.go` | Replay installation resolution and isolation from daemon credentials. |
 | `config_test.go` | Load/validate cases, defaults, and the rejection paths. |
 | `hardware_trust_test.go` | `[[manufacturer_authority]]`: key loading, registry verification, and every incomplete combination. |
-| `integrity.go` | `[[integrity.station]]` installations, merged with the surveyed `[[reception.station]]` sites, and `[[integrity.baseline]]` pairs. |
+| `integrity.go` | `[[integrity.station]]` installations, merged with the surveyed `[[reception.station]]` sites, `[[integrity.baseline]]` pairs, and the operating profile with `rf_baseline_relearn` applied (`IntegrityProfile`). |
 | `integrity_test.go` | Installation resolution and every rejection. |
 | `README.md` | This file. |
 
@@ -69,6 +69,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 | `[[federation.export_grant]]` | no transport | explicit directed export authorization, validated before peer transport exists |
 | `[[push.observer]]` | — | credential/feed grant plus server-owned organization and publication context |
 | `[[ingest]]` | per entry | dial connector plus the same server-owned organization/publication context |
+| `[integrity]` | `rf_baseline_relearn` | how long an RF band or front end must be seen away from its baseline before that level is learned, counting only time the station was reporting: a duration of at least `15m` (default `24h`), or `never` |
 | `[[integrity.station]]` | per entry | a station's installation for the integrity checks: `mode` fixed or mobile, surveyed `position`, `max_speed_mps` |
 | `[[integrity.baseline]]` | per entry | a co-located pair for the baseline check: two `stations` and their antennas' `distance_m`, derived from both surveyed positions when omitted |
 

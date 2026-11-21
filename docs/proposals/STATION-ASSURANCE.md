@@ -255,6 +255,7 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 | 2.3 | Replay command: run stored station inputs or a bundle through the checks with a pinned or current profile, and compare with stored events | done (`62c5ff3`, `go/cmd/stationreplay`, current profile; the timeline names its configuration hash) |
 | 2.4 | Durable AGC baseline: longer decimated window, warm-up reported as unavailable, bounded drift rate, checkpoint and restore like the power model | done (`88f9b8a`) |
 | 2.5 | Fixtures for normal sky, receiver and clock resets, slow drift, position and time steps, uniform C/N₀, AGC compression, loss and reacquisition | done (`374f048`, synthetic, `go/cmd/stationreplay/scenarios_test.go`); recorded normal-sky fixtures await bench captures |
+| 2.6 | Self-healing RF baselines: a band or front end held away from its baseline for `rf_baseline_relearn` (a day; `never` keeps a gain cut until the antenna epoch changes) is learned again, the hold counts only time the station was reporting and is checkpointed, the events it clears carry `baseline_relearned`, and the station is marked in the feed and in Integrity Station for 48 hours afterwards | done; the day is a starting value, to be set against how long real interference and real maintenance last at the fleet's stations |
 
 ### Phase 3 — richer observables where the hardware has them
 
@@ -266,7 +267,7 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 | 3.4 | ZED-X20P: SEC-SIG in `0x05`, after bench confirmation of support | deferred until the ZED-X20P bench confirms SEC-SIG output |
 | 3.5 | ZED-X20P: RXM-RAWX as `0x02`, and a Doppler-vs-ephemeris check using the receiver clock drift | deferred until the ZED-X20P bench confirms RXM-RAWX; forwarding cannot be verified without it, and the residual bands need recorded measurements |
 | 3.6 | Receiver capability table from bench verification | deferred: needs the bench verification it records |
-| 3.7 | Septentrio front-end AGC gains as RF evidence: the collector decodes SBF ReceiverStatus, learns a dB baseline per front end, and feeds the `agc` check (version 5), `rf_trust` and the station RF events; the blocks are stored in `rf_samples` as kind `receiver_status` and replay with `stationreplay` | done in the collector, tested on blocks built from the fields a mosaic-G5 P3 reported on a bench (`go/cmd/stationreplay/frontend_scenarios_test.go`); awaiting an enrolled P3's session to confirm it on forwarded blocks. The 4 dB and 10 dB thresholds come from that one unit |
+| 3.7 | Septentrio front-end AGC gains as RF evidence: the collector decodes SBF ReceiverStatus, learns a dB baseline per front end, and feeds the `agc` check (version 5), `rf_trust` and the station RF events; the blocks are stored in `rf_samples` as kind `receiver_status` and replay with `stationreplay` | done (`8de7479`) in the collector, tested on blocks built from the fields a mosaic-G5 P3 reported on a bench (`go/cmd/stationreplay/frontend_scenarios_test.go`); awaiting an enrolled P3's session to confirm it on forwarded blocks. The 4 dB and 10 dB thresholds come from that one unit |
 
 The MAX board's motion summary (OBSERVER-TELEMETRY tag 13) gives, per board report,
 the IMU's still or moving state and the extremes of its acceleration and rotation-rate
