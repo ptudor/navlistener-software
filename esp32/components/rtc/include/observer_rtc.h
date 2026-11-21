@@ -19,6 +19,11 @@ report_rtc_t observer_rtc_status(void);
 // answering until the first poll has attached the RTC.
 report_rtc_temperature_t observer_rtc_temperature(void);
 void observer_rtc_square_wave_status(uint8_t *state, uint8_t *control, uint8_t *trim);
+// The backup supply as the MCP79412's power-fail records have shown it: whether a loss of main
+// power that the clock counted through is on record, and that loss (rtc_policy.h). `tracked`
+// is false on a part that keeps no such record, and until the first poll. A copy, from any task.
+typedef struct { bool tracked, proven; rtc_power_loss_t loss; } observer_rtc_backup_t;
+observer_rtc_backup_t observer_rtc_backup(void);
 // Rate discipline (rtc_discipline.h): call once a second from the board task with the pulse
 // timing just read and whether the receiver holds a position. On an MCP79412 it measures the
 // crystal against the GNSS pulse and keeps OSCTRIM at the step that cancels it; other parts

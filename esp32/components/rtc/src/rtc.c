@@ -68,6 +68,74 @@ static bool service_save(void *ctx,rtc_service_record_t *r)
     nvs_close(nvs);return err==ESP_OK;
 }
 void observer_rtc_select(observer_rtc_part_t selected) { part = selected; }
+// What the MCP79412's power-fail records have shown of its backup supply (rtc_policy.h).
+// The proof is kept as the raw record that showed it, in "nvf_rtc"/"proof", in the layout of
+// "last_pfail": version 1, RTCSEC..RTCYEAR as found, PWRDNMIN..PWRUPMTH. The board task
+// owns it; another task takes a copy.
+#define PFAIL_RECORD 16
+static portMUX_TYPE backup_lock = portMUX_INITIALIZER_UNLOCKED;
+static observer_rtc_backup_t backup;
+static bool backup_loaded;
+// Since this start: PWRFAIL has been read set, and the clock read stopped while it was.
+static bool power_failed, stopped_on_backup;
+static unsigned lost_polls;
+observer_rtc_backup_t observer_rtc_backup(void)
+{
+    portENTER_CRITICAL(&backup_lock);
+    const observer_rtc_backup_t copy = backup;
+    portEXIT_CRITICAL(&backup_lock);
+    return copy;
+}
+static void backup_set(bool proven, const rtc_power_loss_t *loss)
+{
+    portENTER_CRITICAL(&backup_lock);
+    backup = (observer_rtc_backup_t){.tracked = true, .proven = proven};
+    if (proven) backup.loss = *loss;
+    portEXIT_CRITICAL(&backup_lock);
+}
+static void backup_load(void)
+{
+    if (backup_loaded) return;
+    backup_loaded = true;
+    uint8_t record[PFAIL_RECORD]; size_t size = sizeof record;
+    rtc_power_loss_t loss = {0}; nvs_handle_t nvs;
+    esp_err_t err = nvs_open("nvf_rtc", NVS_READONLY, &nvs);
+    if (err == ESP_OK) { err = nvs_get_blob(nvs, "proof", record, &size); nvs_close(nvs); }
+    const bool proven = err == ESP_OK && size == sizeof record && record[0] == 1 &&
+                        rtc_power_loss(record + 1, record + 8, &loss) && rtc_backup_proof(record + 1, &loss);
+    if (!proven && err != ESP_ERR_NVS_NOT_FOUND)
+        ESP_LOGW(TAG, "saved backup proof not usable (%s); the backup counts as not proven",
+                 err == ESP_OK ? "the record does not decode" : esp_err_to_name(err));
+    backup_set(proven, &loss);
+}
+// A proof that no longer holds is erased before the clock is set or armed again, so that a
+// failed erase cannot leave it standing beside a clock that has since lost its time.
+static bool backup_withdraw(const char *why)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("nvf_rtc", NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        err = nvs_erase_key(nvs, "proof");
+        if (err == ESP_OK) err = nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "backup proof could not be withdrawn; RTC left as it is: %s", esp_err_to_name(err));
+        return false;
+    }
+    char when[96];
+    rtc_power_loss_text(&backup.loss, when, sizeof when);
+    ESP_LOGW(TAG, "backup no longer proven: %s; the proof of %s is withdrawn", why, when);
+    backup_set(false, NULL);
+    return true;
+}
+static void backup_text(char *out, size_t size)
+{
+    char when[96];
+    if (backup.proven && rtc_power_loss_text(&backup.loss, when, sizeof when))
+        snprintf(out, size, "backup proven by the power loss of %s", when);
+    else snprintf(out, size, "backup enabled, not yet proven by a power loss");
+}
 static bool read_registers(void *ctx, uint8_t reg, uint8_t *out, size_t length)
 { return i2c_master_transmit_receive(ctx, &reg, 1, out, length, 100) == ESP_OK; }
 static void delay_ms(void *ctx, unsigned ms) { (void)ctx; vTaskDelay(pdMS_TO_TICKS(ms)); }
@@ -99,21 +167,45 @@ static bool mcp79412_write_trim(void *ctx, uint8_t osctrim)
 static bool save_power_failure(void *ctx, const uint8_t calendar[7], const uint8_t stamps[8])
 {
     (void)ctx;
-    // Version, raw calendar at discovery, then PWRDNMIN..PWRUPMTH. The
-    // hardware timestamps have no year; keep the calendar as context only.
-    uint8_t record[16] = {1};
+    uint8_t record[PFAIL_RECORD] = {1};
     memcpy(record + 1, calendar, 7); memcpy(record + 8, stamps, 8);
+    rtc_power_loss_t loss = {0};
+    const bool decoded = rtc_power_loss(calendar, stamps, &loss);
+    // A clock read stopped while this record was on the part did not count through the loss,
+    // whatever its stamps say of the time it did count.
+    const bool proof = decoded && !stopped_on_backup && rtc_backup_proof(calendar, &loss);
     nvs_handle_t nvs;
     esp_err_t err = nvs_open("nvf_rtc", NVS_READWRITE, &nvs);
     if (err == ESP_OK) {
         err = nvs_set_blob(nvs, "last_pfail", record, sizeof record);
+        if (err == ESP_OK && proof) err = nvs_set_blob(nvs, "proof", record, sizeof record);
         if (err == ESP_OK) err = nvs_commit(nvs);
         nvs_close(nvs);
     }
-    if (err != ESP_OK) ESP_LOGE(TAG, "power-fail evidence could not be saved; RTC write deferred: %s", esp_err_to_name(err));
-    else ESP_LOGI(TAG, "power-fail calendar/timestamps saved in NVS before RTCWKDAY clears them");
-    return err == ESP_OK;
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "power-fail record could not be saved; RTC write deferred: %s", esp_err_to_name(err));
+        return false;
+    }
+    char when[96];
+    if (!decoded) {
+        ESP_LOGW(TAG, "power loss recorded, but its stamps do not decode (%02x %02x %02x %02x, %02x %02x %02x %02x); saved as read",
+                 stamps[0], stamps[1], stamps[2], stamps[3], stamps[4], stamps[5], stamps[6], stamps[7]);
+        return true;
+    }
+    rtc_power_loss_text(&loss, when, sizeof when);
+    if (proof) {
+        backup_set(true, &loss);
+        ESP_LOGI(TAG, "power loss recorded, %s: the clock counted through it, which proves the backup", when);
+    } else if (loss.up - loss.down < RTC_BACKUP_PROOF_S)
+        ESP_LOGI(TAG, "power loss recorded, %s: too short to prove the backup, which takes more than a minute", when);
+    else
+        ESP_LOGW(TAG, "power loss recorded, %s: the clock did not come through it running on a plausible date, so it proves nothing", when);
+    return true;
 }
+// Power-fail stays reported for the rest of this start. The part's own flag is cleared as
+// soon as its record is saved, so that the next loss is stamped.
+static uint8_t mcp79412_flags(const uint8_t regs[7])
+{ return 1 | ((regs[3] & 0x20) ? 2 : 0) | ((regs[3] & 8) ? 4 : 0) | (power_failed ? 8 : 0); }
 static void mcp79412_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, int64_t now)
 {
     next_poll = now + 1000;
@@ -132,19 +224,40 @@ static void mcp79412_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
         ESP_LOGW(TAG, "timekeeping read failed; clock left unchanged");
         candidate = (rtc_candidate_t){0}; next_poll = now + 30000; return;
     }
-    telemetry.flags = 1 | ((regs[3] & 0x20) ? 2 : 0) | ((regs[3] & 8) ? 4 : 0) | ((regs[3] & 0x10) ? 8 : 0);
-    if (!retry_initialization && rtc_running(regs, &epoch)) {
+    const bool running = rtc_running(regs, &epoch);
+    if (!(regs[3] & 0x10)) stopped_on_backup = false;
+    else { power_failed = true; if (!running) stopped_on_backup = true; }
+    telemetry.flags = mcp79412_flags(regs);
+    // A proof stands only while the part keeps what earned it. VBATEN reads clear only after
+    // a power-on reset, when main power and the backup were lost together; a clock stopped
+    // with a power failure on record went over to its backup and did not keep counting.
+    // Either must be read twice running, with a weekday the part can hold: a bus held low
+    // reads as zeros, and one bad read is not grounds for erasing anything.
+    if (!backup.proven || !(regs[3] & 7) || ((regs[3] & 8) && !stopped_on_backup)) lost_polls = 0;
+    else if (++lost_polls < 2 ||
+             !backup_withdraw(regs[3] & 8 ? "the clock was found stopped with a power failure on record"
+                                          : "the RTC was found reset, as after losing main power and its backup together")) {
+        candidate = (rtc_candidate_t){0};
+        if (lost_polls >= 2) next_poll = now + 30000;
+        return;
+    }
+    if (!retry_initialization && running) {
         telemetry.flags |= 16; telemetry.epoch = epoch;
         if (!rtc_enable_backup(&io)) { ESP_LOGW(TAG, "battery backup enable failed"); return; }
-        if (report_state != RUNNING) ESP_LOGI(TAG, "running calendar retained (UTC epoch=%lld); backup enabled, battery presence unverified",
-                               (long long)epoch);
-        // Re-read after the backup write; the write can clear PWRFAIL.
+        const bool taken = !(regs[3] & 0x10) || rtc_take_power_failure(&io);
+        if (!taken) ESP_LOGW(TAG, "power-fail record not taken; it stays on the RTC and is tried again");
+        if (report_state != RUNNING) {
+            char proof[160];
+            backup_text(proof, sizeof proof);
+            ESP_LOGI(TAG, "running calendar retained (UTC epoch=%lld); %s", (long long)epoch, proof);
+        }
+        // Re-read after the writes above, either of which clears PWRFAIL.
         telemetry = (report_rtc_t){.sampled_ms = now};
         if (read_registers(dev, 0, regs, sizeof regs)) {
-            telemetry.flags = 1 | ((regs[3] & 0x20) ? 2 : 0) | ((regs[3] & 8) ? 4 : 0) | ((regs[3] & 0x10) ? 8 : 0);
+            telemetry.flags = mcp79412_flags(regs);
             if (rtc_running(regs, &epoch)) { telemetry.flags |= 16; telemetry.epoch = epoch; }
         }
-        report_state = RUNNING; candidate = (rtc_candidate_t){0}; next_poll = now + 10000;
+        report_state = RUNNING; candidate = (rtc_candidate_t){0}; next_poll = now + (taken ? 10000 : 30000);
         return;
     }
     if (report_state != WAITING) ESP_LOGW(TAG, "RTC stopped or calendar unconfirmed; waiting for valid GNSS lock and UTC");
@@ -158,8 +271,9 @@ static void mcp79412_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
         retry_initialization = false; report_state = RUNNING;
         // The verified write advanced through a second boundary; obtain the actual calendar next poll.
         telemetry = (report_rtc_t){.sampled_ms = now};
-        ESP_LOGI(TAG, "initialized from GNSS UTC (epoch=%lld); oscillator advancing, backup enabled; battery presence unverified",
-                 (long long)written);
+        char proof[160];
+        backup_text(proof, sizeof proof);
+        ESP_LOGI(TAG, "initialized from GNSS UTC (epoch=%lld); oscillator advancing; %s", (long long)written, proof);
     } else {
         retry_initialization = true;
         ESP_LOGE(TAG, "RTC initialization/readback failed; time unconfirmed");
@@ -323,6 +437,7 @@ static void max31328_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
 
 void observer_rtc_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, int64_t now)
 {
+    if (part == OBSERVER_RTC_MCP79412) backup_load();
     int64_t qualified;
     bool gnss_ready=rtc_gnss_candidate(&service_candidate,gnss,now,&qualified);
     // Repeated snapshots do not add samples, but a fully qualified fresh

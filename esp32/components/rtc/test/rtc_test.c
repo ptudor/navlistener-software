@@ -149,6 +149,8 @@ typedef struct {
     int64_t pending_until_ms;
     bool stopping, starting;
     bool stuck_running, stuck_stopped, frozen, corrupt_calendar, saved, save_failed;
+    bool day_rolls_on_save; // midnight passes while the record is being saved
+    bool power_fail_sticks; // a part whose PWRFAIL survives the write that should clear it
 } fake_t;
 static bool fake_read(void *ctx, uint8_t reg, uint8_t *out, size_t length)
 {
@@ -162,13 +164,14 @@ static bool fake_write(void *ctx, uint8_t reg, const uint8_t *data, size_t lengt
     ++f->writes;
     if (reg == 0 && length == 7) assert(!(f->regs[3] & 0x20));
     uint8_t running = f->regs[3] & 0x20;
+    const uint8_t stuck = f->power_fail_sticks ? f->regs[3] & 0x10 : 0;
     if (reg <= 3 && reg + length > 3) {
         if (f->regs[3] & 0x10) assert(f->saved); // durable evidence before destructive write
-        memset(f->regs + 0x18, 0, 8);
+        if (!stuck) memset(f->regs + 0x18, 0, 8);
     }
     // Simulate even a failed transfer having changed some hardware state.
     memcpy(f->regs + reg, data, length);
-    if (reg <= 3 && reg + length > 3) f->regs[3] &= ~0x10;
+    if (reg <= 3 && reg + length > 3) f->regs[3] = (f->regs[3] & ~0x10) | stuck;
     f->regs[3] = (f->regs[3] & ~0x20) | running;
     bool wants = f->stuck_running || (!f->stuck_stopped && ((f->regs[0] & 0x80) || (f->regs[7] & 8)));
     if (wants && !running && f->start_latency_ms) {
@@ -223,6 +226,7 @@ static bool fake_save(void *ctx, const uint8_t calendar[7], const uint8_t stamps
     assert(f->writes == 0); // save failure must leave the RTC entirely untouched
     if (f->save_failed) return false;
     memcpy(f->saved_calendar, calendar, 7); memcpy(f->saved_stamps, stamps, 8);
+    if (f->day_rolls_on_save) f->regs[3] = (f->regs[3] & ~7) | ((f->regs[3] & 7) % 7 + 1);
     f->saved = true; return true;
 }
 static rtc_io_t fake_io(fake_t *f)
@@ -333,6 +337,143 @@ static void io_test(void)
     assert(!memcmp(before, f.regs, sizeof before) && f.saved);
     assert(rtc_enable_backup(&io) && f.writes == 1); // retained calendar not rewritten
 }
+static int64_t at(unsigned y, unsigned m, unsigned d, unsigned h, unsigned min, unsigned s)
+{ int64_t epoch; assert(rtc_calendar_epoch(y, m, d, h, min, s, &epoch)); return epoch; }
+static uint8_t bcd8(unsigned value) { return value / 10 * 16 + value % 10; }
+// One power-fail stamp. The weekday in the month register's top bits is not part of the time.
+static void stamp(uint8_t s[4], unsigned month, unsigned day, unsigned hour, unsigned minute)
+{ s[0] = bcd8(minute); s[1] = bcd8(hour); s[2] = bcd8(day); s[3] = bcd8(month) | 0xe0; }
+// A record as the part holds it at `found`: a running calendar with PWRFAIL and VBATEN set.
+static void pfail(uint8_t calendar[7], uint8_t stamps[8], int64_t found,
+                  unsigned dm, unsigned dd, unsigned dh, unsigned dmin,
+                  unsigned um, unsigned ud, unsigned uh, unsigned umin)
+{
+    assert(rtc_encode(found, calendar));
+    calendar[0] |= 0x80; calendar[3] |= 0x30;
+    stamp(stamps, dm, dd, dh, dmin); stamp(stamps + 4, um, ud, uh, umin);
+}
+static void power_loss_test(void)
+{
+    uint8_t c[7], s[8]; rtc_power_loss_t loss; char text[80];
+    // Three minutes counted without main power, found half a minute after it came back.
+    pfail(c, s, at(2026, 11, 21, 22, 43, 32), 11, 21, 22, 40, 11, 21, 22, 43);
+    assert(rtc_power_loss(c, s, &loss) && loss.down == at(2026, 11, 21, 22, 40, 0) &&
+           loss.up == at(2026, 11, 21, 22, 43, 0) && rtc_backup_proof(c, &loss));
+    assert(rtc_power_loss_text(&loss, text, sizeof text) == strlen(text) &&
+           !strcmp(text, "2026-11-21 22:40 to 22:43 UTC (3 min)"));
+    // Two stamp minutes are more than 60 s counted, and prove it; one may be a single second.
+    pfail(c, s, at(2026, 11, 21, 22, 43, 32), 11, 21, 22, 41, 11, 21, 22, 43);
+    assert(rtc_power_loss(c, s, &loss) && loss.up - loss.down == 120 && rtc_backup_proof(c, &loss));
+    pfail(c, s, at(2026, 11, 21, 22, 33, 32), 11, 21, 22, 32, 11, 21, 22, 33);
+    assert(rtc_power_loss(c, s, &loss) && loss.up - loss.down == 60 && !rtc_backup_proof(c, &loss));
+    assert(!strcmp((rtc_power_loss_text(&loss, text, sizeof text), text), "2026-11-21 22:32 to 22:33 UTC (1 min)"));
+    pfail(c, s, at(2026, 11, 21, 22, 9, 10), 11, 21, 22, 9, 11, 21, 22, 9);
+    assert(rtc_power_loss(c, s, &loss) && loss.up == loss.down && !rtc_backup_proof(c, &loss));
+    // The stamps hold no year. Across New Year the loss began in the year before the return.
+    pfail(c, s, at(2027, 1, 1, 0, 5, 10), 12, 31, 23, 50, 1, 1, 0, 2);
+    assert(rtc_power_loss(c, s, &loss) && loss.down == at(2026, 12, 31, 23, 50, 0) &&
+           loss.up == at(2027, 1, 1, 0, 2, 0) && rtc_backup_proof(c, &loss));
+    assert(!strcmp((rtc_power_loss_text(&loss, text, sizeof text), text), "2026-12-31 23:50 to 2027-01-01 00:02 UTC (12 min)"));
+    // A record left on the part since last year is dated to last year, not to the months ahead.
+    pfail(c, s, at(2027, 3, 1, 12, 0, 0), 11, 21, 22, 40, 11, 21, 22, 43);
+    assert(rtc_power_loss(c, s, &loss) && loss.down == at(2026, 11, 21, 22, 40, 0) &&
+           loss.up == at(2026, 11, 21, 22, 43, 0));
+    // Hours, and then days: a board that sat on its cell from October to February.
+    pfail(c, s, at(2026, 11, 22, 3, 5, 40), 11, 21, 22, 40, 11, 22, 3, 5);
+    assert(rtc_power_loss(c, s, &loss) && rtc_backup_proof(c, &loss));
+    assert(!strcmp((rtc_power_loss_text(&loss, text, sizeof text), text), "2026-11-21 22:40 to 2026-11-22 03:05 UTC (4 h 25 min)"));
+    pfail(c, s, at(2027, 2, 10, 8, 0, 30), 10, 3, 14, 0, 2, 10, 8, 0);
+    assert(rtc_power_loss(c, s, &loss) && loss.down == at(2026, 10, 3, 14, 0, 0) && rtc_backup_proof(c, &loss));
+    assert(!strcmp((rtc_power_loss_text(&loss, text, sizeof text), text), "2026-10-03 14:00 to 2027-02-10 08:00 UTC (129 d 18 h)"));
+    // 29 February: in its own year, the year after, and three years on, when the last one is
+    // the nearest date the stamp can mean. Before 2000 there is nothing it can mean.
+    pfail(c, s, at(2028, 3, 1, 0, 1, 5), 2, 29, 23, 58, 3, 1, 0, 0);
+    assert(rtc_power_loss(c, s, &loss) && loss.down == at(2028, 2, 29, 23, 58, 0) && rtc_backup_proof(c, &loss));
+    pfail(c, s, at(2029, 1, 10, 9, 0, 0), 2, 29, 10, 0, 2, 29, 10, 5);
+    assert(rtc_power_loss(c, s, &loss) && loss.up == at(2028, 2, 29, 10, 5, 0));
+    pfail(c, s, at(2027, 6, 1, 9, 0, 0), 2, 29, 10, 0, 2, 29, 10, 5);
+    assert(rtc_power_loss(c, s, &loss) && loss.down == at(2024, 2, 29, 10, 0, 0));
+    pfail(c, s, at(2000, 1, 1, 0, 0, 30), 12, 31, 23, 50, 12, 31, 23, 55);
+    assert(!rtc_power_loss(c, s, &loss));
+    // The stamps follow the calendar's hour format: 10 PM is 22:00.
+    pfail(c, s, at(2026, 11, 21, 22, 43, 32), 11, 21, 22, 40, 11, 21, 22, 43);
+    s[1] = s[5] = 0x70;
+    assert(rtc_power_loss(c, s, &loss) && loss.down == at(2026, 11, 21, 22, 40, 0) && loss.up == at(2026, 11, 21, 22, 43, 0));
+    // Stamps that are no date: cleared (month 0), not BCD, minute 60, 31 November.
+    pfail(c, s, at(2026, 11, 21, 22, 43, 32), 11, 21, 22, 40, 11, 21, 22, 43);
+    memset(s, 0, sizeof s); assert(!rtc_power_loss(c, s, &loss));
+    memset(s, 0xa5, sizeof s); assert(!rtc_power_loss(c, s, &loss));
+    pfail(c, s, at(2026, 11, 21, 22, 43, 32), 11, 21, 22, 40, 11, 21, 22, 43);
+    s[0] = 0x60; assert(!rtc_power_loss(c, s, &loss));
+    pfail(c, s, at(2026, 12, 1, 0, 0, 0), 11, 30, 22, 40, 11, 31, 22, 43);
+    assert(!rtc_power_loss(c, s, &loss));
+    // A calendar that does not decode dates nothing.
+    pfail(c, s, at(2026, 11, 21, 22, 43, 32), 11, 21, 22, 40, 11, 21, 22, 43);
+    c[4] = 0; assert(!rtc_power_loss(c, s, &loss));
+    // Proof needs more than the stamps: the power-fail and backup-enable bits, a running
+    // oscillator, and a calendar this firmware could have set.
+    static const struct { unsigned reg; uint8_t clear; } needed[] = {{3, 0x10}, {3, 0x08}, {3, 0x20}, {0, 0x80}};
+    for (unsigned i = 0; i < sizeof needed / sizeof needed[0]; i++) {
+        pfail(c, s, at(2026, 11, 21, 22, 43, 32), 11, 21, 22, 40, 11, 21, 22, 43);
+        assert(rtc_power_loss(c, s, &loss) && rtc_backup_proof(c, &loss));
+        c[needed[i].reg] &= ~needed[i].clear;
+        assert(rtc_power_loss(c, s, &loss) && !rtc_backup_proof(c, &loss));
+    }
+    pfail(c, s, at(2023, 12, 31, 23, 59, 0), 12, 31, 22, 40, 12, 31, 22, 43);
+    assert(rtc_power_loss(c, s, &loss) && !rtc_backup_proof(c, &loss));
+    pfail(c, s, at(2024, 1, 1, 0, 0, 0), 12, 31, 22, 40, 12, 31, 22, 43);
+    assert(rtc_power_loss(c, s, &loss) && rtc_backup_proof(c, &loss));
+    // The text never overruns, and says nothing of a loss it cannot date.
+    loss = (rtc_power_loss_t){at(2026, 11, 21, 22, 40, 0), at(2026, 11, 21, 22, 43, 0)};
+    assert(rtc_power_loss_text(&loss, text, 0) == 0);
+    memset(text, '#', sizeof text);
+    assert(rtc_power_loss_text(&loss, text, 11) == 10 && !strcmp(text, "2026-11-21") && text[11] == '#');
+    loss.up = loss.down - 60;
+    assert(rtc_power_loss_text(&loss, text, sizeof text) == 0 && !text[0]);
+    loss = (rtc_power_loss_t){0, 60};
+    assert(rtc_power_loss_text(&loss, text, sizeof text) == 0 && !text[0]);
+}
+static void take_test(void)
+{
+    fake_t f; rtc_io_t io = fake_io(&f); rtc_power_loss_t loss; uint8_t before[32];
+    const int64_t found = at(2026, 11, 21, 22, 43, 32);
+    // Nothing recorded: the calendar is read once, and nothing is saved or written.
+    assert(rtc_encode(found, f.regs)); f.regs[0] |= 0x80; f.regs[3] |= 0x20;
+    assert(rtc_take_power_failure(&io) && !f.saved && !f.writes && f.operations == 1);
+    // A record: saved as read, and then RTCWKDAY alone is written back. That clears PWRFAIL
+    // and the stamps and leaves the backup enable, the weekday, the running calendar, CONTROL,
+    // the trim and the alarms as they were.
+    io = fake_io(&f); pfail(f.regs, f.regs + 0x18, found, 11, 21, 22, 40, 11, 21, 22, 43);
+    memcpy(before, f.regs, sizeof before);
+    assert(rtc_take_power_failure(&io) && f.saved && f.writes == 1);
+    const unsigned operations = f.operations;
+    assert(!memcmp(f.saved_calendar, before, 7) && !memcmp(f.saved_stamps, before + 0x18, 8));
+    assert(rtc_power_loss(f.saved_calendar, f.saved_stamps, &loss) && rtc_backup_proof(f.saved_calendar, &loss));
+    before[3] &= ~0x10; memset(before + 0x18, 0, 8);
+    assert(!memcmp(before, f.regs, sizeof before) && (f.regs[3] & 0x28) == 0x28);
+    assert(rtc_take_power_failure(&io) && f.writes == 1); // taken once
+    // A record that cannot be saved stays on the part, untouched.
+    io = fake_io(&f); pfail(f.regs, f.regs + 0x18, found, 11, 21, 22, 40, 11, 21, 22, 43);
+    memcpy(before, f.regs, sizeof before); f.save_failed = true;
+    assert(!rtc_take_power_failure(&io) && !f.writes && !memcmp(before, f.regs, sizeof before));
+    f.save_failed = false; io.save_power_failure = NULL;
+    assert(!rtc_take_power_failure(&io) && !f.writes && !memcmp(before, f.regs, sizeof before));
+    // A transfer that fails at any step is reported, and no step writes before the save.
+    for (unsigned fail = 1; fail <= operations; fail++) {
+        io = fake_io(&f); pfail(f.regs, f.regs + 0x18, found, 11, 21, 22, 40, 11, 21, 22, 43);
+        f.fail_at = fail;
+        assert(!rtc_take_power_failure(&io) && (f.saved || !f.writes));
+    }
+    // A flag that does not clear is read back and reported: the record is saved, and the
+    // part will not stamp another loss.
+    io = fake_io(&f); pfail(f.regs, f.regs + 0x18, found, 11, 21, 22, 40, 11, 21, 22, 43);
+    f.power_fail_sticks = true;
+    assert(!rtc_take_power_failure(&io) && f.saved && f.writes == 1 && (f.regs[3] & 0x10));
+    // Midnight passing while the record is saved: the weekday written back is the new day's.
+    io = fake_io(&f); pfail(f.regs, f.regs + 0x18, found, 11, 21, 22, 40, 11, 21, 22, 43);
+    const uint8_t weekday = f.regs[3] & 7; f.day_rolls_on_save = true;
+    assert(rtc_take_power_failure(&io) && (f.regs[3] & 7) == weekday % 7 + 1 && (f.regs[3] & 0x18) == 8);
+}
 static void square_test(void)
 {
     fake_t f; rtc_io_t io=fake_io(&f); uint8_t control,trim;
@@ -359,6 +500,7 @@ static void square_test(void)
 int main(void)
 {
     calendar_test(); gnss_test(); trusted_utc_test(); io_test(); square_test();service_test();
-    puts("RTC calendar, GNSS qualification, trusted UTC and I2C fault tests passed");
+    power_loss_test(); take_test();
+    puts("RTC calendar, GNSS qualification, trusted UTC, power-loss record and I2C fault tests passed");
     return 0;
 }

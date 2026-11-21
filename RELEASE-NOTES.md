@@ -1,5 +1,16 @@
 # Unreleased
 
+- An MCP79412 observer can show that its backup cell works. The part cannot sense its cell,
+  but it stamps each loss of main power from its own calendar, when the power goes and when
+  it returns. The firmware now saves each record it finds on a running clock and clears it,
+  so that the part stamps the next loss; before, the first record stayed and later losses
+  went unrecorded. Stamps at least two minutes apart are more than a minute counted on the
+  backup input, which a board without a working cell cannot do. That record is kept as the
+  backup's proof and named in the boot log and in `rtc status`, where the log used to say
+  "battery presence unverified" for good. A shorter loss is logged and proves nothing, and
+  the proof is withdrawn if the part later shows it lost its backup as well. The telemetry's
+  power-fail flag now means a loss was found recorded since this start; it used to stay set
+  from the first loss on (`esp32/docs/RTC-SERVICE.md`, Backup proof).
 - A mosaic-G5 P3 observer tracks satellites down to the horizon and keeps the low ones out of
   its fix. The receiver has two elevation masks, both 5 degrees as shipped: below the
   tracking mask a satellite is not tracked, measured or read, and below the PVT mask it is

@@ -72,7 +72,8 @@ that encoding. Confirm the actual observed period when bringing up hardware.
 
 Stopped or invalid calendars still wait for qualified GNSS UTC, using the
 existing initialization checks. There is no compile-time fallback or automatic
-trim/calibration write. Battery-backup enable does not prove battery presence.
+trim/calibration write. Battery-backup enable does not prove battery presence; a
+power loss the clock counts through does ([RTC service guide](RTC-SERVICE.md#backup-proof)).
 
 ## Freshness, loss and operating limits
 

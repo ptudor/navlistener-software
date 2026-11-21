@@ -59,6 +59,17 @@ bool rtc_enable_backup(const rtc_io_t *io)
     if (!io->write(io->ctx, 3, &weekday, 1) || !io->read(io->ctx, 3, &weekday, 1)) return false;
     return (weekday & 8) != 0;
 }
+bool rtc_take_power_failure(const rtc_io_t *io)
+{
+    uint8_t calendar[7], weekday;
+    if (!io->read(io->ctx, 0, calendar, sizeof calendar)) return false;
+    if (!(calendar[3] & 0x10)) return true;
+    // The save writes flash, long enough for the day to change under it: the weekday written
+    // back is the one read afterwards.
+    if (!preserve_power_failure(io, calendar) || !io->read(io->ctx, 3, &weekday, 1)) return false;
+    weekday &= 0x0f; // VBATEN and WKDAY as they stand; OSCRUN is read-only and PWRFAIL cannot be set
+    return io->write(io->ctx, 3, &weekday, 1) && io->read(io->ctx, 3, &weekday, 1) && !(weekday & 0x10);
+}
 bool rtc_set_verified(const rtc_io_t *io, const rtc_time_ref_t *ref, int64_t *written)
 {
     uint8_t old[8], regs[7];

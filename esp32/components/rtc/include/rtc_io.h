@@ -15,6 +15,13 @@ typedef struct {
     bool (*write_trim)(void *ctx, uint8_t osctrim);
 } rtc_io_t;
 bool rtc_enable_backup(const rtc_io_t *io);
+// Takes a power failure the part has recorded. With PWRFAIL set, the raw calendar and the
+// power-down/up stamps go to save_power_failure, and only once that has saved them is
+// RTCWKDAY written back as it stands. The write clears PWRFAIL and the stamps, and until it
+// does the part logs no later failure (DS20002266K section 5.7.1, note 1). Nothing else is
+// written, and nothing at all with PWRFAIL clear. False when a transfer or the save fails:
+// the record then stays on the part.
+bool rtc_take_power_failure(const rtc_io_t *io);
 // Timekeeping and CONTROL only (0x00..0x07); never SRAM/EEPROM/EUI/alarm data. Stops the
 // oscillator, waits for it, loads the second nearest UTC at that moment, starts it, and
 // accepts the result only if the calendar reads within a second of UTC and advances;

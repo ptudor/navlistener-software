@@ -261,6 +261,15 @@ static void rtc_command(char *command)
         cJSON_AddItemToObject(j,"system",time_sample(&s.system,now));cJSON_AddItemToObject(j,"independent",time_sample(&s.independent,now));
         cJSON_AddNumberToObject(j,"changes",s.changes);cJSON_AddNumberToObject(j,"last_change_ms",s.changed_ms);
         cJSON_AddNumberToObject(j,"old_epoch",s.old_utc_ns/1000000000LL);cJSON_AddNumberToObject(j,"new_epoch",s.new_utc_ns/1000000000LL);
+        // The MCP79412's backup as its power-fail records have shown it; null on a part that keeps none.
+        const observer_rtc_backup_t b=observer_rtc_backup();
+        if(!b.tracked)cJSON_AddNullToObject(j,"backup");
+        else {
+            cJSON *backup=cJSON_AddObjectToObject(j,"backup");
+            cJSON_AddBoolToObject(backup,"proven",b.proven);
+            if(b.proven){cJSON_AddNumberToObject(backup,"power_down_epoch",b.loss.down);cJSON_AddNumberToObject(backup,"power_up_epoch",b.loss.up);}
+            else {cJSON_AddNullToObject(backup,"power_down_epoch");cJSON_AddNullToObject(backup,"power_up_epoch");}
+        }
         char *body=cJSON_PrintUnformatted(j);if(body)printf("NVF-RTC-STATUS %s\n",body);else puts("NVF-RTC-ERROR out of memory");cJSON_free(body);cJSON_Delete(j);return;
     }
     if(!strcmp(command,"last") || !strncmp(command,"record ",7)) {

@@ -451,9 +451,12 @@ GNSS sequence; stopping an unverified clock is attempted if the bus still works.
 Writing the RTC weekday register clears its power-fail evidence in hardware.
 When that flag is set, the raw calendar and power-down/up timestamps are first
 saved as the latest event in NVS (`nvf_rtc/last_pfail`); a save failure defers
-the RTC write. Backup switching is also enabled for a retained running clock,
-but that does not prove a battery is
-fitted: a battery is needed to retain time after main power is removed.
+the RTC write. A retained running clock has each such record saved and cleared
+as it is found, so that the part stamps the next loss. Backup switching is also
+enabled for a retained running clock, which does not by itself prove a battery
+is fitted. A recorded loss that the clock counted through for more than a minute
+does, and is kept and reported as the backup's proof
+([RTC service guide](docs/RTC-SERVICE.md#backup-proof)).
 See the [MCP79412 datasheet, sections 5.3 and 5.7](https://ww1.microchip.com/downloads/aemDocuments/documents/MPD/ProductDocuments/DataSheets/MCP79410-MCP79411-MCP79412-Battery-Backed-I2C-RTCC-DS20002266.pdf)
 and [NAV-PVT in the M9 interface description](https://content.u-blox.com/sites/default/files/u-blox-M9-SPG-4.04_InterfaceDescription_UBX-21022436.pdf).
 

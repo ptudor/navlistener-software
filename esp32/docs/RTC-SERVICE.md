@@ -31,8 +31,8 @@ rtc record <sequence>
 ```
 
 `rtc status` emits `NVF-RTC-STATUS` JSON with separate system and independent
-sources, sample age, freshness, reported uncertainty (null when unknown), and the
-last wall-clock change. GNSS evidence expires after two seconds without fresh
+sources, sample age, freshness, reported uncertainty (null when unknown), the
+last wall-clock change, and the [backup's proof](#backup-proof) as `backup`. GNSS evidence expires after two seconds without fresh
 qualified input; a read RTC expires after 30 seconds. Network status is fresh for
 one hour. System time continues to run after a source becomes stale; freshness
 does not claim holdover accuracy. Reported GNSS uncertainty excludes unmeasured
@@ -54,6 +54,8 @@ the date checks used by the time-dependent network paths.
 registers or changing the system clock. `rtc battery` does the same and records
 an operator-declared battery service; it needs neither GNSS nor network time.
 Neither operation establishes absolute accuracy or physical battery retention.
+Retention is shown only by a loss of main power that the clock counts through:
+see [Backup proof](#backup-proof).
 
 Reasons have 1..63 bytes. Prefix a time-setting reason with `battery:` to declare operator
 battery maintenance, for example `rtc gnss battery: powered cell replacement`.
@@ -95,6 +97,70 @@ A verified explicit service action also submits the qualified reference to the
 system time service. This closes the RTC/system-clock gap when correcting a
 retained calendar without network time. Check `rtc status` separately: failure
 to queue/apply a system update does not change the RTC's verified result.
+
+## Backup proof
+
+The MCP79412 has no pin or register that senses its cell, and the boards give the ESP32 no
+other view of it. What the part does keep is a record of each loss of main power. When VCC
+falls below its trip voltage with the backup input enabled, it sets PWRFAIL and stamps the
+minute, hour, date and month from its own calendar; it stamps them again when VCC returns
+(DS20002266 section 5.7.1). The time between the two stamps is time the calendar counted with
+only the backup input to run it.
+
+The board task takes that record wherever it finds PWRFAIL set on a running calendar. It saves
+the raw calendar and both stamps in NVS (`nvf_rtc/last_pfail`), and only then writes RTCWKDAY
+back as it stands. That write clears the flag and the stamps, and until it is made the part
+stamps no later loss. A record that cannot be saved stays on the part and is tried again.
+
+A record proves the backup when all of this holds:
+
+- it was found with PWRFAIL and VBATEN set, on a running calendar dated 2024 or later;
+- its stamps are at least two minutes apart, which is more than 60 seconds counted;
+- the clock was not read stopped while the record was on the part.
+
+The part draws about a microamp from its backup input (925 nA typical at 3 V), so counting
+for a minute takes some 30 µF of stored charge: hundreds of times what a decoupling capacitor
+on that input holds. A board with no cell, a dead one or an open holder cannot make that
+record. A shorter loss is logged and proves nothing either way: stamps one minute apart can
+be a single second that crossed a minute.
+
+The proof is that record, kept in `nvf_rtc/proof`, and it is always reported with the loss
+that earned it:
+
+```
+rtc: power loss recorded, 2026-11-21 23:17 to 23:22 UTC (5 min): the clock counted through it, which proves the backup
+rtc: running calendar retained (UTC epoch=1795303366); backup proven by the power loss of 2026-11-21 23:17 to 23:22 UTC (5 min)
+rtc: power loss recorded, 2026-11-21 22:32 to 22:33 UTC (1 min): too short to prove the backup, which takes more than a minute
+rtc: running calendar retained (UTC epoch=1795301907); backup enabled, not yet proven by a power loss
+```
+
+`rtc status` gives it as `backup`: `proven`, with `power_down_epoch` and `power_up_epoch`
+(both null until there is a proof). The member is null on a part that keeps no such record.
+
+A proof is withdrawn when the part shows that its backup has since failed: VBATEN reads
+clear, which it does only after a power-on reset, when main power and the backup were lost
+together; or the clock reads stopped with a power failure on record, so it went over to the
+backup and did not keep counting. Either has to be read on two polls running. The record is
+erased before the clock is set again, and if it cannot be erased the set waits.
+
+To prove a board at the bench, fit the cell, let the clock be set from a fix, take the power
+away for three minutes or more, and restore it. The first lines of the next boot say what the
+part recorded.
+
+What this does not show:
+
+- It is a dated fact about one loss. It is not a measurement of the cell: there is no voltage
+  and no remaining life in it. A cell that has died since is found out at the next loss, and
+  a station that never loses power never tests its cell.
+- The stamps hold no seconds and no year. A loss is known to a minute either way, the year is
+  the calendar's when the record was found, and a loss of more than a year reads as what is
+  left over.
+- A clock that stopped part of the way through a long loss, and was running again before the
+  first read after it, shows the minutes it did count and can pass. Its calendar is then
+  behind, which shows as the step when the system clock is promoted from the RTC to GNSS
+  (`rtc status`, journal event 11).
+- The DS3231M and the MAX31328 keep no record of a power loss, so there is no proof for them:
+  a calendar they lose shows as their oscillator-stop flag.
 
 ## Rate discipline
 

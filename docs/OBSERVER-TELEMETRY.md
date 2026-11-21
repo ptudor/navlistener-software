@@ -203,6 +203,8 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
   invented ambient temperature. There is no additional enclosure/site calibration.
 - RTC flags and calendar describe the last hardware read, whose uptime is included.
   Battery backup enabled does not prove a battery is installed or retention works.
+  The firmware's proof of a working backup, a power loss the clock counted through,
+  is in its log and its `rtc status`, not in this report.
   RTC time is not used for GNF1 timestamps. The GNSS-only initialization policy stays.
 - ATECC revision, lock state and RNG screening are boot diagnostics, with their
   check uptime. A screening pass is not entropy certification. Repeating output
@@ -384,7 +386,11 @@ RH 0…100%, pressure 30000…125000 Pa.
 
 RTC flag bits: readable=1, oscillator-running=2, backup-enabled=4,
 power-fail=8, validated running calendar=16. Unix seconds must be zero without
-the last flag; validated calendars cover 2000–2099. On the ZED/X20's DS3231M
+the last flag; validated calendars cover 2000–2099. On an MCP79412, power-fail
+means the part was found holding a record of a main-power loss at some read since
+this start. It stays set until the next start, although the part's own flag is
+cleared as soon as the record is saved, so that the next loss is stamped.
+On the ZED/X20's DS3231M
 (and the MAX31328 supported by the same driver),
 backup switching is automatic, so backup-enabled is always set with readable;
 oscillator-running means the oscillator is enabled and its stop flag (OSF) is clear;
