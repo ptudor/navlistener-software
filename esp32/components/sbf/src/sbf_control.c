@@ -7,6 +7,8 @@ static const char *const commands[] = {
     "scs, COM2, baud115200, bits8, No, bit1, RTS|CTS\r",
     "sdio, COM2, CMD, SBF\r",
     "gnt\r",
+    "gem, Tracking\r",
+    "gem, PVT\r",
     "scst, usec500\r",
     "spps, , , , , , 100\r",
     "sso, Res1, COM2, PVTGeodetic+ReceiverTime+MeasEpoch+SatVisibility+ReceiverStatus+RFStatus, sec1\r",
@@ -14,7 +16,14 @@ static const char *const commands[] = {
     "sso, Res3, COM2, GPSRawCA+GPSRawL2C+GPSRawL5+GLORawCA+GALRawFNAV+GALRawINAV+GEORawL1+BDSRaw+BDSRawB2a+QZSRawL1CA+QZSRawL2C+QZSRawL5, OnChange\r",
     "gst\r",
 };
-enum { STEP_FLOW_CONTROL = 0, STEP_SIGNALS = 2, STEP_TRACKING = 8, STEPS = sizeof commands / sizeof commands[0] };
+enum {
+    STEP_FLOW_CONTROL = 0, STEP_SIGNALS = 2, STEP_MASK_TRACKING = 3, STEP_MASK_PVT = 4, STEP_TRACKING = 10,
+    STEPS = sizeof commands / sizeof commands[0],
+};
+static const struct { const char *engine; int degrees; } masks[SBF_MASKS] = {
+    [SBF_MASK_TRACKING] = {"Tracking", SBF_CONTROL_TRACKING_MASK_DEG},
+    [SBF_MASK_PVT] = {"PVT", SBF_CONTROL_PVT_MASK_DEG},
+};
 
 // The signals setSignalTracking names on a mosaic-G5 (reference guide 3.2), by signal number
 // (4.1.10), in the command's order. A missing one is asked for in this order.
@@ -82,6 +91,48 @@ uint64_t sbf_control_wanted(void)
     return mask;
 }
 
+bool sbf_control_mask(const char *text, unsigned *index, int *degrees)
+{
+    static const char name[] = "ElevationMask,";
+    const char *p = strstr(text, name);
+    if (!p) return false;
+    p += sizeof name - 1;
+    while (*p == ' ') p++;
+    for (unsigned i = 0; i < SBF_MASKS; i++) {
+        const size_t n = strlen(masks[i].engine);
+        if (strncmp(p, masks[i].engine, n) || p[n] != ',') continue;
+        const char *q = p + n + 1;
+        while (*q == ' ') q++;
+        const bool negative = *q == '-';
+        if (negative || *q == '+') q++;
+        if (*q < '0' || *q > '9') return false;
+        int value = 0;
+        for (; *q >= '0' && *q <= '9'; q++) {
+            value = value * 10 + (*q - '0');
+            if (value > 90) return false;
+        }
+        while (*q == ' ') q++;
+        if (*q) return false; // a whole number of degrees and nothing after it
+        *index = i;
+        *degrees = negative ? -value : value;
+        return true;
+    }
+    return false;
+}
+
+// The command that sets the mask the step has just read, when it is known, is not what the
+// observer wants and has not already been asked for in vain. False otherwise.
+static bool next_mask(sbf_control_t *c)
+{
+    const unsigned i = c->step == STEP_MASK_TRACKING ? SBF_MASK_TRACKING : SBF_MASK_PVT;
+    const unsigned bit = 1u << i;
+    if (!(c->masks_known & bit) || c->mask[i] == masks[i].degrees || c->masks_refused & bit) return false;
+    c->mask_out = (uint8_t)i;
+    c->mask_before[i] = c->mask[i];
+    snprintf(c->command, sizeof c->command, "sem, %s, %d\r", masks[i].engine, masks[i].degrees);
+    return true;
+}
+
 // The next wanted signal that is neither tracked nor already asked for in vain, as the command
 // that adds it. False when there is none.
 static bool next_signal(sbf_control_t *c)
@@ -94,14 +145,16 @@ static bool next_signal(sbf_control_t *c)
     }
     return false;
 }
-static const char *command(const sbf_control_t *c) { return c->adding ? c->command : commands[c->step]; }
+static const char *command(const sbf_control_t *c) { return c->adding || c->masking ? c->command : commands[c->step]; }
+static bool mask_step(const sbf_control_t *c) { return c->masking || c->step == STEP_MASK_TRACKING || c->step == STEP_MASK_PVT; }
 
 static void configure(sbf_control_t *c, int64_t now)
 {
     c->state = SBF_CONTROL_CONFIGURING;
     c->step = c->tries = 0;
-    c->sent = c->escaping = c->escape_next = c->collecting = c->adding = false;
+    c->sent = c->escaping = c->escape_next = c->collecting = c->adding = c->masking = false;
     c->signals_added = 0;
+    c->masks_set = 0;
     c->cts_off_due = true;
     c->cts_on_due = false;
     c->deadline = now;
@@ -125,15 +178,23 @@ void sbf_control_line(sbf_control_t *c, const char *line)
         const size_t length = strlen(sent) - 1; // without the CR
         if (strlen(echo) != length || strncmp(echo, sent, length)) return;
         c->reply_ok = true;
-        c->collecting = c->adding || c->step == STEP_SIGNALS || c->step == STEP_TRACKING;
+        c->collecting = c->adding || mask_step(c) || c->step == STEP_SIGNALS || c->step == STEP_TRACKING;
         c->collected = 0;
         c->listed = 0;
+        c->mask_read = false;
     } else if (!strncmp(line, "$R?", 3)) {
         c->reply_error = true;
         c->collecting = false;
     } else if (c->collecting) {
-        if (c->adding || c->step == STEP_SIGNALS) c->listed |= sbf_control_signals(line);
-        else c->collected |= sbf_control_constellations(line);
+        unsigned index;
+        int degrees;
+        if (c->adding || (!c->masking && c->step == STEP_SIGNALS)) c->listed |= sbf_control_signals(line);
+        else if (!mask_step(c)) c->collected |= sbf_control_constellations(line);
+        else if (sbf_control_mask(line, &index, &degrees)) {
+            c->mask[index] = (int8_t)degrees;
+            c->masks_known |= (uint8_t)(1u << index);
+            c->mask_read = true;
+        }
     }
 }
 void sbf_control_prompt(sbf_control_t *c)
@@ -213,38 +274,48 @@ sbf_action_t sbf_control_poll(sbf_control_t *c, int64_t now)
             return act(SBF_ACTION_SEND, escape);
         }
         c->sent = true;
-        c->reply_ok = c->reply_error = c->prompt = c->collecting = false;
+        c->reply_ok = c->reply_error = c->prompt = c->collecting = c->mask_read = false;
         c->deadline = now + SBF_CONTROL_REPLY_MS;
         return act(SBF_ACTION_SEND, command(c));
     }
     if ((c->reply_ok || c->reply_error) && c->prompt) {
         c->sent = false;
         c->tries = 0;
-        bool more = false;
         if (c->adding) {
             // The reply to a signal added lists what is tracked now. A signal refused, or taken
-            // and still not listed, is not offered by this receiver.
+            // and still not listed, is not offered by this receiver. Each missing signal has
+            // its turn before the step after gnt.
             const uint64_t bit = 1ull << c->add;
             if (c->reply_ok && c->listed) c->signals = c->listed;
             if (c->signals & bit) c->signals_added |= bit;
             else c->signals_refused |= bit;
-            more = next_signal(c);
+            if (next_signal(c)) return act(SBF_ACTION_NONE, NULL);
+            c->adding = false;
+        } else if (c->masking) {
+            // The reply to a mask set gives the mask as it is now. A refusal is a fault, unlike a
+            // signal's: every receiver has both masks.
+            const unsigned bit = 1u << c->mask_out;
+            if (c->reply_error) c->command_errors++;
+            if (c->reply_ok && c->mask_read && c->mask[c->mask_out] == masks[c->mask_out].degrees) c->masks_set |= (uint8_t)bit;
+            else c->masks_refused |= (uint8_t)bit;
+            c->masking = false;
         } else {
             if (c->reply_error) c->command_errors++;
             if (c->step == STEP_FLOW_CONTROL && c->reply_ok) c->cts_on_due = true;
             if (c->step == STEP_SIGNALS && c->reply_ok && c->listed) {
                 c->signals = c->listed;
                 c->signals_known = true;
-                more = next_signal(c);
+                if (next_signal(c)) { c->adding = true; return act(SBF_ACTION_NONE, NULL); }
+            }
+            if ((c->step == STEP_MASK_TRACKING || c->step == STEP_MASK_PVT) && c->reply_ok && c->mask_read && next_mask(c)) {
+                c->masking = true;
+                return act(SBF_ACTION_NONE, NULL);
             }
             if (c->step == STEP_TRACKING && c->reply_ok && c->collected) {
                 c->supported = c->collected;
                 c->supported_known = true;
             }
         }
-        // Each missing signal has its turn before the step after gnt.
-        c->adding = more;
-        if (more) return act(SBF_ACTION_NONE, NULL);
         if (++c->step == STEPS) {
             c->state = SBF_CONTROL_RUNNING;
             c->configurations++;

@@ -458,6 +458,37 @@ static void sbf_log_signals(void)
     logged = true;
     tracked = c->signals; refused = c->signals_refused;
 }
+// After a configuration: the receiver's elevation masks, when either has changed; what the
+// configuration set, each time it set one; and a mask the receiver would not change.
+static void sbf_log_masks(void)
+{
+    static const char *const names[SBF_MASKS] = {[SBF_MASK_TRACKING] = "tracking", [SBF_MASK_PVT] = "PVT"};
+    static bool logged;
+    static int8_t last[SBF_MASKS];
+    static uint8_t known, refused;
+    const sbf_control_t *c = &sbf_ctl;
+    char now[64] = "", set[96] = "", kept[32] = "";
+    bool changed = !logged || known != c->masks_known;
+    for (unsigned i = 0; i < SBF_MASKS; i++) {
+        const unsigned bit = 1u << i;
+        if (!(c->masks_known & bit)) continue;
+        if (last[i] != c->mask[i]) changed = true;
+        snprintf(now + strlen(now), sizeof now - strlen(now), "%s%s %d deg", now[0] ? ", " : "", names[i], (int)c->mask[i]);
+        if (c->masks_set & bit)
+            snprintf(set + strlen(set), sizeof set - strlen(set), "%s%s from %d to %d deg", set[0] ? ", " : "", names[i],
+                     (int)c->mask_before[i], (int)c->mask[i]);
+        if (c->masks_refused & bit)
+            snprintf(kept + strlen(kept), sizeof kept - strlen(kept), "%s%s", kept[0] ? " and " : "", names[i]);
+    }
+    if (!c->masks_known) return;
+    if (changed) ESP_LOGI(TAG, "receiver elevation masks: %s", now);
+    if (set[0]) ESP_LOGI(TAG, "receiver elevation masks: set by the observer: %s", set);
+    if (c->masks_refused != refused && kept[0])
+        ESP_LOGW(TAG, "receiver elevation masks: the receiver would not change its %s mask", kept);
+    logged = true;
+    known = c->masks_known; refused = c->masks_refused;
+    memcpy(last, c->mask, sizeof last);
+}
 // The satellites behind the counts, by name, and how many of them each signal is tracked on:
 // which satellite a count gained or lost, and whether a signal that was switched on is heard.
 // False while no measurement epoch is recent enough to speak for now.
@@ -545,6 +576,7 @@ static void sbf_task(void *arg)
                 ESP_LOGI(TAG, "receiver tracks constellations 0x%02x (UBX gnssId bits)", health.supported);
             }
             sbf_log_signals();
+            sbf_log_masks();
         }
         if (now >= next_log) {
             static const char *const states[] = {"starting", "configuring", "running", "waiting to retry", "resetting"};

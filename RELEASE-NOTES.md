@@ -1,5 +1,14 @@
 # Unreleased
 
+- A mosaic-G5 P3 observer tracks satellites down to the horizon and keeps the low ones out of
+  its fix. The receiver has two elevation masks, both 5 degrees as shipped: below the
+  tracking mask a satellite is not tracked, measured or read, and below the PVT mask it is
+  tracked and left out of the position, the time and the pulse. The firmware now reads both
+  and sets tracking to 0 degrees and PVT to 10, each only when it differs, so a repeated
+  configuration sends the receiver nothing. Satellites near the horizon, which is where the
+  distant regional ones are, appear in the forwarded blocks and in the console's list of
+  names. The collector's reception checks keep their own mask (20 degrees by default), so
+  they and the power baselines are unchanged (`esp32/docs/SBF-RECEIVER.md` §4).
 - A mosaic-G5 P3 observer has its receiver track every signal it offers. The receiver starts
   with 20 of its 30 signals on. The firmware now asks which are tracked and adds each missing
   one by name: GPS L1C, GLONASS L2P and L3, Galileo E5 AltBOC, SBAS L5, BeiDou B2b and QZSS

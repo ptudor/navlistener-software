@@ -59,6 +59,8 @@ its reply.
 | `sdio, COM2, CMD, SBF` | commands in, SBF out and nothing else on this port |
 | `gnt` | the signals it tracks (3.2, `getSignalTracking`) |
 | `snt, +GPSL1C` | one signal added to that list: sent once for each signal the receiver could track and does not (see Signal tracking below), so usually not at all |
+| `gem, Tracking` and `gem, PVT` | the two elevation masks (3.2, `getElevationMask`) |
+| `sem, Tracking, 0` and `sem, PVT, 10` | a mask set, each sent only when that mask is not already so (see Elevation masks below) |
 | `scst, usec500` | the receiver time within 0.5 ms of GNSS time once FINETIME is set (2.3), which bounds the time accuracy in section 6 |
 | `spps, , , , , , 100` | a 100 ms xPPS pulse in place of the default 5 ms (3.2, `setPPSParameters`), so the board's PPS lamp and the panel's show each pulse, as they do on the u-blox boards. Only the width is named: the interval, polarity, delay, time scale and sync age stay as the receiver has them, and the pulse's leading edge, which carries the time, does not move |
 | `sso, Res1, COM2, PVTGeodetic+ReceiverTime+MeasEpoch+SatVisibility+ReceiverStatus+RFStatus, sec1` | the 1 Hz stream |
@@ -96,9 +98,30 @@ file read from a P3 lists AltBOC tracking as not permitted. No QZSS satellite wa
 show its four.
 
 Tracking a signal does not put it in the receiver's position solution: `setSignalUsage` stays
-as the receiver has it. The satellites allowed (`setSatelliteTracking`) and the elevation mask
-also stay as they are, and the receiver's default allows every satellite of every
-constellation.
+as the receiver has it. The satellites allowed (`setSatelliteTracking`) stay as they are too:
+the receiver's default allows every satellite of every constellation.
+
+**Elevation masks.** The receiver has two (3.2, `setElevationMask`). A satellite below the
+tracking mask is not tracked at all: no measurement and no navigation data. A satellite below
+the PVT mask is tracked, and kept out of the position, the time and the pulse. A P3 starts
+with both at 5 degrees, and a satellite followed down to that mask was dropped there while it
+was still being received.
+
+The observer sets the tracking mask to 0 degrees and the PVT mask to 10. Satellites are then
+measured and read from the horizon up, which is where the far-away ones stay: from a western
+shore the regional satellites over Asia never climb more than a few degrees. The solution
+uses none below 10 degrees, where signals are the most reflected and delayed, so hearing more
+does not cost the fix or the pulse anything. The collector's reception checks have a mask of
+their own, 20 degrees unless a site sets another and never under 5, so a low satellite does
+not reach its alarms or its power baselines either.
+
+Each mask is read first and set only when it differs, so a configuration repeated on a
+receiver that kept its settings sends nothing: after an ESP32 restart alone a P3 gave both
+masks as 0 and 10 degrees and was sent neither. A mask the receiver refuses is a command
+error; one it refuses, or takes and does not change, is logged and not sent again until the
+ESP32 restarts. The tracking mask does not apply to SBAS satellites (3.2). The guide allows a
+negative mask, for a receiver at altitude or a signal bent by the atmosphere; the observer
+stops at the horizon.
 
 ## 5. Recovery
 
@@ -345,9 +368,11 @@ this rate, under its raw retention.
    and 50 dB and every variance near 100; moving the antenna away from interference raises the
    gains. The receiver's temperature reads a few degrees above the board's sensors: 27 C
    against 22 C on an open bench.
-10. **Signals.** After the first configuration the log lists the signals tracked, those the
-    observer enabled and any the receiver does not offer (section 4). Reset the ESP32 alone,
-    with SW1: the list comes back with nothing enabled, the receiver status line shows an
-    uptime that kept running, and the next tracked counts are the ones before the reset. Once
-    a minute the log names the satellites and counts them per signal (section 6); with sky in
-    view the added signals count satellites within a few minutes.
+10. **Signals and masks.** After the first configuration the log lists the signals tracked,
+    those the observer enabled and any the receiver does not offer, then the two elevation
+    masks, 0 and 10 degrees, and what each was before (section 4). Reset the ESP32 alone,
+    with SW1: the list and the masks come back with nothing enabled or set, the receiver
+    status line shows an uptime that kept running, and the next tracked counts are the ones
+    before the reset. Once a minute the log names the satellites and counts them per signal
+    (section 6); with sky in view the added signals count satellites within a few minutes,
+    and with a clear horizon satellites under 5 degrees are named.

@@ -30,6 +30,20 @@
 // only that signal: a refused command changes nothing. A signal refused, or accepted and still
 // not in the list, is not asked for again until the ESP32 restarts.
 //
+// Elevation masks. A mosaic-G5 tracks no satellite below 5 degrees, and the far-away ones an
+// observer is there to hear sit just above the horizon. The receiver has two masks (3.2,
+// setElevationMask): below the tracking mask a satellite is not tracked, measured or read at
+// all; below the PVT mask it is tracked and kept out of the position, the time and the pulse.
+// The observer wants the first at the horizon and the second well above it, where signals are
+// least reflected and delayed:
+//   gem, Tracking                                      the tracking mask
+//   sem, Tracking, 0                                   sent only when it is not 0 degrees
+//   gem, PVT                                           the PVT mask
+//   sem, PVT, 10                                       sent only when it is not 10 degrees
+// Each mask is read first and set only when it differs, so a repeated configuration sends the
+// receiver nothing. One it refuses, or takes and does not change, is not asked for again until
+// the ESP32 restarts. SBAS satellites are outside the tracking mask whatever it is.
+//
 // The receiver starts with flow control off, and its RTS output is then of no meaning, so the
 // ESP32 honors CTS only after the receiver has confirmed RTS|CTS, and stops before every new
 // configuration. Its own RTS runs throughout. A command that gets no reply is retried after the
@@ -52,6 +66,10 @@
 #define SBF_CONTROL_RESET_HOLD_MS     500
 #define SBF_CONTROL_BOOT_MS           10000
 #define SBF_CONTROL_RESET_INTERVAL_MS (10 * 60 * 1000)
+// The elevation masks the observer sets, in degrees, and their index in sbf_control_t.mask.
+#define SBF_CONTROL_TRACKING_MASK_DEG 0
+#define SBF_CONTROL_PVT_MASK_DEG      10
+enum { SBF_MASK_TRACKING, SBF_MASK_PVT, SBF_MASKS };
 
 typedef enum {
     SBF_ACTION_NONE,
@@ -98,6 +116,14 @@ typedef struct {
     uint64_t listed;  // the list being read from a reply
     bool adding;      // the command out is command[], one signal's snt
     uint8_t add;      // that signal's number
+    // Elevation masks in degrees, as the receiver last gave each (masks_known has its bit), with
+    // what one was before the latest configuration set it (masks_set) and those asked for since
+    // the ESP32 started and not given (masks_refused). All three are bits by mask index.
+    int8_t mask[SBF_MASKS], mask_before[SBF_MASKS];
+    uint8_t masks_known, masks_set, masks_refused;
+    bool mask_read;   // the reply being read gave a mask
+    bool masking;     // the command out is command[], one mask's sem
+    uint8_t mask_out; // that mask's index
     char command[32];
     unsigned configurations, resets, command_errors;
 } sbf_control_t;
@@ -119,4 +145,7 @@ uint8_t sbf_control_constellations(const char *text);
 uint64_t sbf_control_signals(const char *text);
 // Every signal the observer wants tracked: all that setSignalTracking names on a mosaic-G5.
 uint64_t sbf_control_wanted(void);
+// The mask a line of gem's or sem's reply gives ("ElevationMask, Tracking, 5"): its index and
+// its degrees. False for any other line and for a value outside -90..90.
+bool sbf_control_mask(const char *text, unsigned *index, int *degrees);
 #endif

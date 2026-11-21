@@ -2,6 +2,7 @@
 #include "sbf_build.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // A simulated receiver COM2 in command input mode (reference guide 3.1.3): each command line
@@ -9,7 +10,10 @@
 // and the prompt. A silent receiver answers nothing. It tracks `signals`, lists them for gnt,
 // and adds one for "snt, +NAME" when it is among those it offers, restarting its tracking
 // loops as the real one does; a name it does not offer is an invalid argument. One in
-// `ignored` is taken and listed no differently.
+// `ignored` is taken and listed no differently. Its two elevation masks are what the observer
+// wants unless it is `factory`, which starts both at 5 degrees; it gives one for
+// "gem, Engine" and takes "sem, Engine, N" unless it is `stubborn`, which answers and keeps
+// the mask it has.
 typedef struct {
     bool silent, flow_control, mismatch;
     bool deaf_to_signals; // falls silent at the first snt
@@ -17,6 +21,9 @@ typedef struct {
     unsigned sent, escapes, resets;
     uint64_t signals, offered, ignored;
     unsigned adds, restarts; // snt commands received, and those that restarted the tracking loops
+    bool factory, stubborn, masks_up;
+    int mask[SBF_MASKS];
+    unsigned mask_sets; // sem commands received
     char last[256];
 } rx_t;
 static void signal_list(const rx_t *rx, char *out, size_t size)
@@ -58,6 +65,19 @@ static void deliver(sbf_control_t *c, rx_t *rx, const char *text)
                 if (!(rx->ignored >> added & 1)) rx->signals |= 1ull << added;
             }
             signal_list(rx, line, sizeof line);
+            sbf_control_line(c, line);
+        } else if (!strncmp(command, "gem, ", 5) || !strncmp(command, "sem, ", 5)) {
+            if (!rx->masks_up) {
+                rx->mask[SBF_MASK_TRACKING] = rx->factory ? 5 : SBF_CONTROL_TRACKING_MASK_DEG;
+                rx->mask[SBF_MASK_PVT] = rx->factory ? 5 : SBF_CONTROL_PVT_MASK_DEG;
+                rx->masks_up = true;
+            }
+            const unsigned i = !strncmp(command + 5, "PVT", 3) ? SBF_MASK_PVT : SBF_MASK_TRACKING;
+            if (command[0] == 's') {
+                rx->mask_sets++;
+                if (!rx->stubborn) rx->mask[i] = atoi(strrchr(command, ',') + 1);
+            }
+            snprintf(line, sizeof line, "  ElevationMask, %s, %d", i == SBF_MASK_PVT ? "PVT" : "Tracking", rx->mask[i]);
             sbf_control_line(c, line);
         } else sbf_control_line(c, "  done");
     }
@@ -303,6 +323,92 @@ static void signals_test(void)
     assert(sbf_control_signals("XGPSL1CA GPSL1CAX GALE5A gpsl1ca") == 0 && sbf_control_signals("") == 0);
 }
 
+static void masks_test(void)
+{
+    const char *const *list;
+    const size_t steps = sbf_control_commands(&list);
+    const unsigned both = 1u << SBF_MASK_TRACKING | 1u << SBF_MASK_PVT;
+    // A receiver as shipped, both masks at 5 degrees: each is read, then set, tracking to the
+    // horizon and PVT to 10 degrees.
+    sbf_control_t c;
+    rx_t rx = {.factory = true};
+    esp_t esp = {0};
+    int64_t now = 0;
+    sbf_control_init(&c, true, 0);
+    sbf_control_prompt(&c);
+    run(&c, &rx, &esp, &now, 1000, 100);
+    assert(c.state == SBF_CONTROL_RUNNING && c.configurations == 1 && !c.command_errors);
+    assert(rx.sent == steps + 2 && rx.mask_sets == 2 && rx.mask[SBF_MASK_TRACKING] == 0 && rx.mask[SBF_MASK_PVT] == 10);
+    assert(c.masks_known == both && c.masks_set == both && !c.masks_refused && !c.masking);
+    assert(c.mask[SBF_MASK_TRACKING] == 0 && c.mask[SBF_MASK_PVT] == 10);
+    assert(c.mask_before[SBF_MASK_TRACKING] == 5 && c.mask_before[SBF_MASK_PVT] == 5);
+
+    // Configured again with its settings kept: both masks are read and neither is sent.
+    uint8_t b[64];
+    size_t n = status_block(b, 100, 0, 0);
+    sbf_control_block(&c, b, n, now);
+    run(&c, &rx, &esp, &now, now + SBF_CONTROL_SILENCE_MS + 2000, 100);
+    assert(c.configurations == 2 && rx.sent == 2 * steps + 2 && rx.mask_sets == 2 && !c.masks_set);
+
+    // The receiver restarts with its own masks again: both are set again.
+    rx.masks_up = false;
+    sbf_control_block(&c, b, status_block(b, 5000, 0, 0), now);
+    sbf_control_block(&c, b, status_block(b, 3, 0, 0), now + 1000);
+    run(&c, &rx, &esp, &now, now + 2000, 100);
+    assert(c.configurations == 3 && rx.mask_sets == 4 && c.masks_set == both && rx.mask[SBF_MASK_TRACKING] == 0);
+
+    // Only the mask that differs is set: a receiver whose PVT mask is already 10 degrees.
+    sbf_control_init(&c, true, 0);
+    sbf_control_prompt(&c);
+    rx = (rx_t){.masks_up = true, .mask = {5, 10}}; now = 0; esp = (esp_t){0};
+    run(&c, &rx, &esp, &now, 1000, 100);
+    assert(c.state == SBF_CONTROL_RUNNING && rx.sent == steps + 1 && rx.mask_sets == 1);
+    assert(c.masks_set == 1u << SBF_MASK_TRACKING && c.mask[SBF_MASK_TRACKING] == 0 && c.mask[SBF_MASK_PVT] == 10);
+
+    // A refused set is a command error, and is not sent again while the ESP32 runs.
+    sbf_control_init(&c, true, 0);
+    sbf_control_prompt(&c);
+    rx = (rx_t){.factory = true, .fail = "sem"}; now = 0; esp = (esp_t){0};
+    run(&c, &rx, &esp, &now, 1000, 100);
+    assert(c.state == SBF_CONTROL_RUNNING && c.command_errors == 2 && c.masks_refused == both && !c.masks_set);
+    assert(rx.sent == steps + 2 && c.mask[SBF_MASK_TRACKING] == 5 && c.mask[SBF_MASK_PVT] == 5);
+    sbf_control_block(&c, b, n, now);
+    run(&c, &rx, &esp, &now, now + SBF_CONTROL_SILENCE_MS + 2000, 100);
+    assert(c.configurations == 2 && c.command_errors == 2 && rx.sent == 2 * steps + 2);
+
+    // One that answers and keeps its mask is asked once, with no error.
+    sbf_control_init(&c, true, 0);
+    sbf_control_prompt(&c);
+    rx = (rx_t){.factory = true, .stubborn = true}; now = 0; esp = (esp_t){0};
+    run(&c, &rx, &esp, &now, 1000, 100);
+    assert(c.state == SBF_CONTROL_RUNNING && !c.command_errors && c.masks_refused == both && rx.mask_sets == 2);
+    sbf_control_block(&c, b, n, now);
+    run(&c, &rx, &esp, &now, now + SBF_CONTROL_SILENCE_MS + 2000, 100);
+    assert(c.configurations == 2 && rx.mask_sets == 2);
+
+    // A mask that cannot be read is not set blind: the refusal is the only error.
+    sbf_control_init(&c, true, 0);
+    sbf_control_prompt(&c);
+    rx = (rx_t){.factory = true, .fail = "gem"}; now = 0; esp = (esp_t){0};
+    run(&c, &rx, &esp, &now, 1000, 100);
+    assert(c.state == SBF_CONTROL_RUNNING && c.command_errors == 2 && !c.masks_known && !rx.mask_sets && rx.sent == steps);
+
+    // The reply's line: an engine and a whole number of degrees, negative for below the horizon.
+    unsigned index = 9;
+    int degrees = 99;
+    assert(sbf_control_mask("  ElevationMask, Tracking, 5", &index, &degrees) && index == SBF_MASK_TRACKING && degrees == 5);
+    assert(sbf_control_mask("ElevationMask, PVT, 10", &index, &degrees) && index == SBF_MASK_PVT && degrees == 10);
+    assert(sbf_control_mask("  ElevationMask, Tracking, -2", &index, &degrees) && degrees == -2);
+    assert(sbf_control_mask("ElevationMask,PVT,0", &index, &degrees) && index == SBF_MASK_PVT && degrees == 0);
+    assert(sbf_control_mask("  ElevationMask, Tracking, 90", &index, &degrees) && degrees == 90);
+    assert(!sbf_control_mask("  ElevationMask, Tracking, 91", &index, &degrees));
+    assert(!sbf_control_mask("  ElevationMask, Tracking, 5.5", &index, &degrees));
+    assert(!sbf_control_mask("  ElevationMask, Tracking, ", &index, &degrees));
+    assert(!sbf_control_mask("  ElevationMask, Aux, 5", &index, &degrees));
+    assert(!sbf_control_mask("  SignalTracking, GPSL1CA", &index, &degrees) && !sbf_control_mask("", &index, &degrees));
+    assert(!sbf_control_mask("  ElevationMask, TrackingX, 5", &index, &degrees));
+}
+
 // The blocks forwarded to the collector are exactly those the sso commands request: every name
 // in them maps to a forwarded number (4.2), and no other number is forwarded.
 static void forwarded_test(void)
@@ -342,9 +448,10 @@ int main(void)
     reply_test();
     recovery_test();
     signals_test();
+    masks_test();
     forwarded_test();
     puts("SBF control: configuration sequence, CTS only after RTS|CTS is confirmed, constellations, error and "
          "foreign replies, silence and restart recovery, escape, reset pulses and their 10-minute spacing, signals "
-         "added once and never twice, and the forwarded blocks passed");
+         "added once and never twice, elevation masks set only when they differ, and the forwarded blocks passed");
     return 0;
 }
