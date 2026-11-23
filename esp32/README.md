@@ -429,7 +429,7 @@ frequencies in MHz. Read the full assessment over USB or in the collector. A pan
 driver has no such lamp, and trouble with the network is not among its causes: the uplink
 column shows that.
 
-One kind of jamming flag does not light the lamp: the beam of a rotating radar crossing
+One kind of jamming warning does not light the lamp: the beam of a rotating radar crossing
 the antenna, once the observer knows the radar. A long-range L-band radar turns once in 10
 to 12 seconds and transmits inside the band of GPS L2, GLONASS L2, BeiDou B3 and Galileo
 E6, and a ZED-X20P in its sight flags that RF path's four frequencies for one report at
@@ -439,18 +439,22 @@ which with the ten-second hold kept its lamp lit 88 % of the time; the receiver'
 therefore watches when the flags come and how long they last
 ([`jam_pulse.h`](components/ubx/include/jam_pulse.h)):
 
-- **A source becomes known** when four crossings agree: each up for one report, or two
-  when it falls across them; all on the same frequencies; whole turns of one period apart,
-  two of the three intervals single turns; the period between 4 and 20 seconds. The console
-  says so once: `periodic source: jamming flags for one report every 12.0 s on 1227.60
+- **A source becomes known** when four warning-level crossings agree: each up for one
+  report, or two when it falls across them; all on the same frequencies; whole turns of one
+  period apart,
+  two of the three intervals single turns; the period between 4 and 20 seconds, including
+  as it adapts to later crossings. The console
+  says so once: `periodic source: warning flags for one report every 12.0 s on 1227.60
   1268.52 1278.75 1246.00 MHz, as from a rotating radar`.
-- **Its crossings then do not count.** Flags that begin when a crossing is due (a quarter
+- **Its warning-level crossings then do not count.** Flags that begin when a crossing is due (a quarter
   of the period either side, 1.5 seconds at most), on the source's frequencies, are neither
   a cause for ATTENTION nor an interference event for the reports and RF surveys that such
-  events start. A source may go unflagged for ten turns and still be due.
-- **Everything else counts as before.** Flags still up in a third report count from that
-  report. Flags that come when no crossing is due, or name other frequencies, count at
-  once.
+  events start. A suppressed warning starts counting again after 3.5 seconds even if the
+  receiver sends no clearing RF report. A source may go unflagged for ten turns and still be due.
+- **Everything else counts as before.** A MON-RF critical indication, interference with no
+  fix, counts at once and never trains the tracker. Warning flags still up in a third report
+  count from that report. Flags that come when no crossing is due, or name other frequencies,
+  count at once.
 - **A source is forgotten** after two crossings in a row that fit no turn, or after ten
   turns without one; `periodic source: gone`. A restart forgets it too, so the lamp lights
   for the first four crossings after one.

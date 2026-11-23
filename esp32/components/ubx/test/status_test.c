@@ -281,6 +281,18 @@ static void periodic_source(void)
     for (unsigned i = 2; i < 12; i++) second(&s, t + 1000 * i, 0);
     t += 12000;
     second(&s, t, path2);
+    // The explanation expires even when SEC-SIG does not send a clearing report. A display
+    // or ATTENTION read sees the warning immediately; ordinary receiver traffic advances
+    // the cached event state as well.
+    gnss_status_t expiry = s;
+    const int64_t expired = t + JAM_PULSE_EXPLAIN_MS + 1;
+    const unsigned before_expiry = expiry.event_count;
+    assert(expiry.jam_counted == 1 && gnss_status_counted_jam(&expiry, expired) == 2);
+    assert(gnss_status_attention(&expiry, expired) == GNSS_ATTENTION_JAMMING);
+    uint8_t keepalive[8] = {0}; keepalive[4] = 1;
+    gnss_status_feed(&expiry, 1, 0x35, keepalive, sizeof keepalive, expired);
+    assert(expiry.jam_counted == 2 && expiry.event_count == before_expiry + 1);
+    assert(expiry.event_flags == 1 && expiry.event_states == 2);
     uint8_t ns[16] = {0}; ns[7] = 2 << 3;
     gnss_status_feed(&s, 1, 3, ns, sizeof ns, t + 100);
     assert(s.event_count == ++events && s.event_flags == 2 && s.event_states == (1 | 2 << 2));
@@ -299,6 +311,27 @@ static void periodic_source(void)
         if (!crossing) assert(gnss_status_attention(&m, at) == 0);
     }
     assert(counted == 4 && m.pulse.known && m.pulse.period_ms == 10000 && m.event_count == 8);
+    // A critical MON-RF report at exactly the next turn is never explained or fed to the
+    // periodic tracker: critical means interference with no fix.
+    const uint16_t crossings = m.pulse.crossings;
+    rf[4 + 1] = 3;
+    gnss_status_feed(&m, 1, 0x35, sat, sizeof sat, 200000);
+    gnss_status_feed(&m, 0x0a, 0x38, rf, sizeof rf, 200000);
+    assert(m.jam == 3 && m.jam_counted == 3 && m.event_count == 9);
+    assert(m.pulse.crossings == crossings && gnss_status_attention(&m, 200000) == GNSS_ATTENTION_JAMMING_CRITICAL);
+
+    // Nor can a critical report finish the warning report before it and thereby teach a
+    // candidate source. Four warning-to-critical transitions remain four cancelled episodes.
+    static gnss_status_t c;
+    uint8_t critical[4 + 24] = {0}; critical[1] = 1; critical[4 + 2] = 2;
+    for (unsigned turn = 0; turn < 4; turn++) {
+        const int64_t at = 20000 + 10000 * turn;
+        critical[4 + 1] = 2;
+        gnss_status_feed(&c, 0x0a, 0x38, critical, sizeof critical, at);
+        critical[4 + 1] = 3;
+        gnss_status_feed(&c, 0x0a, 0x38, critical, sizeof critical, at + 1000);
+    }
+    assert(!c.pulse.known && !c.pulse.count && !c.pulse.up && c.jam_counted == 3);
 }
 int main(void)
 {

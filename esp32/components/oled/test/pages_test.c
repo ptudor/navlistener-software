@@ -700,6 +700,10 @@ static void from_receiver(void)
         if (at == 61000 || at == 71000) assert(radar.jam == 2 && r.jam == OLED_RF_NONE && r.pulse_s == 10);
         if (at == 65000) assert(r.jam == OLED_RF_NONE && r.pulse_s == 10);
     }
+    // With no clearing RF report, the crossing still stops being explained after its hard
+    // time limit while the RF state itself remains fresh.
+    oled_gnss_from_status(&r, &radar, 71000 + JAM_PULSE_EXPLAIN_MS + 1);
+    assert(r.jam == OLED_RF_WARNING && r.pulse_s == 10);
 
     // NAV-SIG: GPS 5 on L1 C/A, L2C and L5, Galileo 3 on E1 and E6, BeiDou 20 on B2I (E5b).
     static const struct { uint8_t gnss, sv, sig; } signals[] = {{0, 5, 0}, {0, 5, 3}, {0, 5, 6}, {2, 3, 0}, {2, 3, 8}, {3, 20, 2}};

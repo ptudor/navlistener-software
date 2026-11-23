@@ -74,7 +74,7 @@ static portMUX_TYPE health_lock = portMUX_INITIALIZER_UNLOCKED;
 static void log_periodic_source(bool known)
 {
     if (!known) {
-        ESP_LOGI(TAG, "periodic source: gone; jamming flags count as jamming again");
+        ESP_LOGI(TAG, "periodic source: gone; warning flags count as jamming again");
         return;
     }
     char named[96] = "";
@@ -85,9 +85,9 @@ static void log_periodic_source(bool known)
         if (n < 0) break;
         used += (size_t)n;
     }
-    ESP_LOGW(TAG, "periodic source: jamming flags for one report every %ld.%ld s%s%s%s, as from a rotating "
-                  "radar. They no longer count as events or for ATTENTION; flags that last, come when none "
-                  "is due or name other frequencies still do",
+    ESP_LOGW(TAG, "periodic source: warning flags for one report every %ld.%ld s%s%s%s, as from a rotating "
+                  "radar. Timely warnings no longer count as events or for ATTENTION; critical flags and "
+                  "warnings that last, come when none is due or name other frequencies still do",
              (long)((health.pulse.period_ms + 50) / 1000), (long)((health.pulse.period_ms + 50) % 1000 / 100),
              health.flagged_last ? " on" : "", named, health.flagged_last ? " MHz" : "");
 }
@@ -849,7 +849,7 @@ esp_err_t receiver_start(ubx_parser_t *parser)
 }
 bool receiver_lna_setting(bool *low_gain)
 {
-    if (!has_lna_setting()) return false;
+    if (!has_lna_setting() || !low_gain) return false;
     *low_gain = atomic_load(&lna_low_gain);
     return true;
 }
@@ -884,7 +884,7 @@ void receiver_lna_console(const char *argument)
         if (judged && status.sec_sig && used < (int)sizeof line)
             used += snprintf(line + used, sizeof line - (size_t)used, ",\"flagged\":%u,\"assessed\":%u",
                              status.centers_jammed, status.centers_assessed);
-        if (status.pulse.known && used < (int)sizeof line)
+        if (judged && status.pulse.known && used < (int)sizeof line)
             used += snprintf(line + used, sizeof line - (size_t)used, ",\"periodic_ms\":%ld", (long)status.pulse.period_ms);
         if (used < (int)sizeof line) snprintf(line + used, sizeof line - (size_t)used, "}");
         puts(line);
@@ -901,8 +901,11 @@ void receiver_lna_console(const char *argument)
         printf("NVF-RF-LNA-ERROR not saved: %s\n", esp_err_to_name(err));
         return;
     }
-    const bool low = wanted.lna == RECEIVER_LNA_LOW;
-    if (atomic_exchange(&lna_low_gain, low) != low) atomic_store(&lna_changed, true);
+    // Queue the whole list even when the requested value is unchanged. This command is also
+    // the operator's retry after an unconfirmed write or an out-of-band change in receiver RAM.
+    atomic_store(&lna_low_gain, wanted.lna == RECEIVER_LNA_LOW);
+    atomic_store(&lna_state, LNA_PENDING);
+    atomic_store(&lna_changed, true);
     printf("NVF-RF-LNA-OK %s\n", receiver_lna_name(wanted.lna));
 }
 bool receiver_alive(void)

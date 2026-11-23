@@ -72,6 +72,7 @@ _KEY_VERDICTS = {"ACK": "ACK", "already set": "held", "NAK (unsupported)": "NAK"
 _CONFIGURED = re.compile(r"receiver RAM configuration done: (\d+) of (\d+) settings acknowledged.*")
 # The unit's stored mode for a ZED-X20P's internal LNAs, logged before the receiver is spoken to.
 _LNA = re.compile(r"receiver settings: internal LNAs in (low|normal) gain")
+_LNA_ERROR = re.compile(r"could not read the receiver settings: ([^;]{1,80}); internal LNAs in (low|normal) gain")
 _UNIQUE_ID = re.compile(r"receiver unique chip ID ([0-9a-f]{10}|[0-9a-f]{12}) \(UBX-SEC-UNIQID\)")
 _RF = re.compile(r"RF: jamming=(\w+) \((SEC-SIG|MON-RF)\); (.*)")
 _RF_BLOCK = re.compile(r"block (\d+) antenna=(\w+) power=(\w+) AGC=(\d+)% noise=\d+ CW=\d+")
@@ -183,6 +184,7 @@ class ConsoleFacts:
     receiver_keys: dict[str, str] = field(default_factory=dict)  # RAM setting name → "ACK", "held", "NAK" or "no ACK"
     receiver_configured: tuple[int, int] | None = None  # (settings acknowledged, settings sent)
     receiver_lna: str | None = None  # the unit's LNA mode setting, "low" or "normal", where the receiver has one
+    receiver_lna_error: str | None = None  # why its stored mode could not be read and a fallback was used
     receiver_uid: str | None = None  # UBX-SEC-UNIQID, lower-case hex
     receiver_rf: tuple[str, str, list[tuple[str, str, str, str]]] | None = None  # latest: (jamming, its source, blocks)
     receiver_signals: tuple[str, frozenset[str]] | None = None  # latest: (the summary, bands tracked)
@@ -254,9 +256,12 @@ def parse_console(text: str) -> ConsoleFacts:
             sbf = _SBF_IDENTITY.fullmatch(message)
             running, key, configured = _RUNNING.fullmatch(message), _RAM_KEY.fullmatch(message), _CONFIGURED.fullmatch(message)
             uid, rf, signals = _UNIQUE_ID.fullmatch(message), _RF.fullmatch(message), _SIGNALS.fullmatch(message)
-            lna = _LNA.fullmatch(message)
+            lna, lna_error = _LNA.fullmatch(message), _LNA_ERROR.fullmatch(message)
             if baud:
                 facts.receiver_baud = baud.group(1)
+            elif lna_error:
+                facts.receiver_lna_error = lna_error.group(1)
+                facts.receiver_lna = lna_error.group(2)
             elif lna:
                 facts.receiver_lna = lna.group(1)
             elif running:
@@ -496,6 +501,12 @@ def _receiver_config(facts: ConsoleFacts, seconds: float) -> dict:
         rate = f"UART1 at {facts.receiver_running[0]} baud, set in its RAM from {facts.receiver_running[1]}"
     else:
         rate = f"UART1 at {facts.receiver_running[0]} baud, the configured rate"
+    if facts.receiver_model[0] == "ZED-X20P":
+        if facts.receiver_lna_error:
+            return _check("receiver.config", "fail", f"{rate}; stored LNA mode unreadable: {facts.receiver_lna_error}; "
+                          f"using {facts.receiver_lna or 'unknown'} gain fallback")
+        if facts.receiver_lna is None:
+            return _check("receiver.config", "fail", f"{rate}; stored LNA mode not reported")
     lna = f"; internal LNAs in {facts.receiver_lna} gain" if facts.receiver_lna else ""
     return _check("receiver.config", "pass", f"{rate}; {acknowledged} of {total} RAM settings acknowledged{lna}")
 

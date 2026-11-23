@@ -6,13 +6,16 @@
   one report at each crossing of the beam: about 30 km from one, 148 of 152 turns were
   flagged, the lamp was lit 88 % of the time, and the receiver's lower detector sensitivity
   left 47 of 50 turns flagged. The firmware now learns such a source from the flags' timing:
-  four crossings one report long, on the same frequencies, whole turns of one period of 4
-  to 20 seconds apart. Once it is known, flags that begin when a crossing is due on those
-  frequencies are neither a cause for ATTENTION nor an interference event; flags that
-  outlast a crossing, come when none is due or name other frequencies count as before. Two
+  four warning-level crossings one report long, on the same frequencies, whole turns of one
+  period of 4 to 20 seconds apart; adaptation remains in that range. Once it is known,
+  warning flags that begin when a crossing is due on those frequencies are neither a cause
+  for ATTENTION nor an interference event. They become unexplained after 3.5 seconds even
+  without another RF report. Critical MON-RF indications always count and never train the
+  tracker; warnings that outlast a crossing, come when none is due or name other frequencies
+  count as before. Two
   misfits in a row or ten turns of silence forget the source, and so does a restart, after
   which the lamp lights for the first four crossings. The console logs `periodic source:
-  jamming flags for one report every 12.0 s on … MHz`, `rf lna` gives `periodic_ms`, and the
+  warning flags for one report every 12.0 s on … MHz`, `rf lna` gives `periodic_ms`, and the
   display's GNSS page reads `PULSE 12s`. The telemetry is unchanged and still carries every
   flag (`esp32/README.md`, The ATTENTION lamp).
 - A ZED/X20 observer sets the mode of its receiver's three internal LNAs, low gain unless

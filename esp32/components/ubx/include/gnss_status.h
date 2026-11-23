@@ -57,9 +57,11 @@ typedef struct {
     uint8_t centers_assessed, centers_jammed;
     uint32_t jammed_khz[16];
     bool rf_valid, status_valid;
-    // jam is the receiver's jamming state as it reports it. jam_counted is the state that
-    // events and the ATTENTION lamp follow: the same, but for the crossings of a periodic
-    // source the tracker knows (jam_pulse.h), which it leaves out.
+    // jam is the receiver's jamming state as it reports it. jam_counted is the state last
+    // evaluated for events: the same, but for warning-level crossings of a periodic source
+    // the tracker knows (jam_pulse.h), which it leaves out. Use gnss_status_counted_jam for
+    // a current display or ATTENTION decision, so an unexplained flag ages back in without
+    // waiting for another RF report.
     jam_pulse_t pulse;
     uint8_t jam_counted;
     // The frequencies of the latest report that flagged any, the first eight of them: what a
@@ -76,6 +78,9 @@ typedef struct {
 } gnss_status_t;
 void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
                       const uint8_t *body, size_t len, int64_t now_ms);
+// The receiver's current jamming state after leaving out only a timely warning-level
+// crossing of a known periodic source. Critical jamming is never left out.
+uint8_t gnss_status_counted_jam(const gnss_status_t *s, int64_t now_ms);
 bool gnss_status_position_fresh(const gnss_status_t *s, int64_t now_ms);
 bool gnss_status_same_place(int32_t lat_a, int32_t lon_a, int32_t lat_b, int32_t lon_b);
 uint8_t gnss_status_expected(const gnss_status_t *s, int64_t now_ms, uint8_t learned);
@@ -91,9 +96,9 @@ enum {
     GNSS_ATTENTION_SILENT = 1,
     GNSS_ATTENTION_ANTENNA_SHORT = 2,     // an RF block's antenna supervisor reports a short circuit
     GNSS_ATTENTION_ANTENNA_OPEN = 4,      // or an open one
-    // Jamming indicated, but for the crossings of a known periodic source (jam_pulse.h):
+    // Warning-level jamming, but for the crossings of a known periodic source (jam_pulse.h):
     GNSS_ATTENTION_JAMMING = 8,           // the receiver still has its fix
-    GNSS_ATTENTION_JAMMING_CRITICAL = 16, // and no fix
+    GNSS_ATTENTION_JAMMING_CRITICAL = 16, // critical jamming and no fix; never left out
     GNSS_ATTENTION_SPOOFING = 32,         // spoofing indicated, once or several times over
 };
 #define GNSS_ATTENTION_FLASHING (GNSS_ATTENTION_JAMMING_CRITICAL | GNSS_ATTENTION_SPOOFING)

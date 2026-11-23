@@ -1,14 +1,16 @@
 #ifndef JAM_PULSE_H
 #define JAM_PULSE_H
-// Jamming flags that come one report at a time at a steady period: the beam of a rotating
-// radar crossing the antenna. A long-range L-band radar turns once in 10 to 12 seconds and
+// Warning-level jamming flags that come one report at a time at a steady period: the beam
+// of a rotating radar crossing the antenna. A long-range L-band radar turns once in 10 to
+// 12 seconds and
 // transmits inside the band of GPS L2, GLONASS L2, BeiDou B3 and Galileo E6, and a receiver
 // within its sight reports each crossing as jamming, for one report, on the frequencies of
 // that RF path (esp32/README.md, The ATTENTION lamp). The tracker recognises such a source
 // from the reports themselves and says of the flags now up whether they are its next
 // crossing, so that an observer beside an airway is not held in alarm by its radar. It
-// judges only when flags arrive and how long they last: flags that outlast a crossing,
-// arrive when none is due or name other frequencies are never a crossing.
+// judges only when warning flags arrive and how long they last: flags that outlast a crossing,
+// arrive when none is due or name other frequencies are never a crossing. Critical receiver
+// states do not enter this tracker.
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -92,9 +94,18 @@ static inline int32_t jam_pulse_turns(int64_t interval_ms, int32_t period_ms, in
 // latest, no more than it may go unflagged.
 static inline bool jam_pulse_due(const jam_pulse_t *p, int64_t at_ms, int32_t *turns)
 {
+    if (p->period_ms < JAM_PULSE_PERIOD_MIN_MS || p->period_ms > JAM_PULSE_PERIOD_MAX_MS) {
+        *turns = 0;
+        return false;
+    }
+    const int64_t interval = at_ms - p->last_ms;
     int64_t off;
-    *turns = jam_pulse_turns(at_ms - p->last_ms, p->period_ms, &off);
-    return *turns >= 1 && *turns <= JAM_PULSE_TURNS_MAX && off <= jam_pulse_tolerance(p->period_ms);
+    *turns = jam_pulse_turns(interval, p->period_ms, &off);
+    if (*turns < 1 || *turns > JAM_PULSE_TURNS_MAX || off > jam_pulse_tolerance(p->period_ms)) return false;
+    // Tolerance admits timing jitter around a period, not a source that has drifted outside
+    // the range in which one-second reports can distinguish a period from chance.
+    const int64_t measured = interval / *turns;
+    return measured >= JAM_PULSE_PERIOD_MIN_MS && measured <= JAM_PULSE_PERIOD_MAX_MS;
 }
 
 static inline void jam_pulse_forget(jam_pulse_t *p)
@@ -136,9 +147,11 @@ static inline bool jam_pulse_learn(jam_pulse_t *p)
         all_turns += turns;
     }
     if (single < 2) return false;
+    const int32_t learned = (int32_t)((start[JAM_PULSE_LOCK - 1] - start[0]) / all_turns);
+    if (learned < JAM_PULSE_PERIOD_MIN_MS || learned > JAM_PULSE_PERIOD_MAX_MS) return false;
     p->known = true;
     p->source = p->candidate;
-    p->period_ms = (int32_t)((start[JAM_PULSE_LOCK - 1] - start[0]) / all_turns);
+    p->period_ms = learned;
     p->last_ms = start[JAM_PULSE_LOCK - 1];
     p->crossings = 0;
     p->misses = 0;

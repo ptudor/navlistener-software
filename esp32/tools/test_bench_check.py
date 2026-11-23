@@ -312,6 +312,24 @@ class PreEnrollmentTests(unittest.TestCase):
             judge(normal, expect="zed-x20")["receiver.config"],
             ("pass", "UART1 at 460800 baud, the configured rate; 15 of 15 RAM settings acknowledged; internal LNAs in normal gain"),
         )
+        # A fallback after an unreadable stored mode is operationally usable, but cannot
+        # pass a bench check that is meant to verify the unit's requested setting.
+        unreadable = kept.replace(
+            log("I", "receiver", "receiver settings: internal LNAs in low gain"),
+            log("W", "receiver", "could not read the receiver settings: ESP_ERR_INVALID_ARG; internal LNAs in low gain"),
+        )
+        self.assertEqual(
+            judge(unreadable, expect="zed-x20")["receiver.config"],
+            (
+                "fail",
+                "UART1 at 460800 baud, the configured rate; stored LNA mode unreadable: ESP_ERR_INVALID_ARG; using low gain fallback",
+            ),
+        )
+        missing_lna = kept.replace(log("I", "receiver", "receiver settings: internal LNAs in low gain") + "\r\n", "")
+        self.assertEqual(
+            judge(missing_lna, expect="zed-x20")["receiver.config"],
+            ("fail", "UART1 at 460800 baud, the configured rate; stored LNA mode not reported"),
+        )
         # A receiver whose firmware knows no such keys refuses their reading, and is named.
         unknown = console(X20).replace(f"{X20_LNA} (3 keys): ACK", f"{X20_LNA} (3 keys): NAK (unsupported)").replace(
             "15 of 15 settings", "14 of 15 settings"

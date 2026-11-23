@@ -139,6 +139,19 @@ int main(void)
     restart();
     for (unsigned turn = 0; turn < 12; turn++) assert(!crossing(20 + 25 * turn, 1, path2));
     assert(!p.known);
+    // Three individually admissible intervals must not average into a period above the
+    // range: 20, 21 and 21 seconds would otherwise produce 20.666 seconds.
+    restart();
+    assert(!crossing(20, 1, path2) && !crossing(40, 1, path2));
+    assert(!crossing(61, 1, path2) && !crossing(82, 1, path2) && !p.known);
+    // Nor may tolerance pull a source learnt at the lower boundary down below it. Two
+    // three-second misfits forget it instead of adapting its four-second period.
+    restart();
+    assert(!crossing(20, 1, path2) && !crossing(24, 1, path2));
+    assert(!crossing(28, 1, path2) && !crossing(32, 1, path2));
+    assert(p.known && p.period_ms == JAM_PULSE_PERIOD_MIN_MS);
+    assert(!crossing(35, 1, path2) && p.known && p.misses == 1);
+    assert(!crossing(38, 1, path2) && !p.known && forgotten_events == 1);
     restart();
     for (unsigned turn = 0; turn < 12; turn++) assert(!crossing(20 + 12 * turn, 3, path2));
     assert(!p.known && !explained_any);
