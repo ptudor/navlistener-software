@@ -443,20 +443,33 @@ static void crypto_rng_check(i2c_master_dev_handle_t dev)
     report.crypto.rng = 1;
     ESP_LOGI(TAG, "ATECC RNG: 3 samples passed repetition screening; diagnostic only, not an entropy certification");
 }
-// crypto_open wakes the ATECC and opens a device handle. A sleeping ATECC does not ACK an
-// ordinary scan. A 100 kHz zero-address wake token holds SDA low long enough; NACK on this
-// token is expected. False means no handle could be opened; otherwise *woke says whether the
-// wake response was confirmed, *err is that read's result, and the caller ends the session
-// with crypto_close().
+// crypto_open puts the ATECC to sleep, wakes it and opens a device handle. A sleeping ATECC
+// does not ACK an ordinary scan. A 100 kHz zero-address wake token holds SDA low long enough;
+// NACK on this token is expected.
+//
+// The sleep comes first because the part wakes on any 60 us of SDA held low, which another
+// part's transfer on the shared bus does (a zero byte at 100 kHz is 80 us), and then sleeps of
+// its own accord when its watchdog ends, 0.7 to 1.7 s after that wake. A session opened on a
+// part already awake has only what is left of that time and fails at whichever command it
+// runs out. Asleep first, the wake is this session's own and the whole time is its. The sleep
+// flag goes unanswered by a part already asleep, which is expected too.
+//
+// False means no handle could be opened; otherwise *woke says whether the wake response was
+// confirmed, *err is that read's result, and the caller ends the session with crypto_close().
 static bool crypto_open(i2c_master_dev_handle_t *dev, bool *woke, esp_err_t *err)
 {
     i2c_master_dev_handle_t wake;
-    if (device_add(0, &wake) != ESP_OK) return false;
-    uint8_t zero = 0, response[4] = {0};
+    uint8_t zero = 0, sleep = 1, response[4] = {0};
+    if (device_add(0x60, dev) != ESP_OK) return false;
+    (void)i2c_master_transmit(*dev, &sleep, 1, 100);
+    vTaskDelay(pdMS_TO_TICKS(2));
+    if (device_add(0, &wake) != ESP_OK) {
+        i2c_master_bus_rm_device(*dev);
+        return false;
+    }
     (void)i2c_master_transmit(wake, &zero, 1, 100);
     i2c_master_bus_rm_device(wake);
     vTaskDelay(pdMS_TO_TICKS(10));
-    if (device_add(0x60, dev) != ESP_OK) return false;
     *err = i2c_master_receive(*dev, response, 4, 100);
     *woke = *err == ESP_OK && hardware_crypto_response(response, 4) && response[1] == 0x11;
     return true;

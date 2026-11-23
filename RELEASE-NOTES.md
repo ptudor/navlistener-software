@@ -1,5 +1,11 @@
 # Unreleased
 
+- Reading a board's identity no longer fails while another part on the I2C bus is being
+  spoken to. The ATECC wakes on any 60 µs of SDA held low, which a zero byte sent to another
+  part is, and goes back to sleep when its watchdog ends, 0.7 to 1.7 seconds later. A session
+  opened on a part already awake had only the rest of that time, and a read of its serial or
+  its attestation record failed when the time ran out between commands. A session now puts
+  the part to sleep first and wakes it afresh, so the whole watchdog period is its own.
 - An observer with the 162mm panel lights its red ATTENTION lamp for what the receiver
   itself reports. Until now the lamp followed only the reception alarm, the observer's check
   against the collector's forecast, so a receiver that reported jamming lit nothing. It is
