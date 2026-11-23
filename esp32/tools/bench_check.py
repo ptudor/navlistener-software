@@ -79,6 +79,9 @@ _RF_BLOCK = re.compile(r"block (\d+) antenna=(\w+) power=(\w+) AGC=(\d+)% noise=
 _SIGNALS = re.compile(r"signals: (.*); bands (.*)")
 _NOT_MOSAIC = "; not a mosaic-G5, the receiver the manifest lists"
 _CHAIN = re.compile(r"panel chain: (24|16|unknown) bits")
+# One readback that fitted no chain length. The firmware gives its verdict at the third, a
+# minute apart, so a shorter window sees only these.
+_CHAIN_FAULT = re.compile(r"panel chain readback matched neither 24 nor 16 bits \(read (0x[0-9a-f]{6}) for frame")
 _MAC = re.compile(r"MAC:\s+((?:[0-9a-f]{2}:){5}[0-9a-f]{2})")
 
 OBSERVER_ID = re.compile(r"board-000[34]-([0-9a-f]{32})")
@@ -195,6 +198,7 @@ class ConsoleFacts:
     ethernet_identity: str | None = None  # the W5500 VERSIONR verdict, logged at every boot
     ethernet: str | None = None  # "up", or the error the firmware logged; provisioned boards only
     panel_chain: str | None = None  # "24", "16", "unknown" or "not detected"
+    panel_chain_faults: list[str] = field(default_factory=list)  # what each unmatched readback read
     unprovisioned: bool = False
     setup_network: bool = False
     app_setup: bool = False
@@ -300,6 +304,10 @@ def parse_console(text: str) -> ConsoleFacts:
                 facts.panel_chain = chain.group(1)
             elif message.startswith("panel chain not detected"):
                 facts.panel_chain = "not detected"
+            else:
+                fault = _CHAIN_FAULT.match(message)
+                if fault:
+                    facts.panel_chain_faults.append(fault.group(1))
         elif tag == "navfeeder" and message.startswith("unprovisioned ("):
             facts.unprovisioned = True
         elif tag == "netcfg" and message.startswith("browser provisioning ready:"):
@@ -433,6 +441,13 @@ def evaluate(
         if expect.panel_chain:
             if facts.panel_chain in ("24", "16"):
                 checks.append(_check("panel_chain", "pass", f"{facts.panel_chain}-bit chain read back"))
+            elif facts.panel_chain is None and facts.panel_chain_faults:
+                count = len(facts.panel_chain_faults)
+                checks.append(_check(
+                    "panel_chain", "fail",
+                    f"no panel chain verdict within {seconds:g} s: {count} readback{'' if count == 1 else 's'} "
+                    f"matched neither 24 nor 16 bits (read {facts.panel_chain_faults[-1]}); is the panel fitted?",
+                ))
             elif facts.panel_chain is None:
                 checks.append(_check("panel_chain", "fail", f"no panel chain verdict within {seconds:g} s"))
             else:

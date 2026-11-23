@@ -495,6 +495,28 @@ class PreEnrollmentTests(unittest.TestCase):
                          + [log("I", "ethernet", "W5500 up at 10 MHz, polled every 10 ms, MAC 02:a1:b2:c3:d4:e8")])
         self.assertEqual(judge(unread, expect="zed-x20")["ethernet"], ("fail", "no W5500 identity reported"))
 
+    def test_a_window_too_short_for_the_verdict_says_what_the_chain_read(self):
+        # The firmware gives its verdict at the third unmatched readback, a minute apart.
+        fault = "panel chain readback matched neither 24 nor 16 bits (read 0xffffff for frame 0x{:06x}); retrying at the next run"
+        once = console(X20).replace("panel chain: 24 bits", fault.format(1))
+        self.assertEqual(
+            judge(once, expect="zed-x20")["panel_chain"],
+            ("fail", "no panel chain verdict within 30 s: 1 readback matched neither 24 nor 16 bits "
+                     "(read 0xffffff); is the panel fitted?"),
+        )
+        twice = once + console([log("W", "io_expander", fault.format(0xef00).replace("0xffffff", "0x000000"))])
+        self.assertEqual(
+            judge(twice, expect="zed-x20")["panel_chain"],
+            ("fail", "no panel chain verdict within 30 s: 2 readbacks matched neither 24 nor 16 bits "
+                     "(read 0x000000); is the panel fitted?"),
+        )
+        # The verdict, once it comes, is what the check reports, and a later detection passes.
+        undetected = twice + console([log("E", "io_expander", "panel chain not detected or wrong length: 3 readbacks "
+                                                              "matched neither 24 nor 16 bits (last read 0x000000 for frame 0x00ef00)")])
+        self.assertEqual(judge(undetected, expect="zed-x20")["panel_chain"], ("fail", "panel chain not detected; is the panel fitted?"))
+        fitted = once + console([log("I", "io_expander", "panel chain: 24 bits")])
+        self.assertEqual(judge(fitted, expect="zed-x20")["panel_chain"], ("pass", "24-bit chain read back"))
+
     def test_a_late_detection_does_not_clear_a_failed_chain(self):
         text = console(X20).replace(
             "panel chain: 24 bits", "panel chain not detected or wrong length: 3 readbacks matched neither 24 nor 16 bits"

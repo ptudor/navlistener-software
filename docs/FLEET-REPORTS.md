@@ -129,7 +129,7 @@ It changes these checks and adds the rest:
 | `receiver.antenna` | u-blox receivers only: MON-RF reported its blocks and no antenna SHORT or OPEN, and on the ZED/X20, whose firmware sets short detection, every block reads OK; the detail adds each block's AGC and the jamming state and its source | A SHORT or OPEN (each block named), a ZED/X20 supervisor that is not OK, or no MON-RF within the window; a skip when the model was not confirmed |
 | `receiver.signals` | u-blox receivers only: NAV-SIG showed code-locked signals in every band the board's receiver tracks by default (ZED/X20: L1, L2, L5 and E6; NEO and MAX: L1); the detail is the per-signal summary | Never: it needs a sky view, so missing bands, or no summary, are a skip that names the bands seen |
 | `ethernet` | ZED/X20 only: the W5500 answered its VERSIONR read at boot, and a provisioned board also started it | Another identity, a failed read, no identity reported, or a provisioned board that did not start it |
-| `panel_chain` | ZED/X20 only: the I/O expander read a 24- or 16-bit LED chain back | The chain was not detected, or no verdict within the window |
+| `panel_chain` | ZED/X20 only: the I/O expander read a 24- or 16-bit LED chain back | The chain was not detected, or no verdict within the window: the firmware gives it at the third unmatched readback, a minute apart, and until then the detail names what the readbacks read |
 
 The other checks are unchanged. A report made with `--expect` is an ordinary v1
 bench report; its check names show the profile was applied.
