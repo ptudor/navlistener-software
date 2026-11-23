@@ -590,7 +590,12 @@ gain, the path that carries L2, E6 and B3 fell to 3 dB for about a second every 
 seconds and its four centers were flagged in some of those seconds, while the other
 paths stayed at 11 dB. A warning with such a period, or on one path's centers alone,
 points at a signal in that band. Record the AGC of every block with the times of the
-flags, and the spectra of that path taken in the same seconds.
+flags, and the spectra of that path taken in the same seconds. The observer recognises
+flags of that kind itself: after four crossings a report long, whole turns of one period
+apart, its console names a `periodic source` with the period and the centers, and from
+then on leaves those crossings out of its ATTENTION lamp and its interference events
+([the rule](../esp32/README.md#the-attention-lamp)). The records it sends are unchanged,
+so a collector still sees every flag and must make the same judgement for itself.
 
 1. While the warning is active, save the console and request `rf survey` several
    times over a minute. Record the time, antenna position and cable route. Check

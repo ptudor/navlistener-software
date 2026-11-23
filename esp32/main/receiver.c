@@ -70,10 +70,33 @@ static atomic_int lna_state = LNA_PENDING;
 static gnss_status_t health = {.supported = 0x6f}, snapshot = {.supported = 0x6f};
 static portMUX_TYPE health_lock = portMUX_INITIALIZER_UNLOCKED;
 
+// A periodic source of jamming flags became known or was forgotten (jam_pulse.h): said once.
+static void log_periodic_source(bool known)
+{
+    if (!known) {
+        ESP_LOGI(TAG, "periodic source: gone; jamming flags count as jamming again");
+        return;
+    }
+    char named[96] = "";
+    size_t used = 0;
+    for (unsigned i = 0; i < health.flagged_last && used < sizeof named; i++) {
+        const int n = snprintf(named + used, sizeof named - used, " %lu.%02lu", (unsigned long)(health.flagged_last_khz[i] / 1000),
+                               (unsigned long)(health.flagged_last_khz[i] % 1000 / 10));
+        if (n < 0) break;
+        used += (size_t)n;
+    }
+    ESP_LOGW(TAG, "periodic source: jamming flags for one report every %ld.%ld s%s%s%s, as from a rotating "
+                  "radar. They no longer count as events or for ATTENTION; flags that last, come when none "
+                  "is due or name other frequencies still do",
+             (long)((health.pulse.period_ms + 50) / 1000), (long)((health.pulse.period_ms + 50) % 1000 / 100),
+             health.flagged_last ? " on" : "", named, health.flagged_last ? " MHz" : "");
+}
 static void observe(uint8_t cls, uint8_t id, const uint8_t *body, size_t len, void *ctx)
 {
     (void)ctx;
+    const bool source_known = health.pulse.known;
     gnss_status_feed(&health, cls, id, body, len, esp_timer_get_time() / 1000);
+    if (health.pulse.known != source_known) log_periodic_source(health.pulse.known);
     taskENTER_CRITICAL(&health_lock);
     snapshot = health;
     taskEXIT_CRITICAL(&health_lock);
@@ -861,6 +884,8 @@ void receiver_lna_console(const char *argument)
         if (judged && status.sec_sig && used < (int)sizeof line)
             used += snprintf(line + used, sizeof line - (size_t)used, ",\"flagged\":%u,\"assessed\":%u",
                              status.centers_jammed, status.centers_assessed);
+        if (status.pulse.known && used < (int)sizeof line)
+            used += snprintf(line + used, sizeof line - (size_t)used, ",\"periodic_ms\":%ld", (long)status.pulse.period_ms);
         if (used < (int)sizeof line) snprintf(line + used, sizeof line - (size_t)used, "}");
         puts(line);
         return;

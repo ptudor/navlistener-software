@@ -314,8 +314,12 @@ static void page_gnss(oled_canvas_t *c, const oled_model_t *m)
         (void)oled_text(c, x + (17 - oled_text_width(text, 1)) / 2, LINE_Y(3), 1, text);
     }
     put(c, 0, LINE_Y(4), antenna_name(g->antenna));
-    put(c, 12 * OLED_ADVANCE, LINE_Y(4), g->jam == OLED_RF_NONE ? "JAM NONE" : g->jam == OLED_RF_WARNING ? "JAM WARN" :
-                                         g->jam == OLED_RF_CRITICAL ? "JAM CRIT" : "JAM ?");
+    // No jamming beyond the crossings of a known periodic source reads as that source's
+    // period: "PULSE 12s" is a radar turning, where "JAM NONE" is a quiet band.
+    if (g->jam == OLED_RF_NONE && g->pulse_s) snprintf(text, sizeof text, "PULSE %us", g->pulse_s);
+    else snprintf(text, sizeof text, "%s", g->jam == OLED_RF_NONE ? "JAM NONE" : g->jam == OLED_RF_WARNING ? "JAM WARN" :
+                                          g->jam == OLED_RF_CRITICAL ? "JAM CRIT" : "JAM ?");
+    put(c, 12 * OLED_ADVANCE, LINE_Y(4), text);
     put(c, 0, LINE_Y(5), g->spoof == OLED_RF_NONE ? "SPOOF NONE" : g->spoof == OLED_RF_WARNING ? "SPOOF YES" :
                          g->spoof == OLED_RF_CRITICAL ? "SPOOF MULTI" : "SPOOF ?");
     if (m->sensors.pulse_known) put(c, 12 * OLED_ADVANCE, LINE_Y(5), m->sensors.pulse ? "PPS OK" : "PPS NONE");

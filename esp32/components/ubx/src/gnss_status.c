@@ -37,14 +37,19 @@ int gnss_signal_kind(uint8_t g, uint8_t sig)
 }
 // A NAV-SIG row for a code-locked signal (qualityInd 4-7) with C/N0, health aside.
 static bool locked_row(const uint8_t *r) { return r[0] < 8 && r[0] != 4 && r[1] && r[6] && r[7] >= 4 && r[7] <= 7; }
-// One jamming reading. The first makes the baseline, which is an event only as an alarm.
-static void jam_reading(gnss_status_t *s, uint8_t jam, bool first, int64_t now)
+// One jamming reading, with a signature of the frequencies it flags. The first makes the
+// baseline, which is an event only as an alarm. A crossing of a periodic source the tracker
+// knows is no event and no cause for attention: the state those follow leaves it out, and
+// takes it in again if the flags outlast a crossing.
+static void jam_reading(gnss_status_t *s, uint8_t jam, uint32_t signature, bool first, int64_t now)
 {
-    if (first ? jam >= 2 : jam != s->jam) {
+    (void)jam_pulse_feed(&s->pulse, jam >= 2, signature, now);
+    const uint8_t counted = jam >= 2 && jam_pulse_explains(&s->pulse, now) ? 1 : jam;
+    if (first ? counted >= 2 : counted != s->jam_counted) {
         s->event_count++; s->event_ms = now; s->event_flags = 1;
-        s->event_states = jam | (s->spoof << 2);
+        s->event_states = counted | (s->spoof << 2);
     }
-    s->rf_valid = true; s->rf_ms = now; s->jam = jam;
+    s->rf_valid = true; s->rf_ms = now; s->jam = jam; s->jam_counted = counted;
 }
 bool gnss_status_position_fresh(const gnss_status_t *s, int64_t now)
 { return s->fix_valid && fresh(s->fix_ms, now); }
@@ -64,7 +69,7 @@ void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
                     .cw_suppression = p[i+16], .noise_per_ms = le16(p+i+12), .agc = le16(p+i+14)};
         }
         s->rf_blocks_valid = true; s->rf_blocks_ms = now;
-        if (!s->sec_sig) jam_reading(s, jam, !s->rf_valid, now);
+        if (!s->sec_sig) jam_reading(s, jam, 1, !s->rf_valid, now); // MON-RF names no frequency
     } else if (cls == 0x27 && id == 9 && rf_sec_sig_valid(p, len)) {
         // SEC-SIG jamState (0 unknown, 1 none, 2 warning) while jamDetEnabled is set.
         const uint8_t jam = (p[1] & 1) ? (p[1] >> 1) & 3 : 0;
@@ -72,20 +77,28 @@ void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
         s->sec_sig = true;
         s->centers_assessed = p[3];
         s->centers_jammed = 0;
+        // The signature is of the first 32 frequencies flagged: more than any receiver assesses.
+        uint32_t flagged[32];
+        size_t signed_for = 0;
         for (size_t i = 4; i < len; i += 4) {
             uint32_t word = rf_le32(p + i);
             if (!(word & RF_JAMMED)) continue;
             if (s->centers_jammed < sizeof s->jammed_khz / sizeof *s->jammed_khz)
                 s->jammed_khz[s->centers_jammed] = word & RF_CENTER_KHZ;
+            if (signed_for < sizeof flagged / sizeof flagged[0]) flagged[signed_for++] = word & RF_CENTER_KHZ;
             s->centers_jammed++;
         }
+        if (signed_for) {
+            s->flagged_last = (uint8_t)(signed_for < 8 ? signed_for : 8);
+            memcpy(s->flagged_last_khz, flagged, s->flagged_last * sizeof flagged[0]);
+        }
         if (jam) s->sec_sig_known = true;
-        jam_reading(s, jam, first, now);
+        jam_reading(s, jam, jam_pulse_signature(flagged, signed_for), first, now);
     } else if (cls == 1 && id == 3 && len == 16) {
         uint8_t spoof = (p[7] >> 3) & 3;
         if ((s->status_valid && spoof != s->spoof) || (!s->status_valid && spoof >= 2)) {
             s->event_count++; s->event_ms = now; s->event_flags = 2;
-            s->event_states = s->jam | (spoof << 2);
+            s->event_states = s->jam_counted | (spoof << 2);
         }
         s->status_valid = true; s->status_ms = now; s->spoof = spoof;
     } else if (cls == 0x0a && id == 4 && len >= 40 && (len - 40) % 30 == 0) {
@@ -244,8 +257,8 @@ uint8_t gnss_status_attention(const gnss_status_t *s, int64_t now)
             if (s->rf_block[b].ant_status == 4) flags |= GNSS_ATTENTION_ANTENNA_OPEN;
         }
     if (s->rf_valid && fresh(s->rf_ms, now)) {
-        if ((s->jam & 3) == 2) flags |= GNSS_ATTENTION_JAMMING;
-        if ((s->jam & 3) == 3) flags |= GNSS_ATTENTION_JAMMING_CRITICAL;
+        if ((s->jam_counted & 3) == 2) flags |= GNSS_ATTENTION_JAMMING;
+        if ((s->jam_counted & 3) == 3) flags |= GNSS_ATTENTION_JAMMING_CRITICAL;
     }
     if (s->status_valid && fresh(s->status_ms, now) && (s->spoof & 3) >= 2) flags |= GNSS_ATTENTION_SPOOFING;
     return flags;

@@ -207,12 +207,106 @@ static void attention(void)
     assert(gnss_status_attention_text(all, text, 3) == 0 && !text[0] && gnss_status_attention_text(all, text, 0) == 0);
     assert(gnss_status_attention_text(0, text, 3) == 0 && !text[0]);
 }
+// One second of an X20 for the periodic source: a satellite list, and a SEC-SIG report of its
+// seven frequencies with those in `flagged` (bit n for the nth) marked jammed.
+static void second(gnss_status_t *s, int64_t at_ms, unsigned flagged)
+{
+    static const uint32_t khz[7] = {1575420, 1176450, 1227600, 1268520, 1278750, 1246000, 1602000};
+    uint8_t sat[8] = {0}, sec[4 + 4 * 7] = {2, 0, 0, 7};
+    sat[4] = 1;
+    sec[1] = (uint8_t)(1 | (flagged ? 2 : 1) << 1);
+    for (unsigned i = 0; i < 7; i++) {
+        const uint32_t word = khz[i] | (flagged >> i & 1 ? 1u << 24 : 0);
+        for (unsigned b = 0; b < 4; b++) sec[4 + 4 * i + b] = (uint8_t)(word >> (8 * b));
+    }
+    gnss_status_feed(s, 1, 0x35, sat, sizeof sat, at_ms);
+    gnss_status_feed(s, 0x27, 9, sec, sizeof sec, at_ms);
+}
+// A rotating radar on the path that carries L2, B3, E6 and GLONASS L2: one flagged report
+// every 12 s. Its first four crossings are jamming like any other; once the source is known
+// its crossings are neither events nor causes for attention, while the receiver's own state
+// is kept as reported. Flags that outlast a crossing, or name other frequencies, count.
+static void periodic_source(void)
+{
+    static gnss_status_t s;
+    const unsigned path2 = 1u << 2 | 1u << 3 | 1u << 4 | 1u << 5, every = 0x7f;
+    int64_t t = 1000;
+    for (; t < 20000; t += 1000) second(&s, t, 0);
+    assert(s.sec_sig_known && s.jam == 1 && s.jam_counted == 1 && !s.event_count);
+    unsigned events = 0;
+    for (unsigned turn = 0; turn < 4; turn++) {
+        second(&s, t, path2);
+        assert(s.jam == 2 && s.jam_counted == 2 && s.centers_jammed == 4 && s.event_count == ++events);
+        assert(gnss_status_attention(&s, t + 400) == GNSS_ATTENTION_JAMMING);
+        for (unsigned i = 1; i < 12; i++) second(&s, t + 1000 * i, 0);
+        assert(s.jam == 1 && s.event_count == ++events && gnss_status_attention(&s, t + 11400) == 0);
+        t += 12000;
+    }
+    assert(s.pulse.known && s.pulse.period_ms == 12000);
+    for (unsigned turn = 0; turn < 30; turn++) {
+        second(&s, t, path2);
+        assert(s.jam == 2 && s.jam_counted == 1 && s.centers_jammed == 4); // the receiver's state is kept
+        assert(s.event_count == events && gnss_status_attention(&s, t + 400) == 0);
+        for (unsigned i = 1; i < 12; i++) {
+            second(&s, t + 1000 * i, 0);
+            assert(s.event_count == events && gnss_status_attention(&s, t + 1000 * i) == 0);
+        }
+        t += 12000;
+    }
+    // Flags on every frequency when a crossing is due: jamming, at once.
+    second(&s, t, every);
+    assert(s.jam_counted == 2 && s.event_count == ++events && gnss_status_attention(&s, t) == GNSS_ATTENTION_JAMMING);
+    second(&s, t + 1000, 0);
+    assert(s.event_count == ++events);
+    for (unsigned i = 2; i < 12; i++) second(&s, t + 1000 * i, 0);
+    t += 12000;
+    // The source's own frequencies, due, but staying up: a crossing for two reports, jamming
+    // from the third, and over when they clear.
+    second(&s, t, path2);
+    second(&s, t + 1000, path2);
+    assert(s.jam_counted == 1 && s.event_count == events && gnss_status_attention(&s, t + 1400) == 0);
+    second(&s, t + 2000, path2);
+    assert(s.jam_counted == 2 && s.event_count == ++events && gnss_status_attention(&s, t + 2000) == GNSS_ATTENTION_JAMMING);
+    for (unsigned i = 3; i < 9; i++) second(&s, t + 1000 * i, path2);
+    assert(s.event_count == events && gnss_status_attention(&s, t + 8000) == GNSS_ATTENTION_JAMMING);
+    second(&s, t + 9000, 0);
+    assert(s.jam_counted == 1 && s.event_count == ++events && gnss_status_attention(&s, t + 9000) == 0);
+    for (unsigned i = 10; i < 12; i++) second(&s, t + 1000 * i, 0);
+    t += 12000;
+    // The source is still known, and its next crossing still explained.
+    second(&s, t, path2);
+    assert(s.pulse.known && s.jam_counted == 1 && s.event_count == events && gnss_status_attention(&s, t) == 0);
+    second(&s, t + 1000, 0);
+    // A spoofing report during a crossing records the counted state, not the crossing.
+    for (unsigned i = 2; i < 12; i++) second(&s, t + 1000 * i, 0);
+    t += 12000;
+    second(&s, t, path2);
+    uint8_t ns[16] = {0}; ns[7] = 2 << 3;
+    gnss_status_feed(&s, 1, 3, ns, sizeof ns, t + 100);
+    assert(s.event_count == ++events && s.event_flags == 2 && s.event_states == (1 | 2 << 2));
+
+    // A receiver whose jamming flag is MON-RF's names no frequency, and is tracked the same.
+    static gnss_status_t m;
+    uint8_t rf[4 + 24] = {0}, sat[8] = {0};
+    rf[1] = 1; rf[4 + 2] = 2; sat[4] = 1;
+    unsigned counted = 0;
+    for (int64_t at = 1000; at < 200000; at += 1000) {
+        const bool crossing = at >= 20000 && (at - 20000) % 10000 == 0;
+        rf[4 + 1] = crossing ? 2 : 1;
+        gnss_status_feed(&m, 1, 0x35, sat, sizeof sat, at);
+        gnss_status_feed(&m, 0x0a, 0x38, rf, sizeof rf, at);
+        if (crossing && gnss_status_attention(&m, at) == GNSS_ATTENTION_JAMMING) counted++;
+        if (!crossing) assert(gnss_status_attention(&m, at) == 0);
+    }
+    assert(counted == 4 && m.pulse.known && m.pulse.period_ms == 10000 && m.event_count == 8);
+}
 int main(void)
 {
     reception_evidence();
     rf_and_signals();
     satellites_by_name();
     attention();
+    periodic_source();
     // NAV-PVT's horizontal accuracy estimate and position DOP are kept with a valid fix and
     // cleared without one.
     gnss_status_t fix = {0}; uint8_t pvt[92] = {0};
@@ -282,5 +376,5 @@ int main(void)
     assert(gnss_status_same_place(377000000,-1224000000,377010000,-1224010000));
     assert(!gnss_status_same_place(377000000,-1224000000,357000000,1397000000));
     assert(gnss_status_same_place(0,1799999000,0,-1799999000));
-    puts("GNSS status: tracking, stale data, regional expectations, learned override, movement, RF blocks, SEC-SIG jamming, signal kinds, satellites by name, fix accuracy and the attention flags passed");
+    puts("GNSS status: tracking, stale data, regional expectations, learned override, movement, RF blocks, SEC-SIG jamming, signal kinds, satellites by name, fix accuracy, the attention flags and a periodic source left out of them passed");
 }

@@ -173,6 +173,15 @@ static void pages(void)
         assert(shows(c, i * 18 + (17 - oled_text_width(counts[i], 1)) / 2, LINE(3), 1, counts[i]));
     }
     assert(shows(c, 0, LINE(4), 1, "ANT OK") && shows(c, 72, LINE(4), 1, "JAM NONE"));
+    // A known periodic source reads as its period where there is no other jamming, and
+    // gives way to jamming that is not its crossing.
+    m.gnss.pulse_s = 12;
+    assert(shows(draw(&m, OLED_PAGE_GNSS, "gnss-pulse"), 72, LINE(4), 1, "PULSE 12s"));
+    m.gnss.pulse_s = 99;
+    assert(shows(draw(&m, OLED_PAGE_GNSS, NULL), 72, LINE(4), 1, "PULSE 99s"));
+    m.gnss.pulse_s = 12; m.gnss.jam = OLED_RF_WARNING;
+    assert(shows(draw(&m, OLED_PAGE_GNSS, NULL), 72, LINE(4), 1, "JAM WARN"));
+    m.gnss.pulse_s = 0; m.gnss.jam = OLED_RF_NONE;
     assert(shows(c, 0, LINE(5), 1, "SPOOF NONE") && shows(c, 72, LINE(5), 1, "PPS OK"));
     for (int x = 0; x < 126; x++) assert(oled_get(c, x, 8) == ((x >= 21 && x < 42) || x % 2 == 0));
 
@@ -675,6 +684,22 @@ static void from_receiver(void)
     gnss_status_feed(&s, 1, 3, status, sizeof status, 12500);
     oled_gnss_from_status(&g, &s, 12500);
     assert(g.spoof == OLED_RF_CRITICAL);
+
+    // A periodic source: MON-RF's jamming flag for one report in ten. Once it is known, the
+    // page's jamming state leaves its crossings out and its period stands beside it.
+    static gnss_status_t radar;
+    oled_gnss_t r;
+    uint8_t turn[4 + 24] = {0};
+    turn[1] = 1; turn[4 + 2] = 2;
+    for (int64_t at = 1000; at <= 71000; at += 1000) {
+        const bool crossing = at >= 21000 && (at - 21000) % 10000 == 0;
+        turn[4 + 1] = crossing ? 2 : 1;
+        gnss_status_feed(&radar, 0x0a, 0x38, turn, sizeof turn, at);
+        oled_gnss_from_status(&r, &radar, at);
+        if (at == 21000 || at == 51000) assert(r.jam == OLED_RF_WARNING && r.pulse_s == 0); // not yet known
+        if (at == 61000 || at == 71000) assert(radar.jam == 2 && r.jam == OLED_RF_NONE && r.pulse_s == 10);
+        if (at == 65000) assert(r.jam == OLED_RF_NONE && r.pulse_s == 10);
+    }
 
     // NAV-SIG: GPS 5 on L1 C/A, L2C and L5, Galileo 3 on E1 and E6, BeiDou 20 on B2I (E5b).
     static const struct { uint8_t gnss, sv, sig; } signals[] = {{0, 5, 0}, {0, 5, 3}, {0, 5, 6}, {2, 3, 0}, {2, 3, 8}, {3, 20, 2}};

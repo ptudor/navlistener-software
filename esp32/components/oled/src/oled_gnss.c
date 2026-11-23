@@ -76,7 +76,13 @@ void oled_gnss_from_status(oled_gnss_t *out, const gnss_status_t *s, int64_t now
         out->antenna = shorted ? OLED_ANTENNA_SHORT : open ? OLED_ANTENNA_OPEN : ok ? OLED_ANTENNA_OK : OLED_ANTENNA_UNKNOWN;
     }
     if (s->rf_valid && fresh(s->rf_ms, now)) {
-        out->jam = s->jam & 3;
+        // The state the ATTENTION lamp follows, and beside it the period of a source whose
+        // crossings that state leaves out (jam_pulse.h).
+        out->jam = s->jam_counted & 3;
+        if (s->pulse.known) {
+            const int32_t seconds = (s->pulse.period_ms + 500) / 1000;
+            out->pulse_s = (uint8_t)(seconds < 1 ? 1 : seconds > 99 ? 99 : seconds);
+        }
         if (s->sec_sig) {
             out->security_fresh = true;
             out->assessed = s->centers_assessed;

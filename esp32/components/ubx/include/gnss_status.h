@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "../../../../common/reception.h"
+#include "jam_pulse.h"
 #define GNSS_OBS_MAX 200u
 typedef struct {
     uint8_t gnss,sv,signal,cno;
@@ -56,6 +57,15 @@ typedef struct {
     uint8_t centers_assessed, centers_jammed;
     uint32_t jammed_khz[16];
     bool rf_valid, status_valid;
+    // jam is the receiver's jamming state as it reports it. jam_counted is the state that
+    // events and the ATTENTION lamp follow: the same, but for the crossings of a periodic
+    // source the tracker knows (jam_pulse.h), which it leaves out.
+    jam_pulse_t pulse;
+    uint8_t jam_counted;
+    // The frequencies of the latest report that flagged any, the first eight of them: what a
+    // source the tracker comes to know is named by.
+    uint8_t flagged_last;
+    uint32_t flagged_last_khz[8];
     uint8_t jam, spoof, event_flags, event_states;
     uint32_t event_count;
     int64_t rf_ms, status_ms, event_ms;
@@ -81,8 +91,9 @@ enum {
     GNSS_ATTENTION_SILENT = 1,
     GNSS_ATTENTION_ANTENNA_SHORT = 2,     // an RF block's antenna supervisor reports a short circuit
     GNSS_ATTENTION_ANTENNA_OPEN = 4,      // or an open one
-    GNSS_ATTENTION_JAMMING = 8,           // jamming indicated; the receiver still has its fix
-    GNSS_ATTENTION_JAMMING_CRITICAL = 16, // jamming indicated and no fix
+    // Jamming indicated, but for the crossings of a known periodic source (jam_pulse.h):
+    GNSS_ATTENTION_JAMMING = 8,           // the receiver still has its fix
+    GNSS_ATTENTION_JAMMING_CRITICAL = 16, // and no fix
     GNSS_ATTENTION_SPOOFING = 32,         // spoofing indicated, once or several times over
 };
 #define GNSS_ATTENTION_FLASHING (GNSS_ATTENTION_JAMMING_CRITICAL | GNSS_ATTENTION_SPOOFING)

@@ -1,5 +1,20 @@
 # Unreleased
 
+- An observer no longer holds its ATTENTION lamp for a rotating radar. A long-range L-band
+  radar turns once in 10 to 12 seconds inside the band of GPS L2, GLONASS L2, BeiDou B3 and
+  Galileo E6, and a ZED-X20P in its sight flags that path's four frequencies as jammed for
+  one report at each crossing of the beam: about 30 km from one, 148 of 152 turns were
+  flagged, the lamp was lit 88 % of the time, and the receiver's lower detector sensitivity
+  left 47 of 50 turns flagged. The firmware now learns such a source from the flags' timing:
+  four crossings one report long, on the same frequencies, whole turns of one period of 4
+  to 20 seconds apart. Once it is known, flags that begin when a crossing is due on those
+  frequencies are neither a cause for ATTENTION nor an interference event; flags that
+  outlast a crossing, come when none is due or name other frequencies count as before. Two
+  misfits in a row or ten turns of silence forget the source, and so does a restart, after
+  which the lamp lights for the first four crossings. The console logs `periodic source:
+  jamming flags for one report every 12.0 s on … MHz`, `rf lna` gives `periodic_ms`, and the
+  display's GNSS page reads `PULSE 12s`. The telemetry is unchanged and still carries every
+  flag (`esp32/README.md`, The ATTENTION lamp).
 - A ZED/X20 observer sets the mode of its receiver's three internal LNAs, low gain unless
   the unit is set to normal gain. In normal gain, the ZED-X20P's default, the receiver takes
   17 to 40 dB of gain ahead of `RF_IN`, and in low gain 20 to 50 dB. With a survey antenna

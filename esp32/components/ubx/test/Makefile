@@ -1,7 +1,7 @@
 CC ?= cc
 CFLAGS ?= -O1 -g -Wall -Wextra -Werror -std=c11
 .PHONY: all clean
-all: build/probe_test build/status_test build/solution_test build/reception_test build/sfrbx_test build/rtk_stat_test build/jamming_test
+all: build/probe_test build/status_test build/solution_test build/reception_test build/sfrbx_test build/rtk_stat_test build/jamming_test build/pulse_test
 	./build/probe_test
 	./build/status_test
 	./build/solution_test
@@ -9,13 +9,14 @@ all: build/probe_test build/status_test build/solution_test build/reception_test
 	./build/sfrbx_test
 	./build/rtk_stat_test
 	./build/jamming_test
+	./build/pulse_test
 build/sfrbx_test: sfrbx_test.c ../src/ubx.c ../include/ubx.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -I../include -I../../gnf1/include sfrbx_test.c ../src/ubx.c ../../gnf1/src/gnf1.c -o $@
 build/jamming_test: jamming_test.c ../src/ubx.c ../include/ubx.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -I../include -I../../gnf1/include jamming_test.c ../src/ubx.c ../../gnf1/src/gnf1.c -o $@
-build/status_test: status_test.c ../src/gnss_status.c ../include/gnss_status.h
+build/status_test: status_test.c ../src/gnss_status.c ../include/gnss_status.h ../include/jam_pulse.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -I../include status_test.c ../src/gnss_status.c -lm -o $@
 build/probe_test: probe_test.c ../src/ubx.c ../src/ubx_probe.c ../include/ubx_probe.h
@@ -27,6 +28,9 @@ build/solution_test: solution_test.c ../src/ubx.c ../include/ubx.h ../../../../c
 build/reception_test: reception_test.c ../src/ubx.c ../include/ubx.h ../../../../common/reception_data.h ../../../../testdata/reception_data_v2.txt
 	@mkdir -p build
 	$(CC) $(CFLAGS) -DGOLDEN='"../../../../testdata/reception_data_v2.txt"' -I../include -I../../gnf1/include reception_test.c ../src/ubx.c ../../gnf1/src/gnf1.c -o $@
+build/pulse_test: pulse_test.c ../include/jam_pulse.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -I../include pulse_test.c -o $@
 build/rtk_stat_test: rtk_stat_test.c ../src/rtk_stat.c ../include/rtk_stat.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -I../include rtk_stat_test.c ../src/rtk_stat.c -o $@

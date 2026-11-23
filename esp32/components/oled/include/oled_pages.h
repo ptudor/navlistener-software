@@ -65,7 +65,8 @@ typedef struct {
     struct { uint8_t gnss, cno; } bar[OLED_BARS];
     uint8_t cno_max;       // dB-Hz
     oled_antenna_t antenna;
-    uint8_t jam, spoof;    // OLED_RF_*
+    uint8_t jam, spoof;    // OLED_RF_*; jam without the crossings of a known periodic source
+    uint8_t pulse_s;       // that source's period in seconds, 1 to 99; 0 when none is known
     bool solution_fresh, security_fresh;
     uint8_t assessed, jammed;
     uint32_t jammed_khz[16];

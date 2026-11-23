@@ -429,6 +429,40 @@ frequencies in MHz. Read the full assessment over USB or in the collector. A pan
 driver has no such lamp, and trouble with the network is not among its causes: the uplink
 column shows that.
 
+One kind of jamming flag does not light the lamp: the beam of a rotating radar crossing
+the antenna, once the observer knows the radar. A long-range L-band radar turns once in 10
+to 12 seconds and transmits inside the band of GPS L2, GLONASS L2, BeiDou B3 and Galileo
+E6, and a ZED-X20P in its sight flags that RF path's four frequencies for one report at
+each crossing. An observer about 30 km from such a radar was flagged in 148 of 152 turns,
+which with the ten-second hold kept its lamp lit 88 % of the time; the receiver's own
+`CFG-SEC-JAMDET_SENSITIVITY_HI` at 0 still left 47 of 50 turns flagged. The firmware
+therefore watches when the flags come and how long they last
+([`jam_pulse.h`](components/ubx/include/jam_pulse.h)):
+
+- **A source becomes known** when four crossings agree: each up for one report, or two
+  when it falls across them; all on the same frequencies; whole turns of one period apart,
+  two of the three intervals single turns; the period between 4 and 20 seconds. The console
+  says so once: `periodic source: jamming flags for one report every 12.0 s on 1227.60
+  1268.52 1278.75 1246.00 MHz, as from a rotating radar`.
+- **Its crossings then do not count.** Flags that begin when a crossing is due (a quarter
+  of the period either side, 1.5 seconds at most), on the source's frequencies, are neither
+  a cause for ATTENTION nor an interference event for the reports and RF surveys that such
+  events start. A source may go unflagged for ten turns and still be due.
+- **Everything else counts as before.** Flags still up in a third report count from that
+  report. Flags that come when no crossing is due, or name other frequencies, count at
+  once.
+- **A source is forgotten** after two crossings in a row that fit no turn, or after ten
+  turns without one; `periodic source: gone`. A restart forgets it too, so the lamp lights
+  for the first four crossings after one.
+
+The receiver's state is not altered: the telemetry carries every flag as the receiver gave
+it, and `RF:` and `rf lna` show it, the latter with `periodic_ms` while a source is known.
+The display's GNSS page reads `PULSE 12s` in place of `JAM NONE`. What this gives up is
+a jammer keyed for a second at a time on a radar's beat and on its frequencies: the lamp
+would not show it, and the telemetry would. The tracker judges timing alone; it does not
+know what the source is. It follows the u-blox receivers' flags, SEC-SIG's or MON-RF's; a
+Septentrio receiver's interference indication counts as it comes.
+
 ### Status display
 
 The ZED/X20 has a display header, H3, whose pins read GND, 3V3, SCL, SDA from pad 1: the
