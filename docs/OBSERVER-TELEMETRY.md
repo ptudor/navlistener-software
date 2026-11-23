@@ -527,7 +527,9 @@ after a 3D fix returns. The affected centers identify GNSS signals the receiver
 judges impaired. Finding the source of interference requires a comparison such
 as a second receiver observing at the same time or a repeatable hardware change.
 The antenna supervisor reports electrical faults. Its OK state is compatible
-with RF interference.
+with RF interference. The u-blox *ZED-X20P integration manual*
+(UBXDOC-963802114-12901, R05) explains detector sensitivity and security events
+in §3.13.1 (pp. 62–64) and spectrum interpretation in §4.2.3 (pp. 79–80).
 
 GNF1 `JammingStats` (0x05) continues to send the version 1 MON-RF counters.
 Version 2 uses a separate record for each of the following measurements. All
@@ -556,7 +558,9 @@ Bin `i` is centered at `center_hz + (i - 127) * span_hz / 256`.
 `peak_above_median_db` compares the strongest bin with the median of the
 whole path, including the filter shoulders. Compare the same path at the same
 gain across surveys. Absolute incident power, transmitter identity, location
-and intent require independent evidence. [X20 HPG 2.02 interface description, sections 3.14.8, 3.17.2–3 and 6.9.21](https://content.u-blox.com/sites/default/files/documents/u-blox-X20-HPG-2.02_InterfaceDescription_UBXDOC-304424225-19967.pdf)
+and intent require independent evidence. The u-blox *X20 HPG 2.02 interface
+description* (UBXDOC-304424225-19967, R03, protocol 50.10) defines the UBX
+fields in §§3.14.8, 3.17.2–3 and the sensitivity setting in §6.9.21.
 
 ### Septentrio receiver context
 
