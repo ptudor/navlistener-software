@@ -7,7 +7,8 @@
   flagged, the lamp was lit 88 % of the time, and the receiver's lower detector sensitivity
   left 47 of 50 turns flagged. The firmware now learns such a source from the flags' timing:
   four warning-level crossings one report long, on the same frequencies, whole turns of one
-  period of 4 to 20 seconds apart; adaptation remains in that range. Once it is known,
+  period of 4 to 20 seconds apart; adaptation remains in that range, and a source at its
+  very edge keeps its place when a report comes some milliseconds early or late. Once it is known,
   warning flags that begin when a crossing is due on those frequencies are neither a cause
   for ATTENTION nor an interference event. They become unexplained after 3.5 seconds even
   without another RF report. Critical MON-RF indications always count and never train the

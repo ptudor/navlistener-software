@@ -443,7 +443,9 @@ therefore watches when the flags come and how long they last
   report, or two when it falls across them; all on the same frequencies; whole turns of one
   period apart,
   two of the three intervals single turns; the period between 4 and 20 seconds, including
-  as it adapts to later crossings. The console
+  as it adapts to later crossings. A turn may measure a quarter of a second outside that
+  range, which is the timing of the reports and keeps a source at the range's edge; a turn
+  a whole report outside it does not fit. The console
   says so once: `periodic source: warning flags for one report every 12.0 s on 1227.60
   1268.52 1278.75 1246.00 MHz, as from a rotating radar`.
 - **Its warning-level crossings then do not count.** Flags that begin when a crossing is due (a quarter

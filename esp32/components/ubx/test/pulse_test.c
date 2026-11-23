@@ -41,6 +41,26 @@ static void restart(void)
     known_events = forgotten_events = 0;
     explained_any = false;
 }
+// A crossing whose one flagged report arrives at a time in milliseconds, cleared by the
+// report a second later; returns whether it was explained.
+static bool crossing_at(int64_t at_ms, uint32_t signature)
+{
+    jam_pulse_change_t change = jam_pulse_feed(&p, true, signature, at_ms);
+    if (change == JAM_PULSE_KNOWN) known_events++;
+    if (change == JAM_PULSE_FORGOTTEN) forgotten_events++;
+    const bool explained = jam_pulse_explains(&p, at_ms + 100);
+    change = jam_pulse_feed(&p, false, 0, at_ms + 1000);
+    if (change == JAM_PULSE_KNOWN) known_events++;
+    if (change == JAM_PULSE_FORGOTTEN) forgotten_events++;
+    return explained;
+}
+// The few milliseconds by which a report's arrival differs from its second, as the bench
+// showed them: -12 to +12 ms, from a fixed sequence.
+static int64_t jitter(unsigned *state)
+{
+    *state = *state * 1103515245u + 12345u;
+    return (int64_t)(*state >> 16) % 25 - 12;
+}
 
 int main(void)
 {
@@ -152,6 +172,54 @@ int main(void)
     assert(p.known && p.period_ms == JAM_PULSE_PERIOD_MIN_MS);
     assert(!crossing(35, 1, path2) && p.known && p.misses == 1);
     assert(!crossing(38, 1, path2) && !p.known && forgotten_events == 1);
+    // A source whose period is the very edge of the range keeps its place when its reports
+    // come some milliseconds early or late: it is learnt once, never forgotten, explained at
+    // every crossing after the fourth, and its period is held to the range throughout.
+    static const int32_t edges[] = {JAM_PULSE_PERIOD_MIN_MS, JAM_PULSE_PERIOD_MAX_MS};
+    for (unsigned e = 0; e < 2; e++) {
+        restart();
+        unsigned state = 1 + e;
+        for (unsigned turn = 0; turn < 400; turn++) {
+            const bool explained = crossing_at(20000 + (int64_t)turn * edges[e] + jitter(&state), path2);
+            assert(explained == (turn >= 4));
+            if (p.known) assert(p.period_ms >= JAM_PULSE_PERIOD_MIN_MS && p.period_ms <= JAM_PULSE_PERIOD_MAX_MS);
+        }
+        assert(p.known && known_events == 1 && !forgotten_events && p.crossings == 396);
+        assert(p.period_ms >= edges[e] - 2 && p.period_ms <= edges[e] + 2);
+    }
+    // The allowance is for the timing of reports and no more. A turn that is the allowance
+    // short of the range is taken; a millisecond more, and it is not, nor is one that is a
+    // whole report short, however the reports' timing falls.
+    restart();
+    for (unsigned turn = 0; turn < 4; turn++) (void)crossing_at(20000 + 4000 * turn, path2);
+    assert(p.known && p.period_ms == JAM_PULSE_PERIOD_MIN_MS);
+    assert(crossing_at(32000 + 4000 - JAM_PULSE_JITTER_MS, path2) && p.period_ms == JAM_PULSE_PERIOD_MIN_MS);
+    int64_t last = 32000 + 4000 - JAM_PULSE_JITTER_MS;
+    assert(!crossing_at(last + 4000 - JAM_PULSE_JITTER_MS - 1, path2) && p.known && p.misses == 1);
+    assert(crossing_at(last + 8000, path2) && !p.misses);          // two turns after the last that fitted
+    last += 8000;
+    assert(!crossing_at(last + 3000 + JAM_PULSE_JITTER_MS - 1, path2) && p.misses == 1); // 3 s, as late as it can come
+    restart();
+    for (unsigned turn = 0; turn < 4; turn++) (void)crossing_at(20000 + 20000 * turn, path2);
+    assert(p.known && p.period_ms == JAM_PULSE_PERIOD_MAX_MS);
+    assert(crossing_at(80000 + 20000 + JAM_PULSE_JITTER_MS, path2) && p.period_ms == JAM_PULSE_PERIOD_MAX_MS);
+    last = 80000 + 20000 + JAM_PULSE_JITTER_MS;
+    assert(!crossing_at(last + 20000 + JAM_PULSE_JITTER_MS + 1, path2) && p.misses == 1);
+    // Learning takes the same allowance and no more: four crossings a hair under four
+    // seconds apart are a source at the edge, held to it; a quarter second more under are not.
+    restart();
+    for (unsigned turn = 0; turn < 4; turn++) (void)crossing_at(20000 + 3990 * turn, path2);
+    assert(p.known && p.period_ms == JAM_PULSE_PERIOD_MIN_MS);
+    restart();
+    for (unsigned turn = 0; turn < 8; turn++) assert(!crossing_at(20000 + (4000 - JAM_PULSE_JITTER_MS - 1) * turn, path2));
+    assert(!p.known);
+    restart();
+    for (unsigned turn = 0; turn < 4; turn++) (void)crossing_at(20000 + 20010 * turn, path2);
+    assert(p.known && p.period_ms == JAM_PULSE_PERIOD_MAX_MS);
+    restart();
+    for (unsigned turn = 0; turn < 8; turn++) assert(!crossing_at(20000 + (20000 + JAM_PULSE_JITTER_MS + 1) * turn, path2));
+    assert(!p.known);
+
     restart();
     for (unsigned turn = 0; turn < 12; turn++) assert(!crossing(20 + 12 * turn, 3, path2));
     assert(!p.known && !explained_any);
@@ -171,6 +239,6 @@ int main(void)
     restart();
     for (unsigned turn = 0; turn < 8; turn++) assert(crossing(25 + 10 * turn, 1, 1) == (turn >= 4));
     assert(p.known && p.period_ms == 10000 && p.source == 1);
-    puts("jam pulse: a periodic source learnt from four crossings, explained when due, and forgotten on misfits or silence passed");
+    puts("jam pulse: a periodic source learnt from four crossings, explained when due, held to its range at the edges, and forgotten on misfits or silence passed");
     return 0;
 }

@@ -25,6 +25,10 @@
 // from chance.
 #define JAM_PULSE_PERIOD_MIN_MS 4000
 #define JAM_PULSE_PERIOD_MAX_MS 20000
+// A report comes within this of its second. An interval that is this much short or long of
+// the range is the timing of a source at its edge; one a whole report short or long is a
+// source outside it. The period itself is held to the range.
+#define JAM_PULSE_JITTER_MS 250
 // A crossing is due within a quarter of the period of its time, and within this.
 #define JAM_PULSE_TOLERANCE_MAX_MS 1500
 // A source may go unflagged for this many turns and still be due; after them it is forgotten.
@@ -90,6 +94,19 @@ static inline int32_t jam_pulse_turns(int64_t interval_ms, int32_t period_ms, in
     return turns > INT32_MAX ? INT32_MAX : (int32_t)turns;
 }
 
+// Whether an interval of one turn is of a period in the range, the timing of the reports
+// allowed for, and a period held to the range.
+static inline bool jam_pulse_in_range(int64_t interval_ms)
+{
+    return interval_ms >= JAM_PULSE_PERIOD_MIN_MS - JAM_PULSE_JITTER_MS &&
+           interval_ms <= JAM_PULSE_PERIOD_MAX_MS + JAM_PULSE_JITTER_MS;
+}
+static inline int32_t jam_pulse_held(int64_t period_ms)
+{
+    return period_ms < JAM_PULSE_PERIOD_MIN_MS ? JAM_PULSE_PERIOD_MIN_MS :
+           period_ms > JAM_PULSE_PERIOD_MAX_MS ? JAM_PULSE_PERIOD_MAX_MS : (int32_t)period_ms;
+}
+
 // Whether a crossing of the known source is due at a time: a whole number of turns after its
 // latest, no more than it may go unflagged.
 static inline bool jam_pulse_due(const jam_pulse_t *p, int64_t at_ms, int32_t *turns)
@@ -103,9 +120,10 @@ static inline bool jam_pulse_due(const jam_pulse_t *p, int64_t at_ms, int32_t *t
     *turns = jam_pulse_turns(interval, p->period_ms, &off);
     if (*turns < 1 || *turns > JAM_PULSE_TURNS_MAX || off > jam_pulse_tolerance(p->period_ms)) return false;
     // Tolerance admits timing jitter around a period, not a source that has drifted outside
-    // the range in which one-second reports can distinguish a period from chance.
-    const int64_t measured = interval / *turns;
-    return measured >= JAM_PULSE_PERIOD_MIN_MS && measured <= JAM_PULSE_PERIOD_MAX_MS;
+    // the range in which one-second reports can distinguish a period from chance: a turn a
+    // whole report short or long of the range is refused, and one that differs from it by
+    // the timing of its reports is not.
+    return jam_pulse_in_range(interval / *turns);
 }
 
 static inline void jam_pulse_forget(jam_pulse_t *p)
@@ -135,7 +153,7 @@ static inline bool jam_pulse_learn(jam_pulse_t *p)
     int64_t shortest = start[1] - start[0];
     for (unsigned i = 1; i + 1 < JAM_PULSE_LOCK; i++)
         if (start[i + 1] - start[i] < shortest) shortest = start[i + 1] - start[i];
-    if (shortest < JAM_PULSE_PERIOD_MIN_MS || shortest > JAM_PULSE_PERIOD_MAX_MS) return false;
+    if (!jam_pulse_in_range(shortest)) return false;
     const int32_t period = (int32_t)shortest;
     int32_t all_turns = 0;
     unsigned single = 0;
@@ -147,11 +165,11 @@ static inline bool jam_pulse_learn(jam_pulse_t *p)
         all_turns += turns;
     }
     if (single < 2) return false;
-    const int32_t learned = (int32_t)((start[JAM_PULSE_LOCK - 1] - start[0]) / all_turns);
-    if (learned < JAM_PULSE_PERIOD_MIN_MS || learned > JAM_PULSE_PERIOD_MAX_MS) return false;
+    const int64_t learned = (start[JAM_PULSE_LOCK - 1] - start[0]) / all_turns;
+    if (!jam_pulse_in_range(learned)) return false;
     p->known = true;
     p->source = p->candidate;
-    p->period_ms = learned;
+    p->period_ms = jam_pulse_held(learned);
     p->last_ms = start[JAM_PULSE_LOCK - 1];
     p->crossings = 0;
     p->misses = 0;
@@ -192,9 +210,11 @@ static inline jam_pulse_change_t jam_pulse_feed(jam_pulse_t *p, bool flagged, ui
     if (p->known && p->signature == p->source) {
         int32_t turns;
         if (jam_pulse_due(p, p->began_ms, &turns)) {
-            // Each fitting crossing moves the period an eighth of the way to what it measured.
+            // Each fitting crossing moves the period an eighth of the way to what it measured,
+            // and no further than the range: a source at its edge is not lost to a report
+            // that came a few milliseconds early.
             const int32_t measured = (int32_t)((p->began_ms - p->last_ms) / turns);
-            p->period_ms += (measured - p->period_ms) / 8;
+            p->period_ms = jam_pulse_held(p->period_ms + (measured - p->period_ms) / 8);
             p->last_ms = p->began_ms;
             p->misses = 0;
             p->count = 0; // a misfit before it was a stray
