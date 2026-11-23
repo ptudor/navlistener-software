@@ -319,6 +319,7 @@ static void run(char *line)
         return;
     }
     if (!strncmp(line, "rf lna", 6) && (!line[6] || line[6] == ' ')) { receiver_lna_console(line + 6); return; }
+    if (!strcmp(line, "rf signals")) { receiver_signals_console(); return; }
     static const char prefix[] = "commission ";
     if (strncmp(line, prefix, sizeof prefix - 1)) return; // not ours: the console sees stray keys
     char *command = line + sizeof prefix - 1, *argument = strchr(command, ' ');

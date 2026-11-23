@@ -25,3 +25,7 @@ bool receiver_lna_setting(bool *low_gain);
 // unit's LNA mode setting (receiver_settings.h), or " low" or " normal" to save it and apply
 // it to the receiver. Each answers with one NVF-RF-LNA... line. Call from one task.
 void receiver_lna_console(const char *argument);
+// The console's "rf signals" command: the healthy signals the receiver has code lock on,
+// with each one's C/N0 and its satellite's elevation, as one NVF-RF-SIGNALS {json} line, or
+// NVF-RF-SIGNALS-ERROR when the receiver has reported none lately. Call from that same task.
+void receiver_signals_console(void);

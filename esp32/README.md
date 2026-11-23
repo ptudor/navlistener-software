@@ -240,6 +240,15 @@ code-locked signals per system and kind from NAV-SIG, pairs of halves counted on
 satellite and unhealthy ones noted, then the bands they cover). A change in any block's
 antenna supervisor is logged when it happens, SHORT and OPEN as warnings.
 
+`rf signals` on the USB console lists the signals behind those counts: every healthy signal
+the receiver has code lock on, as one `NVF-RF-SIGNALS {json}` line whose `signals` array
+holds `["G05","L1C/A",45,61]` for each, the satellite, the signal, its C/N0 in dB-Hz and the
+satellite's elevation in degrees (`null` when the receiver has not given one). A data and
+pilot pair is one entry, and `age_ms` is the age of the receiver's report. The same signals
+read before and after a change of antenna, cable, place or LNA mode say what the change
+did to reception. With no signal report in the last 15 seconds the answer is
+`NVF-RF-SIGNALS-ERROR`.
+
 On a ZED-X20P, enter `rf survey` on the USB console while ATTENTION is lit.
 The receiver reports which GNSS center frequencies it assessed, the jamming flag at
 each center, its recent security events, the active detector sensitivity, and a
@@ -289,6 +298,7 @@ and sets it, and the display's SYSTEM page shows it:
 |---|---|
 | `rf lna` | `NVF-RF-LNA {json}`: the mode the unit is set to (`low`, `normal`); whether the receiver holds it (`set`, `pending` while it is being applied, `unconfirmed` when the receiver neither held nor acknowledged it); each RF block's AGC in percent; the jamming state; and, from UBX-SEC-SIG, how many of the frequencies it assessed are flagged |
 | `rf lna low` / `rf lna normal` | saves the mode and applies it at once: the receiver's settings are sent again and, if the mode changed, the GNSS subsystem restarts, which costs the fix for some seconds. `NVF-RF-LNA-OK <mode>`, or `NVF-RF-LNA-ERROR` with the reason |
+| `rf signals` | `NVF-RF-SIGNALS {json}`: each healthy code-locked signal with its C/N0, for comparing reception in the two modes |
 
 Choose the mode that keeps the AGC off its floor. An AGC of 7 % (a PGA of 3 dB, the lowest
 these receivers have reported) on every block in normal gain means the antenna brings more

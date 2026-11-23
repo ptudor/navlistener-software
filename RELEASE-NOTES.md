@@ -1,5 +1,11 @@
 # Unreleased
 
+- `rf signals` on the USB console lists every healthy signal the receiver has code lock on,
+  with its C/N0 and its satellite's elevation, as one `NVF-RF-SIGNALS {json}` line:
+  `["G05","L1C/A",45,61]` for each, a data and pilot pair as one entry. The same signals
+  read before and after a change of antenna, cable, place or LNA mode say what the change
+  did to reception, a comparison that took a diagnostic build before. Checked on a
+  ZED-X20P. A Septentrio receiver fills the same list and has not been tried.
 - An observer no longer holds its ATTENTION lamp for a rotating radar. A long-range L-band
   radar turns once in 10 to 12 seconds inside the band of GPS L2, GLONASS L2, BeiDou B3 and
   Galileo E6, and a ZED-X20P in its sight flags that path's four frequencies as jammed for

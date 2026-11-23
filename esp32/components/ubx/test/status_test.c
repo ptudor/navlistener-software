@@ -123,16 +123,17 @@ static void satellites_by_name(void)
     s.satellite_count = 1; s.satellites[0] = (gnss_observation_t){0, 5, NR_SATELLITE, 45, 61};
     assert(gnss_status_satellites_text(&s, text, sizeof text) == 0 && !text[0]);
     // GPS, GLONASS, Galileo, BeiDou, QZSS, NavIC and SBAS in that order, by number within each,
-    // whatever order the receiver reported them in; an unknown elevation is a dash.
+    // whatever order the receiver reported them in; an unknown elevation is a dash, whether
+    // it is the mark for none or the receiver's own value outside the range (-91).
     const gnss_observation_t reported[] = {
         {1, 131, NR_SATELLITE, 41, 42}, {0, 12, NR_SATELLITE, 38, 23}, {3, 36, NR_SATELLITE, 40, 9},
         {0, 5, NR_SATELLITE, 45, 61}, {6, 3, NR_SATELLITE, 31, 127}, {2, 7, NR_SATELLITE, 44, -2},
-        {5, 2, NR_SATELLITE, 33, 4}, {7, 14, NR_SATELLITE, 30, 3},
+        {5, 2, NR_SATELLITE, 33, 4}, {7, 14, NR_SATELLITE, 30, 3}, {0, 20, NR_SATELLITE, 36, -91},
     };
     s.satellite_count = sizeof reported / sizeof reported[0];
     memcpy(s.satellites, reported, sizeof reported);
     s.satellites_valid = true;
-    const char *expected = "G05 61/45, G12 23/38, R03 -/31, E07 -2/44, C36 9/40, J02 4/33, I14 3/30, S131 42/41";
+    const char *expected = "G05 61/45, G12 23/38, G20 -/36, R03 -/31, E07 -2/44, C36 9/40, J02 4/33, I14 3/30, S131 42/41";
     assert(gnss_status_satellites_text(&s, text, sizeof text) == strlen(expected) && !strcmp(text, expected));
     // A list too long for the text ends after the last satellite that fits whole.
     char two[24];
@@ -141,6 +142,56 @@ static void satellites_by_name(void)
     // No satellite: an empty text, for the caller to word.
     s.satellite_count = 0;
     assert(gnss_status_satellites_text(&s, text, sizeof text) == 0 && !text[0]);
+}
+// The signals behind the counts, as the console lists them.
+static void signals_as_json(void)
+{
+    static gnss_status_t s;
+    char text[512];
+    memset(&s, 0, sizeof s);
+    // Nothing is written for a list that is not valid.
+    s.signal_count = 1; s.signals[0] = (gnss_observation_t){0, 5, 0, 45, 61};
+    assert(gnss_status_signals_json(&s, text, sizeof text) == 0 && !text[0]);
+    // A valid list without a signal is an empty array.
+    s.signal_count = 0; s.signals_valid = true;
+    assert(gnss_status_signals_json(&s, text, sizeof text) == 2 && !strcmp(text, "[]"));
+    // Systems in the order of the satellite list, satellites by number, a satellite's signals
+    // in the table's order and one it does not name after them, whatever order the receiver
+    // reported them in. Galileo E6 B and C are one signal, the first reported; an unknown
+    // elevation is null, whether it is the mark for none or the receiver's own value outside
+    // the range (-91); a system the lists do not write is left out.
+    const gnss_observation_t reported[] = {
+        {1, 131, 0, 39, 42}, {0, 5, 13, 30, 61}, {0, 5, 3, 38, 61}, {3, 36, 8, 41, 9}, {2, 7, 9, 44, 20},
+        {2, 7, 8, 43, 20}, {0, 12, 0, 40, 127}, {4, 1, 0, 50, 10}, {6, 3, 2, 31, -3}, {0, 5, 0, 45, 61},
+        {0, 20, 0, 36, -91}, {6, 4, 0, 35, 90}, {6, 5, 0, 34, -90},
+    };
+    s.signal_count = sizeof reported / sizeof reported[0];
+    memcpy(s.signals, reported, sizeof reported);
+    const char *expected = "[[\"G05\",\"L1C/A\",45,61],[\"G05\",\"L2C\",38,61],[\"G05\",\"sig13\",30,61],"
+                           "[\"G12\",\"L1C/A\",40,null],[\"G20\",\"L1C/A\",36,null],[\"R03\",\"L2OF\",31,-3],"
+                           "[\"R04\",\"L1OF\",35,90],[\"R05\",\"L1OF\",34,-90],[\"E07\",\"E6\",44,20],"
+                           "[\"C36\",\"B2a\",41,9],[\"S131\",\"L1C/A\",39,42]]";
+    assert(gnss_status_signals_json(&s, text, sizeof text) == strlen(expected) && !strcmp(text, expected));
+    // An array too long for the text ends after the last signal that fits whole, and is closed.
+    const char *two = "[[\"G05\",\"L1C/A\",45,61],[\"G05\",\"L2C\",38,61]]";
+    const char *one = "[[\"G05\",\"L1C/A\",45,61]]";
+    char fits[64];
+    assert(strlen(two) + 1 <= sizeof fits);
+    assert(gnss_status_signals_json(&s, fits, strlen(two) + 1) == strlen(two) && !strcmp(fits, two));
+    assert(gnss_status_signals_json(&s, fits, strlen(two)) == strlen(one) && !strcmp(fits, one));
+    assert(gnss_status_signals_json(&s, fits, 3) == 2 && !strcmp(fits, "[]"));
+    // Less room than an empty array takes holds nothing.
+    fits[0] = 'x';
+    assert(gnss_status_signals_json(&s, fits, 2) == 0 && !fits[0]);
+    assert(gnss_status_signals_json(&s, fits, 0) == 0);
+    // The list at its fullest and longest fits the room the console gives it.
+    static char full[64 + GNSS_OBS_MAX * 26];
+    for (unsigned i = 0; i < GNSS_OBS_MAX; i++) s.signals[i] = (gnss_observation_t){1, (uint8_t)(56 + i), 0, 255, 127};
+    s.signal_count = GNSS_OBS_MAX;
+    const size_t length = gnss_status_signals_json(&s, full, sizeof full - 48);
+    unsigned entries = 0;
+    for (const char *at = full; (at = strstr(at, "[\"S")) != NULL; at++) entries++;
+    assert(length == strlen(full) && full[length - 1] == ']' && entries == GNSS_OBS_MAX);
 }
 // What lights the panel's ATTENTION lamp: the receiver's own reports while they are fresh,
 // and its silence.
@@ -338,6 +389,7 @@ int main(void)
     reception_evidence();
     rf_and_signals();
     satellites_by_name();
+    signals_as_json();
     attention();
     periodic_source();
     // NAV-PVT's horizontal accuracy estimate and position DOP are kept with a valid fix and
@@ -409,5 +461,5 @@ int main(void)
     assert(gnss_status_same_place(377000000,-1224000000,377010000,-1224010000));
     assert(!gnss_status_same_place(377000000,-1224000000,357000000,1397000000));
     assert(gnss_status_same_place(0,1799999000,0,-1799999000));
-    puts("GNSS status: tracking, stale data, regional expectations, learned override, movement, RF blocks, SEC-SIG jamming, signal kinds, satellites by name, fix accuracy, the attention flags and a periodic source left out of them passed");
+    puts("GNSS status: tracking, stale data, regional expectations, learned override, movement, RF blocks, SEC-SIG jamming, signal kinds, satellites by name, signals as JSON, fix accuracy, the attention flags and a periodic source left out of them passed");
 }

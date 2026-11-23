@@ -63,7 +63,10 @@ display's (`oled status`, `oled rotate <0|180>`, `oled off`, `oled on`, `oled du
 lines. On a ZED/X20, `rf lna` reports the mode the unit's receiver is set to for its
 internal LNAs and `rf lna low` or `rf lna normal` sets it for the antenna the unit is
 installed with ([The ZED-X20P's LNA mode](../README.md#the-zed-x20ps-lna-mode)), answered
-with `NVF-RF-LNA` lines; `rf survey` asks the receiver for its RF diagnostics.
+with `NVF-RF-LNA` lines; `rf survey` asks the receiver for its RF diagnostics. `rf signals`
+lists the healthy signals a receiver has code lock on, each with its C/N0 and its
+satellite's elevation, as one `NVF-RF-SIGNALS` line
+([README](../README.md#finding-the-onboard-gnss-receiver)).
 
 ### The report
 

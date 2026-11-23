@@ -317,12 +317,14 @@ size_t gnss_status_attention_text(uint8_t flags, char *out, size_t size)
     return used;
 }
 
+// RINEX's letter for each UBX gnssId, in the order the lists are written.
+static const struct { uint8_t gnss; char letter; } order[] = {
+    {0, 'G'}, {6, 'R'}, {2, 'E'}, {3, 'C'}, {5, 'J'}, {7, 'I'}, {1, 'S'},
+};
+// An elevation the receiver gave: one inside the range elevations have.
+static bool elevation_given(int8_t elevation) { return elevation >= -90 && elevation <= 90; }
 size_t gnss_status_satellites_text(const gnss_status_t *s, char *out, size_t size)
 {
-    // RINEX's letter for each UBX gnssId, in the order the list is written.
-    static const struct { uint8_t gnss; char letter; } order[] = {
-        {0, 'G'}, {6, 'R'}, {2, 'E'}, {3, 'C'}, {5, 'J'}, {7, 'I'}, {1, 'S'},
-    };
     size_t used = 0;
     if (!size) return 0;
     out[0] = 0;
@@ -338,7 +340,7 @@ size_t gnss_status_satellites_text(const gnss_status_t *s, char *out, size_t siz
             if (!next) break;
             last = next->sv;
             char entry[24], elevation[8] = "-";
-            if (next->elevation != 127) snprintf(elevation, sizeof elevation, "%d", (int)next->elevation);
+            if (elevation_given(next->elevation)) snprintf(elevation, sizeof elevation, "%d", (int)next->elevation);
             const int length = snprintf(entry, sizeof entry, "%s%c%02u %s/%u", used ? ", " : "", order[g].letter,
                                         (unsigned)next->sv, elevation, (unsigned)next->cno);
             if (length < 0 || (size_t)length >= sizeof entry || used + (size_t)length >= size) return used;
@@ -346,5 +348,45 @@ size_t gnss_status_satellites_text(const gnss_status_t *s, char *out, size_t siz
             used += (size_t)length;
         }
     }
+    return used;
+}
+size_t gnss_status_signals_json(const gnss_status_t *s, char *out, size_t size)
+{
+    if (!size) return 0;
+    out[0] = 0;
+    if (!s->signals_valid || size < sizeof "[]") return 0;
+    size_t used = 0;
+    out[used++] = '[';
+    // Ascending by system, satellite and signal: the smallest key above the last written,
+    // until none is left. Halves of one signal share a key, and the first of them is kept.
+    for (long last = -1;;) {
+        const gnss_observation_t *next = NULL;
+        long next_key = 0;
+        int next_kind = -1;
+        char letter = 0;
+        for (unsigned i = 0; i < s->signal_count; i++) {
+            const gnss_observation_t *o = &s->signals[i];
+            size_t g = 0;
+            while (g < sizeof order / sizeof order[0] && order[g].gnss != o->gnss) g++;
+            if (g == sizeof order / sizeof order[0]) continue;
+            const int kind = gnss_signal_kind(o->gnss, o->signal);
+            const long key = ((long)g << 16) | ((long)o->sv << 8) | (long)(kind >= 0 ? kind : (int)GNSS_SIGNAL_KINDS + o->signal);
+            if (key > last && (!next || key < next_key)) { next = o; next_key = key; next_kind = kind; letter = order[g].letter; }
+        }
+        if (!next) break;
+        last = next_key;
+        char entry[40], name[8], elevation[8] = "null";
+        if (next_kind >= 0) snprintf(name, sizeof name, "%s", gnss_signal_kinds[next_kind].name);
+        else snprintf(name, sizeof name, "sig%u", (unsigned)next->signal);
+        if (elevation_given(next->elevation)) snprintf(elevation, sizeof elevation, "%d", (int)next->elevation);
+        const int length = snprintf(entry, sizeof entry, "%s[\"%c%02u\",\"%s\",%u,%s]", used > 1 ? "," : "", letter,
+                                    (unsigned)next->sv, name, (unsigned)next->cno, elevation);
+        // The closing bracket and the NUL keep their room.
+        if (length < 0 || (size_t)length >= sizeof entry || used + (size_t)length + sizeof "]" > size) break;
+        memcpy(out + used, entry, (size_t)length);
+        used += (size_t)length;
+    }
+    out[used++] = ']';
+    out[used] = 0;
     return used;
 }

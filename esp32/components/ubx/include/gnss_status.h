@@ -8,7 +8,9 @@
 #define GNSS_OBS_MAX 200u
 typedef struct {
     uint8_t gnss,sv,signal,cno;
-    int8_t elevation; // NAV-SAT degrees; 127 when a signal has no fresh satellite geometry
+    // NAV-SAT degrees, outside -90..90 while the receiver does not know it (a ZED-X20P sends
+    // -91); 127 when a signal has no fresh satellite geometry
+    int8_t elevation;
 } gnss_observation_t;
 #define GNSS_REGIONAL_MASK ((1u << 1) | (1u << 5) | (1u << 7))
 // One UBX-MON-RF block, one per band the receiver supports; which band a block ID stands for
@@ -118,4 +120,14 @@ void gnss_status_compare(const gnss_status_t *s, const nr_expectation_t *e,
 // always adds when size is not zero; a list too long for out ends after the last satellite
 // that fits whole. Nothing is written for a list that is not valid.
 size_t gnss_status_satellites_text(const gnss_status_t *s, char *out, size_t size);
+// The signals behind the counts, for a console line: the healthy signals the receiver has
+// code lock on, as a JSON array in the order of the satellite list and, within a satellite,
+// of the signal table. Each is ["G05","L1C/A",45,61]: the satellite, the signal's name ("sig"
+// and its number for one the table does not name), its C/N0 in dB-Hz and the satellite's
+// elevation in degrees, null when the receiver has not given one. The halves of one signal
+// are one entry, the first the receiver reported. Returns the length written, without the
+// NUL it always adds when size is not zero; an array too long for out ends after the last
+// signal that fits whole, and is closed. Nothing is written for a list that is not valid or
+// into less room than an empty array takes.
+size_t gnss_status_signals_json(const gnss_status_t *s, char *out, size_t size);
 #endif

@@ -853,6 +853,9 @@ bool receiver_lna_setting(bool *low_gain)
     *low_gain = atomic_load(&lna_low_gain);
     return true;
 }
+// The receiver's status as a console command reads it: too large for that task's stack, and
+// the console's commands run on its one task.
+static gnss_status_t console_status;
 // "rf lna" reports the unit's setting, what the receiver has said of it and the readings that
 // show whether it suits the antenna; "rf lna low" and "rf lna normal" save the setting and
 // have the receiver task apply it. Runs on the console's task alone.
@@ -864,28 +867,27 @@ void receiver_lna_console(const char *argument)
         return;
     }
     if (!*argument) {
-        static gnss_status_t status; // too large for this task's stack; the console is one task
         static const char *const states[] = {"pending", "set", "unconfirmed"};
         static const char *const jamming[] = {"unknown", "OK", "warning", "critical"};
-        receiver_status(&status);
+        receiver_status(&console_status);
         const int64_t now = esp_timer_get_time() / 1000;
-        const bool blocks = status.rf_blocks_valid && now >= status.rf_blocks_ms && now - status.rf_blocks_ms <= 15000;
-        const bool judged = status.rf_valid && now >= status.rf_ms && now - status.rf_ms <= 15000;
+        const bool blocks = console_status.rf_blocks_valid && now >= console_status.rf_blocks_ms && now - console_status.rf_blocks_ms <= 15000;
+        const bool judged = console_status.rf_valid && now >= console_status.rf_ms && now - console_status.rf_ms <= 15000;
         char line[256];
         int used = snprintf(line, sizeof line, "NVF-RF-LNA {\"setting\":\"%s\",\"receiver\":\"%s\",\"agc_percent\":[",
                             receiver_lna_name(atomic_load(&lna_low_gain) ? RECEIVER_LNA_LOW : RECEIVER_LNA_NORMAL),
                             states[atomic_load(&lna_state)]);
-        for (unsigned b = 0; blocks && b < status.rf_blocks && used < (int)sizeof line; b++)
+        for (unsigned b = 0; blocks && b < console_status.rf_blocks && used < (int)sizeof line; b++)
             used += snprintf(line + used, sizeof line - (size_t)used, "%s%u", b ? "," : "",
-                             (unsigned)((status.rf_block[b].agc * 100u + 4095u) / 8191u));
+                             (unsigned)((console_status.rf_block[b].agc * 100u + 4095u) / 8191u));
         if (used < (int)sizeof line)
             used += snprintf(line + used, sizeof line - (size_t)used, "],\"jamming\":\"%s\"",
-                             judged ? jamming[status.jam & 3] : "unread");
-        if (judged && status.sec_sig && used < (int)sizeof line)
+                             judged ? jamming[console_status.jam & 3] : "unread");
+        if (judged && console_status.sec_sig && used < (int)sizeof line)
             used += snprintf(line + used, sizeof line - (size_t)used, ",\"flagged\":%u,\"assessed\":%u",
-                             status.centers_jammed, status.centers_assessed);
-        if (judged && status.pulse.known && used < (int)sizeof line)
-            used += snprintf(line + used, sizeof line - (size_t)used, ",\"periodic_ms\":%ld", (long)status.pulse.period_ms);
+                             console_status.centers_jammed, console_status.centers_assessed);
+        if (judged && console_status.pulse.known && used < (int)sizeof line)
+            used += snprintf(line + used, sizeof line - (size_t)used, ",\"periodic_ms\":%ld", (long)console_status.pulse.period_ms);
         if (used < (int)sizeof line) snprintf(line + used, sizeof line - (size_t)used, "}");
         puts(line);
         return;
@@ -907,6 +909,25 @@ void receiver_lna_console(const char *argument)
     atomic_store(&lna_state, LNA_PENDING);
     atomic_store(&lna_changed, true);
     printf("NVF-RF-LNA-OK %s\n", receiver_lna_name(wanted.lna));
+}
+// "rf signals" lists the healthy signals the receiver has code lock on, each with its C/N0:
+// the reading that says whether a change of antenna, cable, place or LNA mode helped
+// reception. One NVF-RF-SIGNALS... line. Runs on the console's task alone.
+void receiver_signals_console(void)
+{
+    static char line[64 + GNSS_OBS_MAX * 26]; // every signal the status holds, each at its longest
+    receiver_status(&console_status);
+    const int64_t now = esp_timer_get_time() / 1000;
+    if (!console_status.signals_valid || now < console_status.signals_ms || now - console_status.signals_ms > 15000) {
+        puts("NVF-RF-SIGNALS-ERROR no signal report from the receiver in the last 15 s");
+        return;
+    }
+    size_t used = (size_t)snprintf(line, sizeof line, "NVF-RF-SIGNALS {\"age_ms\":%u,\"signals\":",
+                                   (unsigned)(now - console_status.signals_ms));
+    used += gnss_status_signals_json(&console_status, line + used, sizeof line - used - 1); // room for the brace
+    line[used++] = '}';
+    line[used] = 0;
+    puts(line);
 }
 bool receiver_alive(void)
 {
