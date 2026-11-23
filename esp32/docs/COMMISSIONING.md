@@ -366,7 +366,8 @@ right identity. The receiver must stream and confirm its model, and a missing ve
 fails rather than skips. A u-blox receiver must also acknowledge every setting the
 firmware changes from its defaults, all in its RAM: the report names the UART1 rate it
 runs at (on a ZED-X20P, 460800 baud, moved from the 38400 it powers up at) and any key it
-refused. It must answer with its chip ID and report its antenna supervisor without a short
+refused. The ZED-X20P's LNA modes are read first and count when the receiver holds them
+already, as after a restart of the ESP32 alone. It must answer with its chip ID and report its antenna supervisor without a short
 or open (on the ZED/X20, OK on every RF block). The bands it tracks are reported but never
 fail the test: put the antenna where it sees the sky to see all of them pass. The
 ZED/X20's W5500 must answer its version read, which the firmware makes at every boot,

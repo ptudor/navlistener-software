@@ -51,7 +51,18 @@ size_t ubx_set_ram(uint8_t out[20], uint32_t key, uint32_t value, unsigned width
 // right after UBX output and before any status message is on: each resets the GNSS
 // subsystem, which a running NAV-STATUS or SEC-SIG would report as a spoofing or jamming
 // transition.
-// The ZED-X20P adds four:
+// The ZED-X20P adds five:
+// - Its three internal LNAs, one to an RF block, in low gain, as one setting straight after
+//   UBX output. The default, normal gain, takes 17 to 40 dB of gain ahead of RF_IN and low
+//   gain 20 to 50 dB (integration manual UBXDOC-963802114-12901, 4.3.1), "to provide the
+//   integrated PGAs with a sufficient dynamic range". A survey antenna on a short cable is
+//   at the top of the first range: two boards in normal gain held all three PGAs at 3 dB
+//   (MON-SPAN; MON-RF's AGC at 7 %) and SEC-SIG flagged every frequency it assessed as
+//   jammed for as long as they ran. In low gain the board it was tried on read 5 to 11 dB
+//   (AGC 11 to 25 %) with nothing flagged and C/N0 no lower, and normal gain brought the
+//   flags back within six seconds, thirteen changes of mode running (esp32/README.md, The
+//   ZED-X20P's LNA mode). The modes apply from a restart of the GNSS subsystem (2.2.3),
+//   which the observer sends when the setting changed (ubx_setting_needs_restart).
 // - CFG-SIGNAL-QZSS_ENA and CFG-SIGNAL-NAVIC_ENA: both are off by default in every X20
 //   signal plan (integration manual UBXDOC-963802114-12901, 2.2.4.1), with all their bands
 //   on beneath them.
@@ -70,8 +81,9 @@ size_t ubx_set_ram(uint8_t out[20], uint32_t key, uint32_t value, unsigned width
 #define RATES ONE(0x20910232), ONE(0x2091035a), ONE(0x20910016), ONE(0x20910007), ONE(0x2091001b), \
     ONE(0x2091017e), ONE(0x20910346), ONE(0x20910066), ONE(0x20910160)
 static const ubx_setting_t shared_settings[] = {ONE(0x10740001), RATES};
-static const ubx_setting_t x20_settings[] = {ONE(0x10740001), ONE(0x10310024), ONE(0x10310026), RATES,
-    ONE(0x10a3002f), ONE(0x20910635)};
+static const ubx_setting_t x20_settings[] = {ONE(0x10740001),
+    {3, {{UBX_KEY_RF1_LNA_LOWGAIN, 1}, {UBX_KEY_RF2_LNA_LOWGAIN, 1}, {UBX_KEY_RF3_LNA_LOWGAIN, 1}}},
+    ONE(0x10310024), ONE(0x10310026), RATES, ONE(0x10a3002f), ONE(0x20910635)};
 static const ubx_setting_t max_settings[] = {ONE(0x10740001),
     {5, {{0x1031000d, 0}, {0x1031000f, 1}, {0x10310018, 1}, {0x10310025, 1}, {0x10310022, 1}}}, RATES};
 #undef RATES
@@ -110,6 +122,67 @@ bool ubx_setting_resets_gnss(const ubx_setting_t *setting)
         if (ubx_key_resets_gnss(setting->item[i].key)) return true;
     return false;
 }
+bool ubx_setting_needs_restart(const ubx_setting_t *setting)
+{
+    for (unsigned i = 0; i < setting->count && i < UBX_SETTING_ITEMS; i++) {
+        const uint32_t key = setting->item[i].key;
+        if (key == UBX_KEY_RF1_LNA_LOWGAIN || key == UBX_KEY_RF2_LNA_LOWGAIN || key == UBX_KEY_RF3_LNA_LOWGAIN)
+            return true;
+    }
+    return false;
+}
+size_t ubx_encode_setting_poll(uint8_t out[UBX_SETTING_POLL_MAX], const ubx_setting_t *setting)
+{
+    if (!setting->count || setting->count > UBX_SETTING_ITEMS) return 0;
+    out[2] = 0x06; out[3] = 0x8b; // CFG-VALGET version 0, RAM layer, from the first result
+    memset(out + 6, 0, 4);
+    uint8_t *p = out + 10;
+    for (unsigned i = 0; i < setting->count; i++, p += 4)
+        for (unsigned b = 0; b < 4; b++) p[b] = setting->item[i].key >> (8 * b);
+    return finish(out, 4 + 4u * setting->count);
+}
+// A key's value size is in its bits 28 to 30: one byte for a bit or a byte, then two, four
+// and eight bytes (X20 HPG 2.02 interface description, 6.2).
+static size_t value_size(uint32_t key)
+{
+    switch (key >> 28 & 7) {
+    case 1: case 2: return 1;
+    case 3: return 2;
+    case 4: return 4;
+    case 5: return 8;
+    }
+    return 0;
+}
+ubx_setting_read_t ubx_setting_read(const ubx_setting_t *setting, const uint8_t *body, size_t len)
+{
+    // The answer is version 1: the layer, the position, then each key with its value.
+    if (!body || len < 4 || body[0] != 1 || body[1] != 0 || !setting->count || setting->count > UBX_SETTING_ITEMS)
+        return UBX_SETTING_OTHER;
+    unsigned found = 0, held = 0;
+    for (size_t offset = 4; offset + 4 <= len;) {
+        uint32_t key = 0;
+        for (unsigned b = 0; b < 4; b++) key |= (uint32_t)body[offset + b] << (8 * b);
+        const size_t size = value_size(key);
+        if (!size || offset + 4 + size > len) return UBX_SETTING_OTHER;
+        for (unsigned i = 0; i < setting->count; i++) {
+            if (setting->item[i].key != key || (found & 1u << i)) continue;
+            found |= 1u << i;
+            if (size == 1 && body[offset + 4] == setting->item[i].value) held |= 1u << i;
+        }
+        offset += 4 + size;
+    }
+    const unsigned all = (1u << setting->count) - 1;
+    if (found != all) return UBX_SETTING_OTHER;
+    return held == all ? UBX_SETTING_HELD : UBX_SETTING_DIFFERS;
+}
+size_t ubx_restart_gnss(uint8_t out[12])
+{
+    out[2] = 0x06; out[3] = 0x04; // CFG-RST
+    out[6] = out[7] = 0;          // navBbrMask: nothing cleared, a hot start
+    out[8] = 0x02;                // resetMode: controlled software reset, GNSS only
+    out[9] = 0;
+    return finish(out, 4);
+}
 const char *ubx_key_name(uint32_t key)
 {
     switch (key) {
@@ -124,6 +197,9 @@ const char *ubx_key_name(uint32_t key)
     case 0x20910066: return "CFG-MSGOUT-UBX_NAV_CLOCK_UART1";
     case 0x20910160: return "CFG-MSGOUT-UBX_NAV_EOE_UART1";
     case 0x10a3002f: return "CFG-HW-ANT_CFG_SHORTDET";
+    case UBX_KEY_RF1_LNA_LOWGAIN: return "CFG-HW-RF1_LNA_MODE_LOWGAIN";
+    case UBX_KEY_RF2_LNA_LOWGAIN: return "CFG-HW-RF2_LNA_MODE_LOWGAIN";
+    case UBX_KEY_RF3_LNA_LOWGAIN: return "CFG-HW-RF3_LNA_MODE_LOWGAIN";
     case 0x20910635: return "CFG-MSGOUT-UBX_SEC_SIG_UART1";
     case 0x10310024: return "CFG-SIGNAL-QZSS_ENA";
     case 0x10310026: return "CFG-SIGNAL-NAVIC_ENA";

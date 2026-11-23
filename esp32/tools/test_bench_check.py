@@ -61,7 +61,9 @@ def judge(text: str, mac="02a1b2c3d4e5", expect=None) -> dict:
     }
 
 
-# The RAM keys the firmware sets on a ZED-X20P, in order (ubx_probe.c).
+# The RAM keys the firmware sets on a ZED-X20P one to a setting, in order (ubx_probe.c), and
+# the three internal LNA modes that are one setting, second in that order.
+X20_LNA = "+".join(f"CFG-HW-RF{block}_LNA_MODE_LOWGAIN=1" for block in (1, 2, 3))
 X20_KEYS = [
     ("CFG-UART1OUTPROT-UBX", 0x10740001), ("CFG-SIGNAL-QZSS_ENA", 0x10310024),
     ("CFG-SIGNAL-NAVIC_ENA", 0x10310026), ("CFG-MSGOUT-UBX_RXM_SFRBX_UART1", 0x20910232),
@@ -104,8 +106,11 @@ X20 = [
     log("I", "receiver", "MON-VER: software=HPG 2.10                     hardware=000A0000  ; ZED-X20P=yes"),
     log("I", "receiver", "receiver answering at 460800 baud, set in its RAM from 38400 (CFG-UART1-BAUDRATE)"),
     log("I", "receiver", "receiver unique chip ID 95f6bb8f2e54 (UBX-SEC-UNIQID)"),
-    *(log("I", "receiver", f"RAM key {name} (0x{key:08x}): ACK") for name, key in X20_KEYS),
-    log("I", "receiver", "receiver RAM configuration done: 14 of 14 settings acknowledged; the SFRBX counter confirms raw output"),
+    log("I", "receiver", f"RAM key {X20_KEYS[0][0]} (0x{X20_KEYS[0][1]:08x}): ACK"),
+    log("I", "receiver", f"RAM key {X20_LNA} (3 keys): ACK"),
+    log("I", "receiver", "GNSS subsystem restarted (UBX-CFG-RST, GNSS only), which applies the setting"),
+    *(log("I", "receiver", f"RAM key {name} (0x{key:08x}): ACK") for name, key in X20_KEYS[1:]),
+    log("I", "receiver", "receiver RAM configuration done: 15 of 15 settings acknowledged; the SFRBX counter confirms raw output"),
     log("I", "receiver", X20_RF),
     log("I", "receiver", f"signals: {X20_SIGNALS}; bands L1 L2 L5 E6"),
     *BOOT[-4:],
@@ -261,7 +266,7 @@ class PreEnrollmentTests(unittest.TestCase):
                 "receiver.model": ("pass", "MON-VER confirms ZED-X20P"),
                 "receiver.config": (
                     "pass",
-                    "UART1 at 460800 baud, set in its RAM from 38400; 14 of 14 RAM settings acknowledged",
+                    "UART1 at 460800 baud, set in its RAM from 38400; 15 of 15 RAM settings acknowledged",
                 ),
                 "receiver.uid": ("pass", "u-blox chip ID 95f6bb8f2e54"),
                 "receiver.antenna": ("pass", "antenna OK; 3 RF blocks, AGC 36%/30%/25%; jamming OK (SEC-SIG)"),
@@ -282,25 +287,37 @@ class PreEnrollmentTests(unittest.TestCase):
         self.assertEqual(checks["i2c:receiver_i_o_expander@0x25"], ("pass", "ESP_OK"))
 
     def test_the_receiver_config_reports_what_the_firmware_changed(self):
-        # A receiver already at the configured rate, as after an ESP32 reset: nothing moved.
-        kept = console(X20).replace("valid receiver traffic at 38400 baud", "valid receiver traffic at 460800 baud").replace(
-            "set in its RAM from 38400 (CFG-UART1-BAUDRATE)", "the configured rate"
+        # A receiver already at the configured rate, as after an ESP32 reset: nothing moved,
+        # and the LNA modes it still holds are read and left alone, with no GNSS restart.
+        kept = (
+            console([line for line in X20 if "GNSS subsystem restarted" not in line])
+            .replace("valid receiver traffic at 38400 baud", "valid receiver traffic at 460800 baud")
+            .replace("set in its RAM from 38400 (CFG-UART1-BAUDRATE)", "the configured rate")
+            .replace(f"{X20_LNA} (3 keys): ACK", f"{X20_LNA} (3 keys): already set")
         )
+        self.assertIn("(3 keys): already set", kept)
         checks = judge(kept, expect="zed-x20")
         self.assertEqual(checks["receiver"], ("pass", "valid traffic at 460800 baud"))
         self.assertEqual(
-            checks["receiver.config"], ("pass", "UART1 at 460800 baud, the configured rate; 14 of 14 RAM settings acknowledged")
+            checks["receiver.config"], ("pass", "UART1 at 460800 baud, the configured rate; 15 of 15 RAM settings acknowledged")
+        )
+        # A receiver whose firmware knows no such keys refuses their reading, and is named.
+        unknown = console(X20).replace(f"{X20_LNA} (3 keys): ACK", f"{X20_LNA} (3 keys): NAK (unsupported)").replace(
+            "15 of 15 settings", "14 of 15 settings"
+        )
+        self.assertEqual(
+            judge(unknown, expect="zed-x20")["receiver.config"], ("fail", f"14 of 15 RAM settings acknowledged; {X20_LNA} NAK")
         )
         # A refused or unanswered key fails the check and is named.
         refused = (
             console(X20)
             .replace("CFG-MSGOUT-UBX_NAV_EOE_UART1 (0x20910160): ACK", "CFG-MSGOUT-UBX_NAV_EOE_UART1 (0x20910160): NAK (unsupported)")
             .replace("CFG-HW-ANT_CFG_SHORTDET (0x10a3002f): ACK", "CFG-HW-ANT_CFG_SHORTDET (0x10a3002f): no ACK; output unconfirmed")
-            .replace("14 of 14 settings", "12 of 14 settings")
+            .replace("15 of 15 settings", "13 of 15 settings")
         )
         self.assertEqual(
             judge(refused, expect="zed-x20")["receiver.config"],
-            ("fail", "12 of 14 RAM settings acknowledged; CFG-MSGOUT-UBX_NAV_EOE_UART1 NAK; CFG-HW-ANT_CFG_SHORTDET no ACK"),
+            ("fail", "13 of 15 RAM settings acknowledged; CFG-MSGOUT-UBX_NAV_EOE_UART1 NAK; CFG-HW-ANT_CFG_SHORTDET no ACK"),
         )
         # The MAX-M10S's four GNSS are one setting of five keys.
         four = "+".join(f"CFG-SIGNAL-{k}" for k in ("BDS_B1_ENA=0", "BDS_B1C_ENA=1", "GLO_L1_ENA=1", "GLO_ENA=1", "BDS_ENA=1"))

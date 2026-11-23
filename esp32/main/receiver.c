@@ -50,6 +50,13 @@ bool receiver_request_rf_survey(void)
 }
 static bool version_seen, expected_model, unique_id_logged;
 static int cfg_ack;
+// The setting whose CFG-VALGET answer is awaited, and the answer: the receiver holds it, holds
+// another value, or knows no such key.
+enum { READ_PENDING, READ_HELD, READ_DIFFERS, READ_REFUSED };
+static const ubx_setting_t *reading;
+static int cfg_read;
+// After the restart that applies a setting, before the next command.
+#define RESTART_SETTLE_MS 1000
 static gnss_status_t health = {.supported = 0x6f}, snapshot = {.supported = 0x6f};
 static portMUX_TYPE health_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -80,6 +87,11 @@ static void observe(uint8_t cls, uint8_t id, const uint8_t *body, size_t len, vo
         }
     } else if (cls == 0x05 && (id == 0 || id == 1) && len == 2 && body[0] == 0x06 && body[1] == 0x8a) {
         cfg_ack = id == 1 ? 1 : -1;
+    } else if (reading && cls == 0x06 && id == 0x8b) {
+        const ubx_setting_read_t answer = ubx_setting_read(reading, body, len);
+        if (answer != UBX_SETTING_OTHER) cfg_read = answer == UBX_SETTING_HELD ? READ_HELD : READ_DIFFERS;
+    } else if (reading && cls == 0x05 && id == 0 && len == 2 && body[0] == 0x06 && body[1] == 0x8b) {
+        cfg_read = READ_REFUSED;
     } else if (cls == 0x27 && id == 0x03 && !unique_id_logged) {
         char uid[13];
         if (ubx_unique_id(body, len, uid)) {
@@ -259,6 +271,21 @@ static void apply_setting(const ubx_setting_t *setting)
     uart_write_bytes(RX_UART, pkt, n);
     uart_wait_tx_done(RX_UART, pdMS_TO_TICKS(200));
 }
+static void poll_setting(const ubx_setting_t *setting)
+{
+    uint8_t pkt[UBX_SETTING_POLL_MAX];
+    size_t n = ubx_encode_setting_poll(pkt, setting);
+    reading = setting; cfg_read = READ_PENDING;
+    uart_write_bytes(RX_UART, pkt, n);
+    uart_wait_tx_done(RX_UART, pdMS_TO_TICKS(200));
+}
+static void restart_gnss(void)
+{
+    uint8_t pkt[12];
+    size_t n = ubx_restart_gnss(pkt);
+    uart_write_bytes(RX_UART, pkt, n);
+    uart_wait_tx_done(RX_UART, pdMS_TO_TICKS(200));
+}
 // "CFG-MSGOUT-UBX_NAV_PVT_UART1 (0x20910007)" for one key; "NAME=0+NAME=1 (5 keys)" for more.
 static const char *setting_name(const ubx_setting_t *setting)
 {
@@ -294,6 +321,7 @@ static void rx_task(void *arg)
     const size_t key_count = ubx_settings(module, &settings);
     unsigned setting = 0, tries = 0;
     bool configured = false, baud_attempted = false, config_started = false;
+    bool writing = false; // the setting in hand needs a restart to apply, and its reading is over
     int switched_from = 0; // the rate the receiver was found at, when it was moved to CONFIG_NVF_RX_BAUD
     unsigned acknowledged = 0;
     int64_t cfg_deadline = 0, rf_seen_ms = 0;
@@ -344,6 +372,7 @@ static void rx_task(void *arg)
         if (CONFIG_NVF_RX_AUTOPROBE && locked && now - last_valid > 15000) {
             locked = version_seen = expected_model = false;
             configured = baud_attempted = config_started = false; setting = tries = 0; switched_from = 0;
+            writing = false; reading = NULL; cfg_read = READ_PENDING;
             ESP_LOGW(TAG, "no valid receiver traffic for 15 s; probing again");
         }
         if (CONFIG_NVF_RX_AUTOPROBE && !locked && now >= next_probe) {
@@ -382,21 +411,52 @@ static void rx_task(void *arg)
                     else
                         ESP_LOGI(TAG, "receiver answering at %d baud, the configured rate", baud);
                 }
-                if (tries && cfg_ack != 0) {
-                    ESP_LOGI(TAG, "RAM key %s: %s", setting_name(&settings[setting]),
-                             cfg_ack > 0 ? "ACK" : "NAK (unsupported)");
+                const ubx_setting_t *const item = &settings[setting];
+                const bool restart = ubx_setting_needs_restart(item);
+                if (restart && !writing) {
+                    // What applies only from a restart of the GNSS subsystem is read first: a
+                    // receiver that kept its RAM while the observer restarted holds it already,
+                    // and is left to its fix.
+                    if (cfg_read == READ_HELD) {
+                        ESP_LOGI(TAG, "RAM key %s: already set", setting_name(item));
+                        acknowledged++;
+                        setting++; tries = 0; reading = NULL; cfg_read = READ_PENDING;
+                    } else if (cfg_read == READ_REFUSED) {
+                        ESP_LOGI(TAG, "RAM key %s: NAK (unsupported)", setting_name(item));
+                        setting++; tries = 0; reading = NULL; cfg_read = READ_PENDING;
+                    } else if (cfg_read == READ_DIFFERS || (now >= cfg_deadline && tries == 3)) {
+                        // Another value, or no answer to three polls: write it.
+                        writing = true; tries = 0; reading = NULL; cfg_read = READ_PENDING; cfg_deadline = now;
+                    } else if (now >= cfg_deadline) {
+                        poll_setting(item);
+                        tries++; cfg_deadline = now + 1000;
+                    }
+                } else if (tries && cfg_ack != 0) {
+                    ESP_LOGI(TAG, "RAM key %s: %s", setting_name(item), cfg_ack > 0 ? "ACK" : "NAK (unsupported)");
                     if (cfg_ack > 0) acknowledged++;
+                    if (cfg_ack > 0 && restart) {
+                        restart_gnss();
+                        ESP_LOGI(TAG, "GNSS subsystem restarted (UBX-CFG-RST, GNSS only), "
+                                      "which applies the setting");
+                        if (cfg_deadline < now + RESTART_SETTLE_MS) cfg_deadline = now + RESTART_SETTLE_MS;
+                    }
                     // A CFG-SIGNAL change resets the GNSS subsystem: 500 ms after its ACK.
-                    if (cfg_ack > 0 && ubx_setting_resets_gnss(&settings[setting]) && cfg_deadline < now + 500)
+                    if (cfg_ack > 0 && ubx_setting_resets_gnss(item) && cfg_deadline < now + 500)
                         cfg_deadline = now + 500;
-                    setting++; tries = 0; cfg_ack = 0;
+                    setting++; tries = 0; cfg_ack = 0; writing = false;
                 } else if (now >= cfg_deadline) {
                     if (tries == 3) {
-                        ESP_LOGW(TAG, "RAM key %s: no ACK; output unconfirmed", setting_name(&settings[setting]));
-                        if (ubx_setting_resets_gnss(&settings[setting])) cfg_deadline = now + 500; // it may have applied
-                        setting++; tries = 0;
+                        ESP_LOGW(TAG, "RAM key %s: no ACK; output unconfirmed", setting_name(item));
+                        if (ubx_setting_resets_gnss(item)) cfg_deadline = now + 500; // it may have applied
+                        if (restart) {
+                            restart_gnss();
+                            ESP_LOGI(TAG, "GNSS subsystem restarted (UBX-CFG-RST, GNSS only), "
+                                          "in case the setting was written");
+                            cfg_deadline = now + RESTART_SETTLE_MS;
+                        }
+                        setting++; tries = 0; writing = false;
                     } else {
-                        apply_setting(&settings[setting]);
+                        apply_setting(item);
                         tries++; cfg_deadline = now + 1000;
                     }
                 }

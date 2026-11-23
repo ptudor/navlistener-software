@@ -1,5 +1,23 @@
 # Unreleased
 
+- A ZED/X20 observer runs its receiver's three internal LNAs in low gain. In normal gain,
+  the ZED-X20P's default, the receiver takes 17 to 40 dB of gain ahead of `RF_IN`. With a
+  survey antenna on a short cable, two boards on an indoor bench sat at the lowest
+  programmable gain they report (3 dB on all three RF paths, AGC 7 %) and the receiver
+  flagged every frequency it assessed as jammed, through a 3D fix, so the ATTENTION lamp
+  stayed lit. In low gain, which takes 20 to 50 dB, the board it was tried on read 11, 11
+  and 5 to 11 dB with nothing flagged, and thirteen changes of mode moved the flags with
+  the mode each time, within about six seconds. C/N0 was no lower in low gain (0.4 dB
+  higher on average over 290 paired signals). The modes apply only from a restart of the
+  GNSS subsystem, so the firmware reads the setting first: a receiver that kept its RAM
+  through a restart of the ESP32 logs `already set` and keeps its fix, and otherwise the
+  write is followed by a UBX-CFG-RST of the GNSS subsystem alone, a hot start that leaves
+  the rest of the RAM configuration in place. The bench report's `receiver.config` counts
+  15 settings on a ZED-X20P, the three LNA keys as one, and accepts `already set`. An RF
+  survey taken before this change was made in normal gain and is not comparable in level
+  with a later one. A jamming warning with the PGA at 3 dB on every path points at the
+  gain ahead of the receiver before it points at interference (`esp32/README.md`, The
+  ZED-X20P's LNA mode; `docs/OBSERVER-TELEMETRY.md`, Isolate an X20 jamming warning).
 - A ZED/X20 observer drives a status display on its display header. H3 takes the common
   128×64 SSD1306 I2C module at `0x3c`, which the firmware looks for every two seconds, so
   it can be fitted or removed while the board runs; a board without one logs a single line

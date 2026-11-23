@@ -557,12 +557,29 @@ rows. A sweep's 256 unsigned bin values are encoded as base64 in JSON.
 Bin `i` is centered at `center_hz + (i - 127) * span_hz / 256`.
 `peak_above_median_db` compares the strongest bin with the median of the
 whole path, including the filter shoulders. Compare the same path at the same
-gain across surveys. Absolute incident power, transmitter identity, location
+gain across surveys. Neither the bins nor the PGA include the gain of the
+receiver's internal LNA, so a survey taken with the LNAs in normal gain is not
+comparable in level with one taken in low gain, the mode the observer sets.
+Absolute incident power, transmitter identity, location
 and intent require independent evidence. The u-blox *X20 HPG 2.02 interface
 description* (UBXDOC-304424225-19967, R03, protocol 50.10) defines the UBX
 fields in §§3.14.8, 3.17.2–3 and the sensitivity setting in §6.9.21.
 
 #### Isolate an X20 jamming warning
+
+Read the receiver's gain before anything else. Each `MON-SPAN:` line of a survey ends
+with the path's `PGA_dB`, and the AGC in the `RF:` line is the same gain as a share of
+its maximum. A ZED-X20P reporting a PGA of 3 dB (an AGC of 7 %) on every path has no
+gain range left. Too much gain ahead of `RF_IN` for its LNA mode puts it there as surely
+as interference does, and two boards in that state flagged every assessed center for as
+long as they ran. The steps below cannot separate causes in that state: moving the
+antenna changed which centers were flagged and left the warning in place. The observer
+sets the receiver's internal LNAs to low gain, which takes 20 to 50 dB at `RF_IN`, and
+the board this was measured on then reported PGAs of 5 to 11 dB with no center flagged
+([measurements](../esp32/README.md#the-zed-x20ps-lna-mode)). If the PGA is at 3 dB on
+every path in low gain as well, reduce the gain ahead of the receiver (a lower-gain
+antenna or an attenuator that passes the antenna's supply) before judging the RF
+environment. The steps apply to a warning with the PGA above that.
 
 1. While the warning is active, save the console and request `rf survey` several
    times over a minute. Record the time, antenna position and cable route. Check
