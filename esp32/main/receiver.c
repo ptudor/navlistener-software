@@ -1,10 +1,12 @@
 // UART discovery is independent of EEPROM presence and network provisioning.
 #include "receiver.h"
+#include "receiver_settings.h"
 #include "ubx_probe.h"
 #include "sbf.h"
 #include "sbf_control.h"
 #include "sbf_status.h"
 #include "gnf1.h"
+#include <stdio.h>
 #include <string.h>
 #include "sdkconfig.h"
 #include "driver/gpio.h"
@@ -48,6 +50,8 @@ bool receiver_request_rf_survey(void)
     atomic_store(&rf_requested, true);
     return true;
 }
+// Whether the listed receiver has the internal LNA mode a unit is set to: the ZED-X20P.
+static bool has_lna_setting(void) { return !sbf_mode && module && !strcmp(module, "ZED-X20P"); }
 static bool version_seen, expected_model, unique_id_logged;
 static int cfg_ack;
 // The setting whose CFG-VALGET answer is awaited, and the answer: the receiver holds it, holds
@@ -57,6 +61,12 @@ static const ubx_setting_t *reading;
 static int cfg_read;
 // After the restart that applies a setting, before the next command.
 #define RESTART_SETTLE_MS 1000
+// The mode the unit's internal LNAs are set to (receiver_settings.h), a change of it that
+// the receiver task has yet to take up, and what the receiver has said of the setting since
+// it was last asked: nothing yet, that it holds it, or nothing that confirms it.
+enum { LNA_PENDING, LNA_CONFIRMED, LNA_UNCONFIRMED };
+static atomic_bool lna_low_gain = true, lna_changed;
+static atomic_int lna_state = LNA_PENDING;
 static gnss_status_t health = {.supported = 0x6f}, snapshot = {.supported = 0x6f};
 static portMUX_TYPE health_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -318,7 +328,7 @@ static void rx_task(void *arg)
     // One setting per request: a receiver rejecting SFRBX must still get telemetry. A setting
     // is one key, or a combination the receiver accepts only whole (ubx_probe.h).
     const ubx_setting_t *settings;
-    const size_t key_count = ubx_settings(module, &settings);
+    size_t key_count = ubx_settings(module, atomic_load(&lna_low_gain), &settings);
     unsigned setting = 0, tries = 0;
     bool configured = false, baud_attempted = false, config_started = false;
     bool writing = false; // the setting in hand needs a restart to apply, and its reading is over
@@ -369,10 +379,23 @@ static void rx_task(void *arg)
             last_valid = now;
         }
         prev_valid = valid; prev_nmea = nmea_count;
+        if (atomic_exchange(&lna_changed, false)) {
+            // The unit's setting changed while it ran: the list for the new mode, from its
+            // start if the old one was being applied or had been. The settings the receiver
+            // already holds are acknowledged again, as they are after a restart of the ESP32.
+            key_count = ubx_settings(module, atomic_load(&lna_low_gain), &settings);
+            atomic_store(&lna_state, LNA_PENDING);
+            if (config_started) {
+                configured = config_started = false; setting = tries = 0; switched_from = 0;
+                writing = false; reading = NULL; cfg_read = READ_PENDING; cfg_ack = 0; cfg_deadline = now;
+                ESP_LOGI(TAG, "receiver settings changed: configuring the receiver again");
+            }
+        }
         if (CONFIG_NVF_RX_AUTOPROBE && locked && now - last_valid > 15000) {
             locked = version_seen = expected_model = false;
             configured = baud_attempted = config_started = false; setting = tries = 0; switched_from = 0;
             writing = false; reading = NULL; cfg_read = READ_PENDING;
+            atomic_store(&lna_state, LNA_PENDING);
             ESP_LOGW(TAG, "no valid receiver traffic for 15 s; probing again");
         }
         if (CONFIG_NVF_RX_AUTOPROBE && !locked && now >= next_probe) {
@@ -420,9 +443,11 @@ static void rx_task(void *arg)
                     if (cfg_read == READ_HELD) {
                         ESP_LOGI(TAG, "RAM key %s: already set", setting_name(item));
                         acknowledged++;
+                        atomic_store(&lna_state, LNA_CONFIRMED);
                         setting++; tries = 0; reading = NULL; cfg_read = READ_PENDING;
                     } else if (cfg_read == READ_REFUSED) {
                         ESP_LOGI(TAG, "RAM key %s: NAK (unsupported)", setting_name(item));
+                        atomic_store(&lna_state, LNA_UNCONFIRMED);
                         setting++; tries = 0; reading = NULL; cfg_read = READ_PENDING;
                     } else if (cfg_read == READ_DIFFERS || (now >= cfg_deadline && tries == 3)) {
                         // Another value, or no answer to three polls: write it.
@@ -434,6 +459,7 @@ static void rx_task(void *arg)
                 } else if (tries && cfg_ack != 0) {
                     ESP_LOGI(TAG, "RAM key %s: %s", setting_name(item), cfg_ack > 0 ? "ACK" : "NAK (unsupported)");
                     if (cfg_ack > 0) acknowledged++;
+                    if (restart) atomic_store(&lna_state, cfg_ack > 0 ? LNA_CONFIRMED : LNA_UNCONFIRMED);
                     if (cfg_ack > 0 && restart) {
                         restart_gnss();
                         ESP_LOGI(TAG, "GNSS subsystem restarted (UBX-CFG-RST, GNSS only), "
@@ -449,6 +475,7 @@ static void rx_task(void *arg)
                         ESP_LOGW(TAG, "RAM key %s: no ACK; output unconfirmed", setting_name(item));
                         if (ubx_setting_resets_gnss(item)) cfg_deadline = now + 500; // it may have applied
                         if (restart) {
+                            atomic_store(&lna_state, LNA_UNCONFIRMED);
                             restart_gnss();
                             ESP_LOGI(TAG, "GNSS subsystem restarted (UBX-CFG-RST, GNSS only), "
                                           "in case the setting was written");
@@ -785,7 +812,73 @@ esp_err_t receiver_start(ubx_parser_t *parser)
     if ((err = uart_set_pin(RX_UART, RX_PIN_TX, RX_PIN_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)) != ESP_OK) return err;
     parser->observe = observe;
     parser->rf_detail = log_rf_detail;
+    if (has_lna_setting()) {
+        receiver_settings_t stored;
+        err = receiver_settings_load(&stored);
+        if (err != ESP_OK)
+            ESP_LOGW(TAG, "could not read the receiver settings: %s; internal LNAs in %s gain", esp_err_to_name(err),
+                     receiver_lna_name(stored.lna));
+        else
+            ESP_LOGI(TAG, "receiver settings: internal LNAs in %s gain", receiver_lna_name(stored.lna));
+        atomic_store(&lna_low_gain, stored.lna == RECEIVER_LNA_LOW);
+    }
     return xTaskCreate(rx_task, "rx", 4096, parser, 7, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+}
+bool receiver_lna_setting(bool *low_gain)
+{
+    if (!has_lna_setting()) return false;
+    *low_gain = atomic_load(&lna_low_gain);
+    return true;
+}
+// "rf lna" reports the unit's setting, what the receiver has said of it and the readings that
+// show whether it suits the antenna; "rf lna low" and "rf lna normal" save the setting and
+// have the receiver task apply it. Runs on the console's task alone.
+void receiver_lna_console(const char *argument)
+{
+    while (*argument == ' ') argument++;
+    if (!has_lna_setting()) {
+        puts("NVF-RF-LNA-ERROR this board's receiver has no LNA mode setting");
+        return;
+    }
+    if (!*argument) {
+        static gnss_status_t status; // too large for this task's stack; the console is one task
+        static const char *const states[] = {"pending", "set", "unconfirmed"};
+        static const char *const jamming[] = {"unknown", "OK", "warning", "critical"};
+        receiver_status(&status);
+        const int64_t now = esp_timer_get_time() / 1000;
+        const bool blocks = status.rf_blocks_valid && now >= status.rf_blocks_ms && now - status.rf_blocks_ms <= 15000;
+        const bool judged = status.rf_valid && now >= status.rf_ms && now - status.rf_ms <= 15000;
+        char line[256];
+        int used = snprintf(line, sizeof line, "NVF-RF-LNA {\"setting\":\"%s\",\"receiver\":\"%s\",\"agc_percent\":[",
+                            receiver_lna_name(atomic_load(&lna_low_gain) ? RECEIVER_LNA_LOW : RECEIVER_LNA_NORMAL),
+                            states[atomic_load(&lna_state)]);
+        for (unsigned b = 0; blocks && b < status.rf_blocks && used < (int)sizeof line; b++)
+            used += snprintf(line + used, sizeof line - (size_t)used, "%s%u", b ? "," : "",
+                             (unsigned)((status.rf_block[b].agc * 100u + 4095u) / 8191u));
+        if (used < (int)sizeof line)
+            used += snprintf(line + used, sizeof line - (size_t)used, "],\"jamming\":\"%s\"",
+                             judged ? jamming[status.jam & 3] : "unread");
+        if (judged && status.sec_sig && used < (int)sizeof line)
+            used += snprintf(line + used, sizeof line - (size_t)used, ",\"flagged\":%u,\"assessed\":%u",
+                             status.centers_jammed, status.centers_assessed);
+        if (used < (int)sizeof line) snprintf(line + used, sizeof line - (size_t)used, "}");
+        puts(line);
+        return;
+    }
+    receiver_settings_t wanted;
+    if (!receiver_settings_parse_lna(argument, &wanted.lna)) {
+        puts("NVF-RF-LNA-ERROR usage: rf lna [low|normal]");
+        return;
+    }
+    // Saved even when it is the mode in use: a stored value that could not be read is replaced.
+    const esp_err_t err = receiver_settings_save(&wanted);
+    if (err != ESP_OK) {
+        printf("NVF-RF-LNA-ERROR not saved: %s\n", esp_err_to_name(err));
+        return;
+    }
+    const bool low = wanted.lna == RECEIVER_LNA_LOW;
+    if (atomic_exchange(&lna_low_gain, low) != low) atomic_store(&lna_changed, true);
+    printf("NVF-RF-LNA-OK %s\n", receiver_lna_name(wanted.lna));
 }
 bool receiver_alive(void)
 {

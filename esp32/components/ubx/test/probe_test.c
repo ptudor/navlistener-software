@@ -25,8 +25,8 @@ int main(void)
     // its LNA modes, QZSS and NavIC straight after UBX output and short detection and SEC-SIG
     // last, and the MAX-M10S's with its four GNSS as one message in the same place.
     const ubx_setting_t *shared, *x20, *max;
-    size_t count = ubx_settings("NEO-M9N", &shared), x20_count = ubx_settings("ZED-X20P", &x20),
-           max_count = ubx_settings("MAX-M10S", &max);
+    size_t count = ubx_settings("NEO-M9N", true, &shared), x20_count = ubx_settings("ZED-X20P", true, &x20),
+           max_count = ubx_settings("MAX-M10S", true, &max);
     assert(count == 10 && x20_count == count + 5 && max_count == count + 1);
     const uint32_t rates[] = {0x20910232, 0x2091035a, 0x20910016, 0x20910007, 0x2091001b, 0x2091017e,
                               0x20910346, 0x20910066, 0x20910160};
@@ -40,6 +40,19 @@ int main(void)
     assert(lna->count == 3 && lna->item[0].key == 0x10a3006a && lna->item[1].key == 0x10a3006b);
     assert(lna->item[2].key == 0x10a3006c);
     for (unsigned i = 0; i < 3; i++) assert(lna->item[i].value == 1); // low gain on every RF block
+    // A unit set to normal gain gets the same list with the receiver's default written out,
+    // since a receiver that kept its RAM may hold low gain; no other list depends on the mode.
+    const ubx_setting_t *x20_normal, *same;
+    assert(ubx_settings("ZED-X20P", false, &x20_normal) == x20_count && x20_normal != x20);
+    for (size_t i = 0; i < x20_count; i++) {
+        assert(x20_normal[i].count == x20[i].count);
+        for (unsigned k = 0; k < x20[i].count; k++) {
+            assert(x20_normal[i].item[k].key == x20[i].item[k].key);
+            assert(x20_normal[i].item[k].value == (i == 1 ? 0 : x20[i].item[k].value));
+        }
+    }
+    assert(ubx_settings("NEO-M9N", false, &same) == count && same == shared);
+    assert(ubx_settings("MAX-M10S", false, &same) == max_count && same == max);
     assert(x20[2].item[0].key == 0x10310024 && x20[3].item[0].key == 0x10310026);
     assert(x20[count + 3].item[0].key == 0x10a3002f && x20[count + 4].item[0].key == 0x20910635);
     const ubx_setting_t *four = &max[1];
@@ -53,6 +66,7 @@ int main(void)
     for (size_t i = 0; i < count; i++) assert(!ubx_setting_resets_gnss(&shared[i]));
     // Only the LNA modes wait for a restart of the GNSS subsystem, and they too precede the rates.
     for (size_t i = 0; i < x20_count; i++) assert(ubx_setting_needs_restart(&x20[i]) == (i == 1));
+    for (size_t i = 0; i < x20_count; i++) assert(ubx_setting_needs_restart(&x20_normal[i]) == (i == 1));
     for (size_t i = 0; i < max_count; i++) assert(!ubx_setting_needs_restart(&max[i]));
     for (size_t i = 0; i < count; i++) assert(!ubx_setting_needs_restart(&shared[i]));
     // The poll that reads them: CFG-VALGET version 0, the RAM layer, from the first result.
@@ -91,6 +105,14 @@ int main(void)
     const uint8_t twice[] = {1, 0, 0, 0, 0x6a, 0, 0xa3, 0x10, 0, 0x6a, 0, 0xa3, 0x10, 1,
                              0x6b, 0, 0xa3, 0x10, 1, 0x6c, 0, 0xa3, 0x10, 1};
     assert(ubx_setting_read(lna, twice, sizeof twice) == UBX_SETTING_DIFFERS); // the first answer for a key counts
+    // The same answers read the other way for a unit set to normal gain.
+    assert(ubx_setting_read(&x20_normal[1], held, sizeof held) == UBX_SETTING_DIFFERS);
+    for (unsigned i = 0; i < 3; i++) held[8 + 5 * i] = 0;
+    assert(ubx_setting_read(&x20_normal[1], held, sizeof held) == UBX_SETTING_HELD);
+    assert(ubx_setting_read(lna, held, sizeof held) == UBX_SETTING_DIFFERS);
+    for (unsigned i = 0; i < 3; i++) held[8 + 5 * i] = 1;
+    uint8_t normal[UBX_SETTING_MAX];
+    assert(ubx_encode_setting(normal, &x20_normal[1]) == 12 + 15 && normal[14] == 0 && normal[19] == 0 && normal[24] == 0);
     assert(ubx_setting_read(&x20[2], held, sizeof held) == UBX_SETTING_OTHER);
     assert(ubx_setting_read(&empty_setting, held, sizeof held) == UBX_SETTING_OTHER);
     assert(!ubx_encode_setting_poll(ask, &empty_setting) && !ubx_encode_setting_poll(ask, &oversized_setting));
@@ -99,8 +121,8 @@ int main(void)
     assert(ubx_restart_gnss(pkt) == sizeof restart && !memcmp(pkt, restart, sizeof restart));
     assert(!ubx_key_resets_gnss(UBX_KEY_UART1_BAUDRATE) && ubx_key_resets_gnss(0x1031001f));
     const ubx_setting_t *other;
-    assert(ubx_settings(NULL, &other) == count && other == shared);
-    assert(ubx_settings("ZED-X20", &other) == count && ubx_settings("MAX-M10S ", &other) == count);
+    assert(ubx_settings(NULL, true, &other) == count && other == shared);
+    assert(ubx_settings("ZED-X20", true, &other) == count && ubx_settings("MAX-M10S ", true, &other) == count);
     // Every key the firmware sets has its interface-description name, each a different one.
     const char *names[64]; size_t named = 0;
     const ubx_setting_t *lists[] = {x20, max};

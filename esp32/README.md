@@ -189,18 +189,22 @@ and MON-RF reports SHORT, which the collector raises as `antenna_fault`.
 `CFG-HW-ANT_CFG_PWRDOWN` stays off because `ANT_OFF` is not connected. The switch
 latches off and the receiver keeps reporting SHORT until `3V3_GNSS` is power-cycled,
 which also resets the receiver; the firmware does not cycle it automatically.
-The ZED-X20P's first setting after UBX output puts its three internal LNAs, one to an RF
-block, in low gain: `CFG-HW-RF1_LNA_MODE_LOWGAIN` and its two siblings, in one message. In
-normal gain, the default, the receiver takes 17 to 40 dB of gain ahead of `RF_IN`, and in
+The ZED-X20P's first setting after UBX output is the mode of its three internal LNAs, one
+to an RF block: `CFG-HW-RF1_LNA_MODE_LOWGAIN` and its two siblings, in one message. In
+normal gain, the receiver's default, it takes 17 to 40 dB of gain ahead of `RF_IN`, and in
 low gain 20 to 50 dB, "to provide the integrated PGAs with a sufficient dynamic range"
-(integration manual 4.3.1). [Why low gain, and what was measured](#the-zed-x20ps-lna-mode)
+(integration manual 4.3.1). The mode is a setting of the unit, low gain unless `rf lna
+normal` has set it otherwise, and the firmware logs it before it speaks to the receiver:
+`receiver settings: internal LNAs in low gain`.
+[Which mode for which antenna, and what was measured](#the-zed-x20ps-lna-mode)
 The modes apply only from a restart of the GNSS subsystem (2.2.3), so the firmware reads
-the setting before it writes it. A receiver that kept its RAM while the observer restarted
-holds it already, logs `RAM key … (3 keys): already set` and keeps its fix. Otherwise the
-write and its ACK are followed by `GNSS subsystem restarted (UBX-CFG-RST, GNSS only)`: a
-controlled software reset of the GNSS subsystem alone that clears nothing in the backup
-memory, so the UART rate and the rest of the RAM configuration stay and the receiver starts
-hot, a second before the next key.
+the setting before it writes it, the receiver's default included, since a receiver that
+kept its RAM may hold the other mode. A receiver that holds the mode already, as after a
+restart of the ESP32 alone, logs `RAM key … (3 keys): already set` and keeps its fix.
+Otherwise the write and its ACK are followed by `GNSS subsystem restarted (UBX-CFG-RST,
+GNSS only)`: a controlled software reset of the GNSS subsystem alone that clears nothing in
+the backup memory, so the UART rate and the rest of the RAM configuration stay and the
+receiver starts hot, a second before the next key.
 The ZED-X20P gets three more keys. `CFG-SIGNAL-QZSS_ENA` and `CFG-SIGNAL-NAVIC_ENA` come
 next: every X20 signal plan leaves both systems off, with their bands
 on beneath them (integration manual 2.2.4.1), so without them the panel's QZSS and NavIC
@@ -272,48 +276,74 @@ records reaching the collector are their acceptance test.
 Each of the ZED-X20P's three RF paths has an internal LNA and, after it, a programmable
 gain amplifier (PGA) that the receiver turns down as the level at `RF_IN` rises. UBX-MON-SPAN
 gives each path's PGA in dB, in the `MON-SPAN:` lines of an [`rf survey`](../docs/OBSERVER-TELEMETRY.md#x20-rf-evidence),
-and the `RF:` line's AGC is MON-RF's count of the same gain as a share of its maximum. The
-internal LNA has two modes. Normal gain, the receiver's default, takes 17 to 40 dB of gain
-ahead of `RF_IN`, and low gain takes 20 to 50 dB (integration manual
-UBXDOC-963802114-12901, 4.3.1; data sheet UBXDOC-963802114-12690, Table 15).
+and the AGC in the `RF:` line is MON-RF's count of the same gain as a share of its maximum.
+The internal LNA has two modes. Normal gain, the receiver's default, takes 17 to 40 dB of
+gain ahead of `RF_IN`, and low gain takes 20 to 50 dB (integration manual
+UBXDOC-963802114-12901, 4.3.1; data sheet UBXDOC-963802114-12690, Table 15). Which one a
+unit needs depends on its antenna, its cable and what the antenna hears, so the mode is a
+setting of the unit, kept in the `nvf_rx` NVS namespace, which a network configuration
+reset leaves alone. A unit that has never been set runs in low gain. The USB console reads
+and sets it, and the display's SYSTEM page shows it:
 
-On an indoor bench, with a survey antenna on a short cable, two ZED/X20 boards in normal
-gain reported a PGA of 3 dB on all three paths and an AGC of 7 %, the lowest either has
-reported. UBX-SEC-SIG flagged all seven frequencies it assessed as jammed and kept them
-flagged through a 3D fix, so the ATTENTION lamp was lit for as long as the boards ran; on
-the board timed from a cold start, the receiver's event log put the start 13 seconds after
-the observer's own. One of the two was then switched between the modes thirteen times, six
-of them in a run that changed the mode every 150 seconds:
+| Command | Effect |
+|---|---|
+| `rf lna` | `NVF-RF-LNA {json}`: the mode the unit is set to (`low`, `normal`); whether the receiver holds it (`set`, `pending` while it is being applied, `unconfirmed` when the receiver neither held nor acknowledged it); each RF block's AGC in percent; the jamming state; and, from UBX-SEC-SIG, how many of the frequencies it assessed are flagged |
+| `rf lna low` / `rf lna normal` | saves the mode and applies it at once: the receiver's settings are sent again and, if the mode changed, the GNSS subsystem restarts, which costs the fix for some seconds. `NVF-RF-LNA-OK <mode>`, or `NVF-RF-LNA-ERROR` with the reason |
+
+Choose the mode that keeps the AGC off its floor. An AGC of 7 % (a PGA of 3 dB, the lowest
+these receivers have reported) on every block in normal gain means the antenna brings more
+than normal gain takes: set low gain. An antenna and cable that bring less than 20 dB to
+`RF_IN` are outside low gain: set normal gain. By their data sheets, a Beitian BT-800S
+survey antenna (an amplifier of 38 ± 2 dB) is a low-gain antenna, as measured below, and a
+u-blox ANN-MB2 (23 dB at the end of its 5 m cable) belongs in normal gain, which has not
+been measured here.
+
+On an indoor bench with a BT-800S, three ZED/X20 boards in normal gain reported a PGA of
+3 dB on all three paths and an AGC of 7 %. UBX-SEC-SIG flagged all seven frequencies it
+assessed as jammed and kept them flagged through a 3D fix, so the ATTENTION lamp was lit
+for as long as the boards ran; on the board timed from a cold start, the receiver's event
+log put the start 13 seconds after the observer's own. Two of the boards were then switched
+between the modes, one of them thirteen times, six in a run that changed the mode every
+150 seconds:
 
 | Internal LNAs | PGA, paths 0 / 1 / 2 | AGC, blocks 0 / 1 / 2 | Frequencies flagged | Jamming state |
 |---|---|---|---|---|
 | normal gain | 3 / 3 / 3 dB | 7 / 7 / 7 % | 7 of 7 | warning |
-| low gain | 11 / 11 / 5 to 11 dB | 25 / 25 / 11 to 25 % | 0 of 7 | OK |
+| low gain | 11 / 11 / 3 to 11 dB | 25 / 25 / 7 to 25 % | 0 of 7, or 4 of 7 for a second at a time | OK, with moments of warning |
 
 Every change of mode moved the flags with it, within about six seconds of the GNSS restart
 that applies a mode; a mode written without that restart changed nothing in 35 seconds.
-Reception was no worse in low gain: over the run's 290 pairs of one signal in two
-neighbouring phases, C/N0 averaged 0.4 dB higher in low gain (standard error 0.2 dB, median
-difference 0), and the fix held in both modes. The data sheet gives the receiver chain a
-higher noise figure in low gain (11 against 6.5 dB at L1, 10 against 6 dB at L2, 8.5 against
-5 dB at L5), which 20 dB or more of gain ahead of it makes small.
+Reception was no worse in low gain: over the alternating run's 290 pairs of one signal in
+two neighbouring phases, C/N0 averaged 0.4 dB higher in low gain (standard error 0.2 dB,
+median difference 0), and the fix held in both modes. The data sheet gives the receiver
+chain a higher noise figure in low gain (11 against 6.5 dB at L1, 10 against 6 dB at L2,
+8.5 against 5 dB at L5), which 20 dB or more of gain ahead of it makes small.
 
-On these boards, then, the warning in normal gain reported a gain control with no range
-left, which the antenna's amplifier accounts for without any interference, and it could not
-show whether the bench had interference as well. The firmware therefore sets low gain
-([configuration](#finding-the-onboard-gnss-receiver)). The second board has not been read
-in low gain, and neither mode has been tried with another antenna or under a clear sky.
+In normal gain, then, the warning reported a gain control with no range left on any path.
+How much of the level was the antenna's amplifier and how much was noise the antenna
+picked up indoors was not separated, and neither mode has been tried under a clear sky.
 
-Two things follow for an installation. Low gain needs at least 20 dB at `RF_IN`: an antenna
-amplifier and cable that bring less are outside it. And the PGA is the first thing to read
-when a ZED-X20P warns of jamming: 3 dB on every path means the receiver has no gain range
-left, which too much gain ahead of it causes as surely as interference does, while a warning
-with the PGA well above that is about what the antenna hears
+Low gain showed what normal gain had hidden. Paths 0 and 1 held 25 % throughout. Path 2,
+which carries L2, E6 and B3, fell to its floor for about a second every 12 seconds: 20
+times in a 240-second series of one reading a second, every interval 12 seconds, and again
+with the display switched off. Five times in that series the receiver flagged that path's
+four frequencies (1227.60, 1246.00, 1268.52 and 1278.75 MHz) for about a second, and no
+others. Of 78 spectra of path 2, 51 had a narrow peak 6 to 20 dB above the passband between
+1282 and 1283.5 MHz, strongest in the sweeps with the lowest PGA; path 1 had narrow peaks at
+1170 and 1188 MHz in 17 of 78, and path 0 had none.
+The period and the band fit a rotating L-band surveillance radar, and the path 1
+frequencies fit aeronautical DME, but no source was identified. A warning that comes and
+goes with such a period, on one path's frequencies, with the other paths' AGC steady, is
+the receiver reporting a signal and not a gain setting.
+
+When a ZED-X20P warns of jamming, read the AGC of every block first (`rf lna`, or the
+`RF:` line): the floor on every block points at the gain ahead of the receiver before it
+points at interference, while a warning with other blocks well above the floor is about
+what the antenna hears
 ([Isolate an X20 jamming warning](../docs/OBSERVER-TELEMETRY.md#isolate-an-x20-jamming-warning)).
-Path 2, which carries L2, E6 and B3, came closest: its PGA fell to 5 dB at times in low
-gain. Neither the PGA nor a MON-SPAN spectrum includes the internal LNA's gain (interface
+Neither the PGA nor a MON-SPAN spectrum includes the internal LNA's gain (interface
 description UBXDOC-304424225-19967, 3.14.8), so a survey taken in normal gain is not
-comparable in level with one taken in low gain.
+comparable in level with one taken in low gain: note the mode with a survey.
 
 ### Custom-board status LEDs
 
@@ -428,7 +458,7 @@ of 21 characters follow. The pages change every six seconds:
 | NETWORK | Ethernet and Wi-Fi addresses with the Wi-Fi signal strength, the collector and whether the link is up or in the tunnel, the spool and the records lost from it, and the station name's last 21 characters |
 | SETUP | in place of NETWORK on a board not yet provisioned: the setup network's name, where its password is (the device label; the display never shows it), the setup address, and why the board is in setup |
 | SENSORS | temperature, humidity, pressure, the RTC's temperature, each supply rail's voltage and current, and the pulse |
-| SYSTEM | the board, the serial's last eight hex digits (the panel's identity sweep), the firmware, the uptime and boot count, the receiver, free internal heap and the clock's origin |
+| SYSTEM | the board, the serial's last eight hex digits (the panel's identity sweep), the firmware, the uptime and boot count, the receiver with the [LNA mode](#the-zed-x20ps-lna-mode) the unit sets it to (`LNA LOW`, `LNA NORM`), free internal heap and the clock's origin |
 | ATTENTION | what the ATTENTION lamp is lit for, one cause to a line; shown only while it is lit, and at once when a new cause joins |
 
 A page with nothing to show is left out. The first four seconds show a start screen with

@@ -101,6 +101,7 @@ X20 = [
     log("I", "io_expander", "MCP23008 at 0x24 configured: GPIO=0x3f, interrupt-on-change on GP1-GP5 to GPIO3"),
     log("I", "io_expander", "panel chain: 24 bits"),
     log("I", "ethernet", "W5500 VERSIONR=0x04; W5500 verified"),
+    log("I", "receiver", "receiver settings: internal LNAs in low gain"),
     log("I", "receiver", "MON-VER: software=HPG 2.10                     hardware=000A0000  ; ZED-X20P=yes"),
     log("I", "receiver", "valid receiver traffic at 38400 baud"),
     log("I", "receiver", "MON-VER: software=HPG 2.10                     hardware=000A0000  ; ZED-X20P=yes"),
@@ -266,7 +267,7 @@ class PreEnrollmentTests(unittest.TestCase):
                 "receiver.model": ("pass", "MON-VER confirms ZED-X20P"),
                 "receiver.config": (
                     "pass",
-                    "UART1 at 460800 baud, set in its RAM from 38400; 15 of 15 RAM settings acknowledged",
+                    "UART1 at 460800 baud, set in its RAM from 38400; 15 of 15 RAM settings acknowledged; internal LNAs in low gain",
                 ),
                 "receiver.uid": ("pass", "u-blox chip ID 95f6bb8f2e54"),
                 "receiver.antenna": ("pass", "antenna OK; 3 RF blocks, AGC 36%/30%/25%; jamming OK (SEC-SIG)"),
@@ -299,7 +300,17 @@ class PreEnrollmentTests(unittest.TestCase):
         checks = judge(kept, expect="zed-x20")
         self.assertEqual(checks["receiver"], ("pass", "valid traffic at 460800 baud"))
         self.assertEqual(
-            checks["receiver.config"], ("pass", "UART1 at 460800 baud, the configured rate; 15 of 15 RAM settings acknowledged")
+            checks["receiver.config"],
+            ("pass", "UART1 at 460800 baud, the configured rate; 15 of 15 RAM settings acknowledged; internal LNAs in low gain"),
+        )
+        # A unit set to normal gain writes the receiver's default out, and the report says so.
+        normal = kept.replace("internal LNAs in low gain", "internal LNAs in normal gain").replace(
+            f"{X20_LNA} (3 keys)", f"{X20_LNA.replace('=1', '=0')} (3 keys)"
+        )
+        self.assertIn("LOWGAIN=0+", normal)
+        self.assertEqual(
+            judge(normal, expect="zed-x20")["receiver.config"],
+            ("pass", "UART1 at 460800 baud, the configured rate; 15 of 15 RAM settings acknowledged; internal LNAs in normal gain"),
         )
         # A receiver whose firmware knows no such keys refuses their reading, and is named.
         unknown = console(X20).replace(f"{X20_LNA} (3 keys): ACK", f"{X20_LNA} (3 keys): NAK (unsupported)").replace(

@@ -107,6 +107,9 @@ typedef struct {
     bool pulse_known, pulse;          // the GNSS pulse is captured; one arrived in the last seconds
 } oled_sensors_t;
 
+// The mode a unit sets its receiver's internal LNAs to, where the receiver has one to set.
+enum { OLED_LNA_NONE, OLED_LNA_LOW, OLED_LNA_NORMAL };
+
 typedef struct {
     bool time_valid;       // utc is a plausible UTC time
     int64_t utc;           // seconds since 1970
@@ -117,6 +120,7 @@ typedef struct {
     char serial[9];        // the last eight hex digits of the board's serial, or empty
     char firmware[33];
     char receiver[OLED_TEXT];
+    uint8_t receiver_lna;  // OLED_LNA_*: the mode the unit sets its receiver's internal LNAs to
     uint32_t boot;         // this boot's number; 0 unknown
     uint32_t heap_free;    // bytes of internal heap
     uint8_t brightness;    // the LED panel's, 1 to 100 percent, which the contrast follows; 0 for full

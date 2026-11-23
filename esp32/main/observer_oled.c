@@ -77,6 +77,8 @@ static void fill(oled_model_t *m)
     if (observer_board_serial(&serial)) snprintf(m->serial, sizeof m->serial, "%08lx", (unsigned long)serial);
     snprintf(m->firmware, sizeof m->firmware, "%s", esp_app_get_description()->version);
     if (view.receiver) snprintf(m->receiver, sizeof m->receiver, "%s", view.receiver);
+    bool low_gain;
+    m->receiver_lna = !receiver_lna_setting(&low_gain) ? OLED_LNA_NONE : low_gain ? OLED_LNA_LOW : OLED_LNA_NORMAL;
     m->boot = view.boot;
     m->heap_free = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     m->brightness = (uint8_t)(view.brightness > 100 ? 100 : view.brightness);

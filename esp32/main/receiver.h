@@ -18,3 +18,10 @@ bool receiver_alive(void);
 void receiver_status(gnss_status_t *out);
 void receiver_request_snapshot(void);
 bool receiver_request_rf_survey(void);
+// Whether the listed receiver has an internal LNA mode that the unit sets (the ZED-X20P),
+// and, when it does, whether the unit is set to low gain rather than normal gain.
+bool receiver_lna_setting(bool *low_gain);
+// The console's "rf lna" command, given what follows those words: nothing to report the
+// unit's LNA mode setting (receiver_settings.h), or " low" or " normal" to save it and apply
+// it to the receiver. Each answers with one NVF-RF-LNA... line. Call from one task.
+void receiver_lna_console(const char *argument);

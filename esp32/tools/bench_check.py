@@ -70,6 +70,8 @@ _RAM_KEY = re.compile(
 )
 _KEY_VERDICTS = {"ACK": "ACK", "already set": "held", "NAK (unsupported)": "NAK", "no ACK; output unconfirmed": "no ACK"}
 _CONFIGURED = re.compile(r"receiver RAM configuration done: (\d+) of (\d+) settings acknowledged.*")
+# The unit's stored mode for a ZED-X20P's internal LNAs, logged before the receiver is spoken to.
+_LNA = re.compile(r"receiver settings: internal LNAs in (low|normal) gain")
 _UNIQUE_ID = re.compile(r"receiver unique chip ID ([0-9a-f]{10}|[0-9a-f]{12}) \(UBX-SEC-UNIQID\)")
 _RF = re.compile(r"RF: jamming=(\w+) \((SEC-SIG|MON-RF)\); (.*)")
 _RF_BLOCK = re.compile(r"block (\d+) antenna=(\w+) power=(\w+) AGC=(\d+)% noise=\d+ CW=\d+")
@@ -180,6 +182,7 @@ class ConsoleFacts:
     receiver_running: tuple[str, str | None] | None = None  # (rate, the rate it was moved from, or None)
     receiver_keys: dict[str, str] = field(default_factory=dict)  # RAM setting name → "ACK", "held", "NAK" or "no ACK"
     receiver_configured: tuple[int, int] | None = None  # (settings acknowledged, settings sent)
+    receiver_lna: str | None = None  # the unit's LNA mode setting, "low" or "normal", where the receiver has one
     receiver_uid: str | None = None  # UBX-SEC-UNIQID, lower-case hex
     receiver_rf: tuple[str, str, list[tuple[str, str, str, str]]] | None = None  # latest: (jamming, its source, blocks)
     receiver_signals: tuple[str, frozenset[str]] | None = None  # latest: (the summary, bands tracked)
@@ -251,8 +254,11 @@ def parse_console(text: str) -> ConsoleFacts:
             sbf = _SBF_IDENTITY.fullmatch(message)
             running, key, configured = _RUNNING.fullmatch(message), _RAM_KEY.fullmatch(message), _CONFIGURED.fullmatch(message)
             uid, rf, signals = _UNIQUE_ID.fullmatch(message), _RF.fullmatch(message), _SIGNALS.fullmatch(message)
+            lna = _LNA.fullmatch(message)
             if baud:
                 facts.receiver_baud = baud.group(1)
+            elif lna:
+                facts.receiver_lna = lna.group(1)
             elif running:
                 facts.receiver_running = (running.group(1), running.group(2))
             elif key:
@@ -490,7 +496,8 @@ def _receiver_config(facts: ConsoleFacts, seconds: float) -> dict:
         rate = f"UART1 at {facts.receiver_running[0]} baud, set in its RAM from {facts.receiver_running[1]}"
     else:
         rate = f"UART1 at {facts.receiver_running[0]} baud, the configured rate"
-    return _check("receiver.config", "pass", f"{rate}; {acknowledged} of {total} RAM settings acknowledged")
+    lna = f"; internal LNAs in {facts.receiver_lna} gain" if facts.receiver_lna else ""
+    return _check("receiver.config", "pass", f"{rate}; {acknowledged} of {total} RAM settings acknowledged{lna}")
 
 
 def _receiver_details(facts: ConsoleFacts, expect: BoardProfile, seconds: float) -> list[dict]:

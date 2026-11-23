@@ -60,7 +60,10 @@ The same console carries the RTC's service commands (`rtc ...`,
 [RTC-SERVICE.md](RTC-SERVICE.md)) and, on a board with a display header, the status
 display's (`oled status`, `oled rotate <0|180>`, `oled off`, `oled on`, `oled dump [page]`,
 [Status display](../README.md#status-display)), answered with `NVF-RTC-` and `NVF-OLED-`
-lines.
+lines. On a ZED/X20, `rf lna` reports the mode the unit's receiver is set to for its
+internal LNAs and `rf lna low` or `rf lna normal` sets it for the antenna the unit is
+installed with ([The ZED-X20P's LNA mode](../README.md#the-zed-x20ps-lna-mode)), answered
+with `NVF-RF-LNA` lines; `rf survey` asks the receiver for its RF diagnostics.
 
 ### The report
 
@@ -367,7 +370,8 @@ fails rather than skips. A u-blox receiver must also acknowledge every setting t
 firmware changes from its defaults, all in its RAM: the report names the UART1 rate it
 runs at (on a ZED-X20P, 460800 baud, moved from the 38400 it powers up at) and any key it
 refused. The ZED-X20P's LNA modes are read first and count when the receiver holds them
-already, as after a restart of the ESP32 alone. It must answer with its chip ID and report its antenna supervisor without a short
+already, as after a restart of the ESP32 alone; the report names the mode the unit is set
+to. It must answer with its chip ID and report its antenna supervisor without a short
 or open (on the ZED/X20, OK on every RF block). The bands it tracks are reported but never
 fail the test: put the antenna where it sees the sky to see all of them pass. The
 ZED/X20's W5500 must answer its version read, which the firmware makes at every boot,

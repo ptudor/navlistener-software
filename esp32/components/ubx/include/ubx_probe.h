@@ -20,8 +20,11 @@ size_t ubx_set_ram(uint8_t out[20], uint32_t key, uint32_t value, unsigned width
 #define UBX_SETTING_MAX (12u + 5u * UBX_SETTING_ITEMS)
 typedef struct { uint32_t key; uint8_t value; } ubx_item_t;
 typedef struct { uint8_t count; ubx_item_t item[UBX_SETTING_ITEMS]; } ubx_setting_t;
-// The settings applied, in order, to a listed receiver; returns the count.
-size_t ubx_settings(const char *module, const ubx_setting_t **settings);
+// The settings applied, in order, to a listed receiver; returns the count. lna_low_gain
+// chooses the mode of the ZED-X20P's internal LNAs, low gain or the receiver's default
+// normal gain, and no other receiver's list depends on it. Both of its lists have the
+// same settings in the same order.
+size_t ubx_settings(const char *module, bool lna_low_gain, const ubx_setting_t **settings);
 // The setting's packet and its length; 0 for an empty or oversized setting.
 size_t ubx_encode_setting(uint8_t out[UBX_SETTING_MAX], const ubx_setting_t *setting);
 // Whether setting the key resets the receiver's GNSS subsystem: wait for its ACK and then

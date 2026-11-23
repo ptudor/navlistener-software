@@ -509,8 +509,11 @@ static void page_system(oled_canvas_t *c, const oled_model_t *m)
     else snprintf(text, sizeof text, "UP %02" PRIu32 ":%02" PRIu32 ":%02" PRIu32, rest / 3600, rest % 3600 / 60, rest % 60);
     if (m->boot) snprintf(right, sizeof right, "BOOT %" PRIu32, m->boot);
     put_pair(c, LINE_Y(3), text, right);
+    // The receiver, and the LNA mode the unit sets it to where it has one (esp32/README.md,
+    // The ZED-X20P's LNA mode).
     snprintf(text, sizeof text, "RX %s", m->receiver[0] ? m->receiver : "none listed");
-    put(c, 0, LINE_Y(4), text);
+    put_pair(c, LINE_Y(4), text,
+             m->receiver_lna == OLED_LNA_LOW ? "LNA LOW" : m->receiver_lna == OLED_LNA_NORMAL ? "LNA NORM" : "");
     snprintf(text, sizeof text, "HEAP %" PRIu32 "K", m->heap_free / 1024);
     right[0] = 0;
     if (m->time_valid && m->time_source[0]) snprintf(right, sizeof right, "TIME %.4s", m->time_source);

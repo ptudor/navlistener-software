@@ -153,6 +153,12 @@ survive the configuration-reset gesture, and are set only through this form; the
 app's endpoints do not carry them. The app always verifies a Wi-Fi network
 before it saves, so a wired-only observer is set up through this form.
 
+One per-unit setting is not on the form. The ZED/X20's receiver has a mode for its
+internal LNAs that depends on the antenna the unit is installed with: `rf lna` on
+the USB console reports it and `rf lna low` or `rf lna normal` sets it, in setup or
+in service ([The ZED-X20P's LNA mode](../README.md#the-zed-x20ps-lna-mode)). It is
+kept in the `nvf_rx` namespace and survives the configuration-reset gesture too.
+
 Setup runs only while the observer is unprovisioned. Treat the label as
 physical setup access; setup never removes the need for a valid collector
 enrollment token.

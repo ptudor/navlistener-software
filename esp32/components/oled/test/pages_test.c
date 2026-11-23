@@ -206,6 +206,19 @@ static void pages(void)
     assert(shows_right(c, 0, "SYSTEM") && shows(c, 0, LINE(0), 1, "X20 revision A"));
     assert(shows(c, 0, LINE(1), 1, "SERIAL ...89abcdef") && shows(c, 0, LINE(2), 1, "FW 0.1.0+1.0f7d658"));
     assert(shows(c, 0, LINE(3), 1, "UP 3d 04:05") && shows_right(c, LINE(3), "BOOT 12") && shows(c, 0, LINE(4), 1, "RX ZED-X20P"));
+    // The LNA mode a unit sets its receiver to stands beside the receiver; a receiver without
+    // one, and a receiver whose name leaves it no room, stand alone.
+    assert(blank(c, 66, LINE(4), 60, 8));
+    m.receiver_lna = OLED_LNA_LOW;
+    c = draw(&m, OLED_PAGE_SYSTEM, "system-lna");
+    assert(shows(c, 0, LINE(4), 1, "RX ZED-X20P") && shows_right(c, LINE(4), "LNA LOW"));
+    m.receiver_lna = OLED_LNA_NORMAL;
+    assert(shows_right(draw(&m, OLED_PAGE_SYSTEM, NULL), LINE(4), "LNA NORM"));
+    snprintf(m.receiver, sizeof m.receiver, "%s", "A-LONGER-RECEIVER");
+    c = draw(&m, OLED_PAGE_SYSTEM, NULL);
+    assert(shows(c, 0, LINE(4), 1, "RX A-LONGER-RECEIVER") && blank(c, 120, LINE(4), 6, 8));
+    snprintf(m.receiver, sizeof m.receiver, "%s", "ZED-X20P");
+    c = draw(&m, OLED_PAGE_SYSTEM, NULL);
     m.uptime_s = 23 * 3600 + 59 * 60 + 58; // seconds until there are days
     assert(shows(draw(&m, OLED_PAGE_SYSTEM, NULL), 0, LINE(3), 1, "UP 23:59:58"));
     in_service(&m);

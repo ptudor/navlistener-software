@@ -52,17 +52,20 @@ size_t ubx_set_ram(uint8_t out[20], uint32_t key, uint32_t value, unsigned width
 // subsystem, which a running NAV-STATUS or SEC-SIG would report as a spoofing or jamming
 // transition.
 // The ZED-X20P adds five:
-// - Its three internal LNAs, one to an RF block, in low gain, as one setting straight after
-//   UBX output. The default, normal gain, takes 17 to 40 dB of gain ahead of RF_IN and low
-//   gain 20 to 50 dB (integration manual UBXDOC-963802114-12901, 4.3.1), "to provide the
-//   integrated PGAs with a sufficient dynamic range". A survey antenna on a short cable is
-//   at the top of the first range: two boards in normal gain held all three PGAs at 3 dB
-//   (MON-SPAN; MON-RF's AGC at 7 %) and SEC-SIG flagged every frequency it assessed as
-//   jammed for as long as they ran. In low gain the board it was tried on read 5 to 11 dB
-//   (AGC 11 to 25 %) with nothing flagged and C/N0 no lower, and normal gain brought the
-//   flags back within six seconds, thirteen changes of mode running (esp32/README.md, The
-//   ZED-X20P's LNA mode). The modes apply from a restart of the GNSS subsystem (2.2.3),
-//   which the observer sends when the setting changed (ubx_setting_needs_restart).
+// - The mode of its three internal LNAs, one to an RF block, as one setting straight after
+//   UBX output: low gain or normal gain as the unit is set (receiver_settings.h), low gain
+//   unless it is set otherwise. Normal gain, the receiver's own default, takes 17 to 40 dB
+//   of gain ahead of RF_IN and low gain 20 to 50 dB (integration manual
+//   UBXDOC-963802114-12901, 4.3.1), "to provide the integrated PGAs with a sufficient
+//   dynamic range". With a survey antenna whose amplifier is given as 38 +/- 2 dB, two
+//   boards in normal gain held all three PGAs at 3 dB (MON-SPAN; MON-RF's AGC at 7 %) and
+//   SEC-SIG flagged every frequency it assessed as jammed for as long as they ran. In low
+//   gain the board it was tried on read 5 to 11 dB (AGC 11 to 25 %) with nothing flagged
+//   and C/N0 no lower, and normal gain brought the flags back within six seconds, thirteen
+//   changes of mode running (esp32/README.md, The ZED-X20P's LNA mode). The default mode
+//   is written too, since a receiver that kept its RAM may hold the other. The modes apply
+//   from a restart of the GNSS subsystem (2.2.3), which the observer sends when the
+//   setting changed (ubx_setting_needs_restart).
 // - CFG-SIGNAL-QZSS_ENA and CFG-SIGNAL-NAVIC_ENA: both are off by default in every X20
 //   signal plan (integration manual UBXDOC-963802114-12901, 2.2.4.1), with all their bands
 //   on beneath them.
@@ -81,18 +84,21 @@ size_t ubx_set_ram(uint8_t out[20], uint32_t key, uint32_t value, unsigned width
 #define RATES ONE(0x20910232), ONE(0x2091035a), ONE(0x20910016), ONE(0x20910007), ONE(0x2091001b), \
     ONE(0x2091017e), ONE(0x20910346), ONE(0x20910066), ONE(0x20910160)
 static const ubx_setting_t shared_settings[] = {ONE(0x10740001), RATES};
-static const ubx_setting_t x20_settings[] = {ONE(0x10740001),
-    {3, {{UBX_KEY_RF1_LNA_LOWGAIN, 1}, {UBX_KEY_RF2_LNA_LOWGAIN, 1}, {UBX_KEY_RF3_LNA_LOWGAIN, 1}}},
-    ONE(0x10310024), ONE(0x10310026), RATES, ONE(0x10a3002f), ONE(0x20910635)};
+#define X20(low) {ONE(0x10740001), \
+    {3, {{UBX_KEY_RF1_LNA_LOWGAIN, (low)}, {UBX_KEY_RF2_LNA_LOWGAIN, (low)}, {UBX_KEY_RF3_LNA_LOWGAIN, (low)}}}, \
+    ONE(0x10310024), ONE(0x10310026), RATES, ONE(0x10a3002f), ONE(0x20910635)}
+static const ubx_setting_t x20_low_gain[] = X20(1), x20_normal_gain[] = X20(0);
+#undef X20
 static const ubx_setting_t max_settings[] = {ONE(0x10740001),
     {5, {{0x1031000d, 0}, {0x1031000f, 1}, {0x10310018, 1}, {0x10310025, 1}, {0x10310022, 1}}}, RATES};
 #undef RATES
 #undef ONE
-size_t ubx_settings(const char *module, const ubx_setting_t **settings)
+_Static_assert(sizeof x20_low_gain == sizeof x20_normal_gain, "the X20's two lists differ only in the LNA values");
+size_t ubx_settings(const char *module, bool lna_low_gain, const ubx_setting_t **settings)
 {
     if (module && !strcmp(module, "ZED-X20P")) {
-        *settings = x20_settings;
-        return sizeof x20_settings / sizeof x20_settings[0];
+        *settings = lna_low_gain ? x20_low_gain : x20_normal_gain;
+        return sizeof x20_low_gain / sizeof x20_low_gain[0];
     }
     if (module && !strcmp(module, "MAX-M10S")) {
         *settings = max_settings;

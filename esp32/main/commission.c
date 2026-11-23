@@ -318,6 +318,7 @@ static void run(char *line)
         puts(receiver_request_rf_survey() ? "NVF-RF-SURVEY queued" : "NVF-RF-SURVEY requires ZED-X20P");
         return;
     }
+    if (!strncmp(line, "rf lna", 6) && (!line[6] || line[6] == ' ')) { receiver_lna_console(line + 6); return; }
     static const char prefix[] = "commission ";
     if (strncmp(line, prefix, sizeof prefix - 1)) return; // not ours: the console sees stray keys
     char *command = line + sizeof prefix - 1, *argument = strchr(command, ' ');
