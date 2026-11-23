@@ -35,6 +35,15 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
 // can add devices without creating a second controller on GPIO6/GPIO7.
 i2c_master_bus_handle_t hardware_manifest_i2c_bus(void);
 
+// A device handle on the shared bus for one 7-bit address at 100 kHz, for the occasional
+// reads that have no driver of their own: identity registers, the ATECC, the manifest
+// EEPROM's serial. It is added at first use and kept. ESP-IDF 5.5 refuses to remove a device
+// while any transfer is in flight on the bus, whichever task's and whichever device's, and
+// leaves it allocated, so a handle added and removed around each read fails, and leaks,
+// whenever another part is being spoken to at that moment. NULL when the bus is not up, the
+// address is not a 7-bit one, or the handle cannot be added. From any task.
+i2c_master_dev_handle_t hardware_manifest_i2c_device(uint8_t address);
+
 esp_err_t hardware_manifest_read_identity(nvf_board_identity_t *out);
 
 const char *hardware_manifest_action_name(hardware_manifest_action_t action);

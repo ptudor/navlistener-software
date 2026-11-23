@@ -6,6 +6,11 @@
   opened on a part already awake had only the rest of that time, and a read of its serial or
   its attestation record failed when the time ran out between commands. A session now puts
   the part to sleep first and wakes it afresh, so the whole watchdog period is its own.
+  ESP-IDF 5.5 also refuses to remove an I2C device while any transfer is in flight on the
+  bus, and leaves it allocated: the handles that were added and removed around each identity
+  read are now added once and kept. With a display on the bus written to every second, two
+  of 15 reads of the secure element's serial had failed before the first change and three
+  of 30 reads of the board's serial before the second; after both, 45 of 45 were complete.
 - An observer with the 162mm panel lights its red ATTENTION lamp for what the receiver
   itself reports. Until now the lamp followed only the reception alarm, the observer's check
   against the collector's forecast, so a receiver that reported jamming lit nothing. It is

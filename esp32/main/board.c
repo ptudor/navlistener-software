@@ -393,20 +393,12 @@ static uint8_t reception_history(const gnss_status_t *status, int64_t now)
     return seen;
 }
 
-static esp_err_t device_add(uint8_t address, i2c_master_dev_handle_t *dev)
-{
-    i2c_device_config_t config = {.dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = address, .scl_speed_hz = 100000};
-    return i2c_master_bus_add_device(hardware_manifest_i2c_bus(), &config, dev);
-}
+// One register read through the bus's kept handle for that address (hardware_manifest.h).
 static esp_err_t read_reg(uint8_t address, uint8_t reg, uint8_t *out, size_t length)
 {
-    i2c_master_dev_handle_t dev;
-    esp_err_t err = device_add(address, &dev);
-    if (err != ESP_OK) return err;
-    err = i2c_master_transmit_receive(dev, &reg, 1, out, length, 100);
-    i2c_master_bus_rm_device(dev);
-    return err;
+    const i2c_master_dev_handle_t dev = hardware_manifest_i2c_device(address);
+    if (!dev) return ESP_ERR_INVALID_STATE;
+    return i2c_master_transmit_receive(dev, &reg, 1, out, length, 100);
 }
 static bool crypto_command(i2c_master_dev_handle_t dev, uint8_t opcode, uint8_t mode,
                            uint16_t address, uint8_t *response, size_t length)
@@ -443,7 +435,7 @@ static void crypto_rng_check(i2c_master_dev_handle_t dev)
     report.crypto.rng = 1;
     ESP_LOGI(TAG, "ATECC RNG: 3 samples passed repetition screening; diagnostic only, not an entropy certification");
 }
-// crypto_open puts the ATECC to sleep, wakes it and opens a device handle. A sleeping ATECC
+// crypto_open puts the ATECC to sleep, wakes it and opens a session with it. A sleeping ATECC
 // does not ACK an ordinary scan. A 100 kHz zero-address wake token holds SDA low long enough;
 // NACK on this token is expected.
 //
@@ -454,21 +446,18 @@ static void crypto_rng_check(i2c_master_dev_handle_t dev)
 // runs out. Asleep first, the wake is this session's own and the whole time is its. The sleep
 // flag goes unanswered by a part already asleep, which is expected too.
 //
-// False means no handle could be opened; otherwise *woke says whether the wake response was
-// confirmed, *err is that read's result, and the caller ends the session with crypto_close().
+// False means the bus has no handle for the part; otherwise *dev is that handle, *woke says
+// whether the wake response was confirmed, *err is that read's result, and the caller ends the
+// session with crypto_close().
 static bool crypto_open(i2c_master_dev_handle_t *dev, bool *woke, esp_err_t *err)
 {
-    i2c_master_dev_handle_t wake;
+    const i2c_master_dev_handle_t wake = hardware_manifest_i2c_device(0);
     uint8_t zero = 0, sleep = 1, response[4] = {0};
-    if (device_add(0x60, dev) != ESP_OK) return false;
+    *dev = hardware_manifest_i2c_device(NVF_I2C_CRYPTO);
+    if (!wake || !*dev) return false;
     (void)i2c_master_transmit(*dev, &sleep, 1, 100);
     vTaskDelay(pdMS_TO_TICKS(2));
-    if (device_add(0, &wake) != ESP_OK) {
-        i2c_master_bus_rm_device(*dev);
-        return false;
-    }
     (void)i2c_master_transmit(wake, &zero, 1, 100);
-    i2c_master_bus_rm_device(wake);
     vTaskDelay(pdMS_TO_TICKS(10));
     *err = i2c_master_receive(*dev, response, 4, 100);
     *woke = *err == ESP_OK && hardware_crypto_response(response, 4) && response[1] == 0x11;
@@ -478,7 +467,6 @@ static void crypto_close(i2c_master_dev_handle_t dev)
 {
     uint8_t sleep = 1;
     (void)i2c_master_transmit(dev, &sleep, 1, 100);
-    i2c_master_bus_rm_device(dev);
 }
 static void identify_crypto(void)
 {

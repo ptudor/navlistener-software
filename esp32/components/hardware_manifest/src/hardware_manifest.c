@@ -4,6 +4,8 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "nvs.h"
 #include "sdkconfig.h"
 
@@ -16,6 +18,9 @@
 
 static const char *TAG = "hw_manifest";
 static i2c_master_bus_handle_t s_i2c_bus;
+// hardware_manifest_i2c_device's handles by address, and the lock that guards adding one.
+static i2c_master_dev_handle_t s_devices[128];
+static SemaphoreHandle_t s_devices_lock;
 static bool s_uid_known;
 static uint8_t s_uid[NVF_BOARD_UID_SIZE];
 
@@ -31,13 +36,10 @@ static int identity_read(void *ctx, uint8_t address, uint16_t reg, uint8_t addre
     hardware_manifest_i2c_t probe = probe_result(i2c_master_probe(s_i2c_bus, address, 100));
     hardware_manifest_i2c_t transfer = HARDWARE_MANIFEST_I2C_FAULT, reprobe = HARDWARE_MANIFEST_I2C_FAULT;
     if (probe == HARDWARE_MANIFEST_I2C_OK) {
-        i2c_master_dev_handle_t dev;
-        i2c_device_config_t cfg = {.dev_addr_length=I2C_ADDR_BIT_LEN_7,
-            .device_address=address, .scl_speed_hz=100000};
-        if (i2c_master_bus_add_device(s_i2c_bus, &cfg, &dev) != ESP_OK) return NVF_ID_IO_ERROR;
+        const i2c_master_dev_handle_t dev = hardware_manifest_i2c_device(address);
+        if (!dev) return NVF_ID_IO_ERROR;
         uint8_t pointer[2] = {(uint8_t)(reg >> 8), (uint8_t)reg};
         esp_err_t err = i2c_master_transmit_receive(dev, pointer + (address_bytes == 1), address_bytes, out, n, 100);
-        if (i2c_master_bus_rm_device(dev) != ESP_OK) return NVF_ID_IO_ERROR;
         // ESP-IDF 5.5 returns ESP_ERR_INVALID_STATE for a NACK and a bus timeout alike;
         // a second probe tells them apart (hardware_manifest_classify_read).
         transfer = err == ESP_OK ? HARDWARE_MANIFEST_I2C_OK :
@@ -234,6 +236,8 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
             .glitch_ignore_cnt = 7,
             .flags.enable_internal_pullup = false,
         };
+        if (!s_devices_lock) s_devices_lock = xSemaphoreCreateMutex();
+        ESP_RETURN_ON_FALSE(s_devices_lock, ESP_ERR_NO_MEM, TAG, "create the device-handle lock");
         ESP_RETURN_ON_ERROR(i2c_new_master_bus(&cfg, &s_i2c_bus), TAG,
                             "create observer I2C bus");
         ESP_RETURN_ON_ERROR(eeprom_discovery_init(s_i2c_bus), TAG,
@@ -312,6 +316,20 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
 i2c_master_bus_handle_t hardware_manifest_i2c_bus(void)
 {
     return s_i2c_bus;
+}
+
+i2c_master_dev_handle_t hardware_manifest_i2c_device(uint8_t address)
+{
+    if (!s_i2c_bus || !s_devices_lock || address > 0x7f) return NULL;
+    xSemaphoreTake(s_devices_lock, portMAX_DELAY);
+    if (!s_devices[address]) {
+        const i2c_device_config_t cfg = {.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = address, .scl_speed_hz = 100000};
+        if (i2c_master_bus_add_device(s_i2c_bus, &cfg, &s_devices[address]) != ESP_OK) s_devices[address] = NULL;
+    }
+    const i2c_master_dev_handle_t device = s_devices[address];
+    xSemaphoreGive(s_devices_lock);
+    return device;
 }
 
 const char *hardware_manifest_action_name(hardware_manifest_action_t action)
