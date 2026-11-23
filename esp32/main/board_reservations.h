@@ -140,6 +140,7 @@ NVF_PINS_CHECK(NVF_PINS_MOSAIC_P3, "the P3 pin map");
 #define NVF_I2C_TEMPERATURE   0x18 /* MCP9808                      */
 #define NVF_I2C_REGULATOR_TEMPERATURE 0x1F /* MCP9808 on the LDL1117 spreader, P3 U47 */
 #define NVF_I2C_HUMIDITY_HIH  0x27 /* HIH8121, P3                  */
+#define NVF_I2C_DISPLAY       0x3c /* SSD1306 module on the display header, ZED/X20 H3 */
 #define NVF_I2C_HUMIDITY      0x40 /* HDC2080                      */
 #define NVF_I2C_HUMIDITY_SHT3X 0x44 /* SHT35, P3, ADDR to GND      */
 #define NVF_I2C_RAIL_MONITOR  0x41 /* INA3221, ZED/X20 and P3, A0 to VS */
@@ -209,6 +210,9 @@ typedef struct {
     int imu_int1, imu_int2;
     observer_rail_t rails[3];   // INA3221 channels 1-3, where the board has the monitor
     observer_regulator_t regulator;
+    // The I2C address of a display module on the board's display header, or 0 for a board
+    // without the header. The module is an accessory: it is looked for, not listed.
+    uint8_t display;
 } observer_board_t;
 #define NVF_PIN_ON(map, pin) ((pin) < 0 || ((map) & NVF_PIN((pin) < 0 ? 0 : (pin))) != 0)
 #define NVF_NONE (-1)
@@ -239,7 +243,8 @@ typedef struct {
     .eth_sclk = NVF_PIN_ETH_SCLK, .eth_cs = NVF_PIN_ETH_CS, .eth_mosi = NVF_PIN_ETH_MOSI, .eth_miso = NVF_PIN_ETH_MISO, \
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
     .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE, \
-    .rails = {NVF_X20_RAIL_5V, NVF_X20_RAIL_GNSS, NVF_X20_RAIL_SYS}} /* U37 through R74, R75, R76 */
+    .rails = {NVF_X20_RAIL_5V, NVF_X20_RAIL_GNSS, NVF_X20_RAIL_SYS}, /* U37 through R74, R75, R76 */ \
+    .display = NVF_I2C_DISPLAY} /* H3: GND, 3V3_SENS, I2C_SCL, I2C_SDA */
 #define NVF_BOARD_X20_A_ROW NVF_BOARD_X20_ROW(BOARD_MODEL_X20_A, "X20 revision A", NVF_PINS_ZED_X20_A)
 #define NVF_BOARD_X20_B_ROW NVF_BOARD_X20_ROW(BOARD_MODEL_X20_B, "X20 revision B", NVF_PINS_ZED_X20_B)
 #define NVF_BOARD_MAX_ROW {.model = BOARD_MODEL_MAX_A, .name = "MAX revision A", .intsat_id = INTSAT_MAX, \

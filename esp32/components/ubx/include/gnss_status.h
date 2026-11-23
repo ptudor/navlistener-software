@@ -31,6 +31,10 @@ typedef struct {
     uint8_t supported, tracked[8];
     bool satellites_valid, fix_valid;
     int32_t latitude, longitude; // degrees * 1e7, from a valid NAV-PVT fix
+    // That fix's horizontal accuracy estimate in mm and position DOP in hundredths (NAV-PVT
+    // hAcc and pDOP); both 0 without a valid fix, and from a receiver that gives neither.
+    uint32_t h_acc_mm;
+    uint16_t p_dop;
     int64_t satellites_ms, fix_ms;
     bool signals_valid;
     int64_t signals_ms;
@@ -64,9 +68,9 @@ uint8_t gnss_status_expected(const gnss_status_t *s, int64_t now_ms, uint8_t lea
 void gnss_status_leds(const gnss_status_t *s, int64_t now_ms, uint8_t learned,
                       bool uplink, uint8_t *green, uint8_t *yellow);
 // What about the receiver needs an operator's attention at now_ms, as flags. The panel's
-// ATTENTION lamp is lit while any is set and flashes for GNSS_ATTENTION_FLASHING. Each is
-// the receiver's own report, at most 15 s old: nothing stale is an alarm, except silence
-// itself.
+// ATTENTION lamp is lit while any is set and flashes for GNSS_ATTENTION_FLASHING, and a
+// status display names them. Each is the receiver's own report, at most 15 s old: nothing
+// stale is an alarm, except silence itself.
 enum {
     // No report for 15 s. A receiver is given GNSS_ATTENTION_START_MS from the start of the
     // observer before its silence counts.

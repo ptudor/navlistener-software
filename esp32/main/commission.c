@@ -9,6 +9,7 @@
 //   commission install <base64 record>      store the manufacturer-signed record
 //   commission restore <base64 ds context> <base64 public key>
 //   commission seal                         IRREVERSIBLE: the seal alone, if keygen could not finish it
+//   oled status | rotate <0|180> | off | on | dump [page]   the status display (observer_oled.h)
 //
 // Every command answers with exactly one NVF-COMMISSION-... line, written with printf so it
 // is independent of the log level and easy to pick out of a captured console log.
@@ -43,6 +44,7 @@
 #include "mcu_identity.h"
 #include "update_runtime.h"
 #include "update_tuf.h"
+#include "observer_oled.h"
 #include "observer_rtc.h"
 #include "observer_time.h"
 #include "esp_timer.h"
@@ -310,6 +312,7 @@ usage:
 static void run(char *line)
 {
     if(!strncmp(line,"rtc ",4)){rtc_command(line+4);return;}
+    if(!strncmp(line,"oled ",5)){observer_oled_console(line+5);return;}
     static const char prefix[] = "commission ";
     if (strncmp(line, prefix, sizeof prefix - 1)) return; // not ours: the console sees stray keys
     char *command = line + sizeof prefix - 1, *argument = strchr(command, ' ');

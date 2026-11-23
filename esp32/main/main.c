@@ -50,6 +50,7 @@
 #include "reception_runtime.h"
 #include "mcu_identity.h"
 #include "commission.h"
+#include "observer_oled.h"
 #include "observer_time.h"
 #include "network_health.h"
 #include "network_monitor.h"
@@ -71,6 +72,7 @@ static void uplink_set(unsigned link, bool up)
 }
 static bool uplink_online(void) { return atomic_load_explicit(&s_uplinks, memory_order_relaxed) != 0; }
 static atomic_bool s_config_reset_armed;
+static bool config_reset_armed(void) { return atomic_load_explicit(&s_config_reset_armed, memory_order_relaxed); }
 static char s_collector[80];      // "host:port" once provisioned, else empty
 static netcfg_t g_cfg;            // live config (NVS over Kconfig defaults)
 static ubx_parser_t s_parser;     // static: its buffers are too large for a task stack
@@ -133,15 +135,18 @@ static void config_reset_task(void *arg)
 
     config_recovery_t gesture;
     config_recovery_init(&gesture);
-    panel_button_t brightness_button = {0};
-    // A short press steps the panel brightness on a board without its own preset button.
+    panel_button_t short_press = {0};
+    // A short press steps the panel brightness on a board without its own preset button, and
+    // on the others the status display's page, where one is fitted.
     const observer_board_t *board = observer_board_current();
     const bool steps_brightness = board && board->boot_steps_brightness;
     ESP_LOGI(TAG, "BOOT controls ready on GPIO%d", (int)pin);
     for (;;) {
         bool pressed = gpio_get_level(pin) == 0;
-        if (steps_brightness && panel_button_short_press(&brightness_button, pressed, CONFIG_RESET_POLL_MS))
-            observer_board_cycle_brightness();
+        if (panel_button_short_press(&short_press, pressed, CONFIG_RESET_POLL_MS)) {
+            if (steps_brightness) observer_board_cycle_brightness();
+            else observer_oled_next_page();
+        }
         config_recovery_event_t event =
             config_recovery_update(&gesture, pressed, CONFIG_RESET_POLL_MS);
         if (event == CONFIG_RECOVERY_EVENT_ARMED) {
@@ -487,6 +492,8 @@ void app_main(void)
     ESP_ERROR_CHECK(receiver_start(&s_parser));
     if (observer_board_start() != ESP_OK)
         ESP_LOGW(TAG, "observer panel/diagnostics task unavailable");
+    // The status display, on a board with a display header: fitted or not, the board runs.
+    (void)observer_oled_start(config_reset_armed);
 #if CONFIG_NVF_ETHERNET_W5500
     // The port's identity at every boot, setup mode included; the uplink starts once provisioned.
     if (observer_board_wired_uplink()) (void)ethernet_identify(observer_board_current());
@@ -538,6 +545,9 @@ void app_main(void)
         // provisioning. A BLE build runs the app's provisioning over BLE instead.
         netcfg_provisioning_info_t setup;
         if (netcfg_start_provisioning(&setup) == ESP_OK) {
+            // The status display names the setup network and the reason. The password stays
+            // on the device label and in the paired app.
+            observer_oled_setup(setup.name, cfg_err);
             status_led_state(LED_BOOT);
             // The reason goes on the panel too: "wifi ssid is empty" (a factory-fresh board)
             // and "bearer token is empty" (a half-provisioned one) are the same screen
@@ -570,6 +580,7 @@ void app_main(void)
             }
             confirm_startup();
         } else {
+            observer_oled_setup(NULL, cfg_err);
             ESP_LOGE(TAG, "provisioning portal failed to start");
         }
         return; // rx_task keeps counting frames; reboots into station mode after provisioning
@@ -578,6 +589,7 @@ void app_main(void)
     // fill s_collector BEFORE ui_task starts reading it — otherwise the write races
     // the reader (formally UB; in practice a partial/empty collector string on one frame).
     snprintf(s_collector, sizeof s_collector, "%s:%d", g_cfg.host, g_cfg.port);
+    observer_oled_provisioned(s_collector, netcfg_station(&g_cfg), netcfg_has_wifi(&g_cfg));
     // A station provisioned before the board was commissioned is left in NVS but never used.
     // Its enrollment token was issued for that name, so say which name is used instead.
     if (netcfg_commissioned()) {

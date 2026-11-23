@@ -154,7 +154,7 @@ firmware lights it while the receiver reports jamming, spoofing or an antenna fa
 the receiver is silent, while a supply rail is in alert and while a reception alarm is
 active, and flashes it for critical jamming and for spoofing
 ([the ATTENTION lamp](../esp32/README.md#the-attention-lamp)). It names no cause itself: the
-console and the telemetry do.
+console, the telemetry and a status display do.
 
 Run them lean: 5–8 mA per channel is plenty behind a diffuser, and sixteen channels at 20 mA is
 320 mA of heat in an enclosure that already runs hot. `TLC5916`'s shift-then-latch structure
@@ -1293,7 +1293,11 @@ The NEO's complete fixed address map is **MCP9808 `0x18`**, **HDC2080 `0x40`**,
 **BMP388 `0x76`** (SDO to GND). The ZED/X20 has a DS3231M RTC at **`0x68`** in place of
 the MCP79412's `0x57` and `0x6F`, a **BMP581 at `0x46`** (SDO to GND) in place of the
 BMP388, and an **INA3221 rail monitor at `0x41`** (A0 to VS); its external port
-reserves all three.
+reserves all three. Its display header, H3 (GND, `3V3_SENS`, `I2C_SCL`, `I2C_SDA` from pad
+1), puts an SSD1306 display module on the same bus at **`0x3c`** when one is plugged in;
+the module is an accessory, looked for by the firmware and not listed in the manifest
+([status display](../esp32/README.md#status-display)), and `0x3c` and `0x3d` stay free of
+anything else on the bus and the external port.
 
 Two constraints to resolve on paper *before* anything is locked: the 24CS128's security
 interface at `0x58` must stay free on the shared bus and the external port, and the **ATECC's

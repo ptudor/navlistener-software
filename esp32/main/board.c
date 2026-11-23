@@ -36,6 +36,7 @@
 #include "observer_time.h"
 #include "environment.h"
 #include "io_expander_service.h"
+#include "oled_service.h"
 #include "pusher.h"
 #include "nvs.h"
 #include "journal.h"
@@ -84,7 +85,8 @@ static bool pwm_ready;
 static panel_boot_t boot_sequence;
 // What needs an operator's attention besides a reception alarm, from the board task alone
 // (attention_poll): the receiver's own reports (gnss_status_attention) and a rail alert. The
-// panel refresh task lights the ATTENTION lamp from panel_attention, steadily or flashing.
+// panel refresh task lights the ATTENTION lamp from panel_attention, steadily or flashing, and
+// observer_board_view carries the causes to a status display.
 enum { PANEL_ATTENTION_OFF, PANEL_ATTENTION_ON, PANEL_ATTENTION_FLASHING };
 static atomic_uint panel_attention;
 static uint8_t receiver_attention;
@@ -131,6 +133,12 @@ static regulator_thermal_t regulator;
 // The humidity sensors beside the HDC (the P3's SHT35 and HIH8121), each listed at its
 // allocated address; tags 24 and 25.
 static bool sht3x_listed, hih8121_listed;
+// The board task's latest state for a status display (observer_board_view), and the receiver
+// the manifest lists by name.
+static observer_board_view_t view;
+static portMUX_TYPE view_lock = portMUX_INITIALIZER_UNLOCKED;
+static const char *receiver_name;
+static uint32_t boot_number;
 _Static_assert(NVF_I2C_IO_EXPANDER == MCP23008_ADDRESS, "the expander's address differs from the allocation record");
 _Static_assert(NVF_I2C_RECEIVER_EXPANDER >= 0x20 && NVF_I2C_RECEIVER_EXPANDER <= 0x27 &&
                NVF_I2C_RECEIVER_EXPANDER != NVF_I2C_IO_EXPANDER,
@@ -184,6 +192,7 @@ static const char *listed_receiver(void)
         receiver_set_sbf(&pins);
         ESP_LOGI(TAG, "receiver from the manifest: mosaic-G5 P3, SBF on COM2 (RTS GPIO%d, CTS GPIO%d, reset GPIO%d)",
                  pins.rts, pins.cts, pins.reset);
+        receiver_name = "mosaic-G5 P3";
         return NULL;
     }
     static const struct { uint8_t id; const char *module; } receivers[] = {
@@ -199,6 +208,7 @@ static const char *listed_receiver(void)
         module = receivers[i].module;
     }
     if (board && !module) ESP_LOGW(TAG, "the manifest lists no receiver this firmware configures; it keeps its own settings");
+    receiver_name = module;
     return module;
 }
 // A listed part on a board without the pins it needs is not used.
@@ -446,15 +456,21 @@ static void crypto_rng_check(i2c_master_dev_handle_t dev)
 // runs out. Asleep first, the wake is this session's own and the whole time is its. The sleep
 // flag goes unanswered by a part already asleep, which is expected too.
 //
+// The status display stays off the bus from here to crypto_close: its transfers are mostly
+// zero bytes, and would otherwise fall in the quiet the part asks for after its wake and
+// between the session's commands.
+//
 // False means the bus has no handle for the part; otherwise *dev is that handle, *woke says
 // whether the wake response was confirmed, *err is that read's result, and the caller ends the
 // session with crypto_close().
+static bool crypto_display_held; // with the session, under crypto_lock
 static bool crypto_open(i2c_master_dev_handle_t *dev, bool *woke, esp_err_t *err)
 {
     const i2c_master_dev_handle_t wake = hardware_manifest_i2c_device(0);
     uint8_t zero = 0, sleep = 1, response[4] = {0};
     *dev = hardware_manifest_i2c_device(NVF_I2C_CRYPTO);
     if (!wake || !*dev) return false;
+    crypto_display_held = oled_service_hold();
     (void)i2c_master_transmit(*dev, &sleep, 1, 100);
     vTaskDelay(pdMS_TO_TICKS(2));
     (void)i2c_master_transmit(wake, &zero, 1, 100);
@@ -467,6 +483,7 @@ static void crypto_close(i2c_master_dev_handle_t dev)
 {
     uint8_t sleep = 1;
     (void)i2c_master_transmit(dev, &sleep, 1, 100);
+    if (crypto_display_held) oled_service_release();
 }
 static void identify_crypto(void)
 {
@@ -644,6 +661,9 @@ static void panel_shift(int bit, void *ctx) { (void)ctx; clock_bit(bit); }
 // LEDs dark for some 12 ms; the bus is not sped up for it.
 static void panel_write(uint8_t status, uint8_t green, uint8_t yellow, unsigned percent, bool verify)
 {
+    // The readback's I2C reads set how long the lamps are dark, so the status display gives
+    // up its turn on the bus first, before they go out.
+    const bool display_held = verify && oled_service_hold();
     // OE also participates in TLC5916 mode switching. Hold both OE pins high
     // for the entire serial/latch transaction; PWM runs only while CLK is idle.
     if (pwm_ready) for (unsigned c = 0; c < 2; c++)
@@ -661,6 +681,7 @@ static void panel_write(uint8_t status, uint8_t green, uint8_t yellow, unsigned 
         ledc_set_duty(LEDC_LOW_SPEED_MODE, c, panel_pwm_off_ticks(percent));
         ledc_update_duty(LEDC_LOW_SPEED_MODE, c);
     }
+    if (display_held) oled_service_release();
 }
 #define PANEL_READBACK_MS 60000
 static TaskHandle_t panel_task;
@@ -1116,7 +1137,7 @@ static void timing_poll(const gnss_status_t *status)
     ESP_LOGI("pulse_timing","sample=%s",hex);
 }
 // A cause stays held this long after its last report, so that a moment of jamming is a lamp
-// an eye can catch.
+// an eye can catch and a line a display has time to show.
 #define ATTENTION_HOLD_MS 10000
 static uint8_t attention_hold(uint8_t flags, int64_t now)
 {
@@ -1130,9 +1151,9 @@ static uint8_t attention_hold(uint8_t flags, int64_t now)
     }
     return held;
 }
-// Each pass: what needs attention now, for the lamp, and one log line when that changes. A
-// rail alert that persists is logged again at every rail sample, 30 s apart at most, so it
-// counts for a minute from its last line.
+// Each pass: what needs attention now, for the lamp and the display, and one log line when
+// that changes. A rail alert that persists is logged again at every rail sample, 30 s apart
+// at most, so it counts for a minute from its last line.
 static void attention_poll(const gnss_status_t *status, uint8_t alarm, int64_t now)
 {
     receiver_attention = attention_hold(gnss_status_attention(status, now), now);
@@ -1155,6 +1176,44 @@ static void attention_poll(const gnss_status_t *status, uint8_t alarm, int64_t n
     if (rail_attention) (void)snprintf(text + used, sizeof text - used, "%spower rail alert", used ? ", " : "");
     ESP_LOGW(TAG, "attention: %s%s", text, !lamp ? "" : flashing ? "; the panel's ATTENTION lamp flashes" :
              "; the panel's ATTENTION lamp is lit");
+}
+// What a status display shows of this pass (observer_board_view): the latest environmental
+// sample's readings, the pulse, what needs attention and the brightness.
+static void view_publish(uint8_t alarm)
+{
+    const report_environment_t *e = &report.environment;
+    observer_board_view_t v = {.temperature_valid = (e->valid & 3) != 0, .humidity_valid = (e->valid & 2) != 0,
+        .pressure_valid = (e->valid & 4) != 0, .centi_c = e->valid & 1 ? e->mcp_centi_c : e->hdc_centi_c,
+        .centi_rh = e->rh_centi_percent, .pressure_pa = e->pressure_pa,
+        .rtc_temperature_valid = report.rtc_temperature.present && report.rtc_temperature.valid,
+        .rtc_centi_c = report.rtc_temperature.centi_c,
+        .pulse_known = report.timing.present && (report.timing.channel[0].flags & TIMING_ENABLED),
+        .pulse = (report.timing.channel[0].flags & TIMING_FRESH) != 0,
+        .receiver_attention = receiver_attention, .rail_alert = rail_attention, .reception_alarm = alarm != 0,
+        .brightness = applied_brightness, .boot = boot_number, .receiver = receiver_name};
+    for (unsigned c = 0; rails_listed && c < 3; c++) {
+        const observer_rail_t *rail = &board->rails[c];
+        if (!rail->shunt_mohm) continue;
+        v.rail[c].name = rail->name;
+        v.rail[c].valid = (report.rails.valid >> c & 1) != 0;
+        v.rail[c].bus_mv = report.rails.bus_mv[c];
+        v.rail[c].ma = report.rails.shunt_uv[c] / rail->shunt_mohm;
+    }
+    taskENTER_CRITICAL(&view_lock);
+    view = v;
+    taskEXIT_CRITICAL(&view_lock);
+}
+void observer_board_view(observer_board_view_t *out)
+{
+    taskENTER_CRITICAL(&view_lock);
+    *out = view;
+    taskEXIT_CRITICAL(&view_lock);
+}
+bool observer_board_serial(uint32_t *last)
+{
+    // Written once by observer_board_manifest, before any task that asks.
+    *last = boot_sequence.identity;
+    return boot_sequence.identity_valid;
 }
 // Measured on xtensa with -fstack-usage: with the receiver status, the journal copy and
 // reception's wire scratch in static storage, the deepest measured path (board_task 192 B,
@@ -1263,6 +1322,7 @@ static void board_task(void *arg)
         environment_poll(esp_timer_get_time() / 1000);
         regulator_poll(esp_timer_get_time() / 1000);
         timing_poll(&status);
+        view_publish(alarm);
         journal_report=report;
         journal_report.rtc=observer_rtc_status();
         journal_poll(&status,&journal_report,esp_timer_get_time()/1000);
@@ -1393,6 +1453,7 @@ static void panel_boot_start(void)
     uint32_t boot = 0;
     esp_err_t err = panel_boot_count(&boot);
     if (err != ESP_OK) ESP_LOGW(TAG, "could not count panel boots: %s", esp_err_to_name(err));
+    boot_number = boot;
     boot_sequence.chase = true;
     boot_sequence.status_byte = board->panel_status_byte;
     char count[12] = "unknown", sweep[48] = "no identity sweep (board identity not read)";
@@ -1410,6 +1471,7 @@ esp_err_t observer_board_start(void)
                  esp_err_to_name(load_err), applied_brightness);
     atomic_store(&brightness, applied_brightness);
     atomic_store(&trimmer_reference, saved_reference);
+    view.brightness = applied_brightness; // before the board task's first pass publishes the rest
     if (!crypto_lock && !(crypto_lock = xSemaphoreCreateMutex())) return ESP_ERR_NO_MEM;
     uint64_t outputs = (1ULL << LED_CLOCK) | (1ULL << LED_LATCH) | (1ULL << LED_GREEN_OE) | (1ULL << LED_YELLOW_OE);
     if (board && board->led_sdi >= 0) outputs |= NVF_PIN(board->led_sdi);
@@ -1483,4 +1545,6 @@ bool observer_board_wired_uplink(void) { return false; }
 bool observer_board_sensor_settings(void) { return false; }
 esp_err_t observer_board_start(void) { return ESP_OK; }
 void observer_board_identity(observer_board_identity_t *out) { *out = (observer_board_identity_t){0}; }
+void observer_board_view(observer_board_view_t *out) { *out = (observer_board_view_t){0}; }
+bool observer_board_serial(uint32_t *last) { *last = 0; return false; }
 #endif

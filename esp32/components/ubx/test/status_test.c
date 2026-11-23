@@ -213,6 +213,14 @@ int main(void)
     rf_and_signals();
     satellites_by_name();
     attention();
+    // NAV-PVT's horizontal accuracy estimate and position DOP are kept with a valid fix and
+    // cleared without one.
+    gnss_status_t fix = {0}; uint8_t pvt[92] = {0};
+    pvt[20] = 3; pvt[21] = 1; put32(pvt + 40, 1234); pvt[76] = 125; // 1.234 m, PDOP 1.25
+    gnss_status_feed(&fix, 1, 7, pvt, sizeof pvt, 100);
+    assert(fix.fix_valid && fix.h_acc_mm == 1234 && fix.p_dop == 125);
+    pvt[21] = 0; gnss_status_feed(&fix, 1, 7, pvt, sizeof pvt, 200); // gnssFixOK cleared
+    assert(!fix.fix_valid && fix.h_acc_mm == 0 && fix.p_dop == 0);
     gnss_status_t timing={0}; uint8_t tp[16]={0}; tp[14]=3; tp[15]=0x10;
     gnss_status_feed(&timing,0x0d,1,tp,sizeof tp,100);
     assert(timing.tp_valid && timing.tp_flags==3 && timing.tp_ref==0x10 && timing.tp_ms==100);
@@ -274,5 +282,5 @@ int main(void)
     assert(gnss_status_same_place(377000000,-1224000000,377010000,-1224010000));
     assert(!gnss_status_same_place(377000000,-1224000000,357000000,1397000000));
     assert(gnss_status_same_place(0,1799999000,0,-1799999000));
-    puts("GNSS status: tracking, stale data, regional expectations, learned override, movement, RF blocks, SEC-SIG jamming, signal kinds, satellites by name and the attention flags passed");
+    puts("GNSS status: tracking, stale data, regional expectations, learned override, movement, RF blocks, SEC-SIG jamming, signal kinds, satellites by name, fix accuracy and the attention flags passed");
 }

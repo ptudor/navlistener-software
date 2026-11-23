@@ -29,7 +29,9 @@ supported substitute. Its drivers and partition table remain as legacy source.
   board and revision, which fix the pins ([`main/board_reservations.h`](main/board_reservations.h)),
   and each driver runs only for a part the manifest lists installed: the receiver it
   configures, the RTC, the environmental sensors, the ATECC, the Ethernet port, the panel
-  buttons and the MAX's sensors. A board without a usable manifest naming a board this
+  buttons and the MAX's sensors. The one exception is an accessory: a display module on a
+  board's display header is looked for where the board's row names the header
+  ([Status display](#status-display)). A board without a usable manifest naming a board this
   image knows runs nothing board-specific and logs that it may not have been configured.
   On the P3 the firmware speaks SBF to the mosaic-G5 on COM2, with RTS/CTS flow control and
   the GPIO13 reset for recovery, reads its blocks into the same receiver status the
@@ -319,6 +321,68 @@ the receiver's judgement of its RF input and does not say where the energy comes
 are in the telemetry as before; the lamp adds nothing to it. A panel without the status
 driver has no such lamp, and trouble with the network is not among its causes: the uplink
 column shows that.
+
+### Status display
+
+The ZED/X20 has a display header, H3, whose pins read GND, 3V3, SCL, SDA from pad 1: the
+order of the common 0.96 inch 128×64 SSD1306 I2C modules. One plugged into it is a status
+display at `0x3c` on the shared bus. The module is an accessory and is not in the manifest:
+the board's row names the header ([`main/board_reservations.h`](main/board_reservations.h)),
+the firmware looks for a module there, and a board without the header, or without a usable
+manifest, sends that address nothing.
+
+It is looked for every two seconds, so it can be fitted, unplugged or plugged in while the
+board runs. When it answers it is configured with the display off, its memory is written,
+and only then is the display turned on, so the noise its memory starts with is never shown.
+The controller's status register says whether the display is on. It is read before every
+frame: a module found off has been reset or plugged in again and is configured from the
+start, and one that no longer answers is looked for again. The console says each
+(`SSD1306 at 0x3c configured: display on, ...`).
+
+Every page carries the UTC time, its own name and a mark while the ATTENTION lamp is lit;
+the rule under that line is solid where the page stands among those being shown. Six lines
+of 21 characters follow. The pages change every six seconds:
+
+| Page | Shows |
+|---|---|
+| NOW | the date and a large UTC clock with its origin (GNSS, RTC, NET), the fix with its satellites and horizontal accuracy, the uplink's address, the collector link and the spool, and the temperature, humidity and pressure in the box |
+| GNSS | the fix, satellites used over tracked, accuracy and PDOP; satellites per constellation in the LED panel's column order (S G E C R J I, a dash where the receiver does not track one); the antenna supervisor, jamming, spoofing and the pulse |
+| SIGNAL | code-locked signals per band (L1, L2, L5, E5b, E6), the strongest C/N0, and a bar for every tracked satellite from 15 to 55 dB-Hz, grouped by constellation, with dotted lines at 30 and 40 |
+| NETWORK | Ethernet and Wi-Fi addresses with the Wi-Fi signal strength, the collector and whether the link is up or in the tunnel, the spool and the records lost from it, and the station name's last 21 characters |
+| SETUP | in place of NETWORK on a board not yet provisioned: the setup network's name, where its password is (the device label; the display never shows it), the setup address, and why the board is in setup |
+| SENSORS | temperature, humidity, pressure, the RTC's temperature, each supply rail's voltage and current, and the pulse |
+| SYSTEM | the board, the serial's last eight hex digits (the panel's identity sweep), the firmware, the uptime and boot count, the receiver, free internal heap and the clock's origin |
+| ATTENTION | what the ATTENTION lamp is lit for, one cause to a line; shown only while it is lit, and at once when a new cause joins |
+
+A page with nothing to show is left out. The first four seconds show a start screen with
+the board, its serial and the firmware version. While the configuration reset is armed
+(BOOT held for eight seconds) the whole display says so, and how to cancel. A short press
+of BOOT shows the next page and holds it for a minute; on a NEO, where that press steps the
+panel brightness, it still does.
+
+The clock shown is the time service's: the receiver's qualified time or the RTC's while
+either is fresh, named as such, otherwise the system clock with the origin it was last set
+from, which is blank for a clock that only ran on through a restart. Frames are timed to
+its seconds. The display's contrast follows the panel brightness. To spare the panel, the
+whole picture moves one pixel every minute through six positions, and every five minutes
+the settings and the whole memory are written again, which also puts right anything a
+disturbance on the bus changed.
+
+The bus is shared with the sensors, the RTC, the EEPROM and the ATECC, at 100 kHz. The
+display writes only the bytes that changed, at most 32 to a transfer (3 ms), and steps
+aside for a tick after each, so no other part waits longer than that. It stays off the bus
+altogether in two cases: while the panel chain is read back, since those reads hold the
+lamps dark, and for the length of a session with the ATECC, which the display's zero bytes
+would otherwise wake and whose commands they would fall between.
+
+The USB console has its commands, each answered with `NVF-OLED-` lines:
+
+| Command | Effect |
+|---|---|
+| `oled status` | `NVF-OLED-STATUS {json}`: whether a module answers and is on, its address, rotation, status register and contrast, the screen and page shown, and counts of configurations, losses, resets, frames, transfers and failures |
+| `oled rotate 0` / `oled rotate 180` | turns the picture half a turn or back, at once, and saves it in the `nvf_oled` NVS namespace: for a module mounted the other way up |
+| `oled off` / `oled on` | turns the panel and its charge pump off and keeps the display off the bus, or back on; until the next start, not saved. For comparing reception with and without the display at work |
+| `oled dump [page]` | the frame as 64 rows of 128 `#` and `.` between `NVF-OLED-FRAME <name> 128x64` and `NVF-OLED-END`: what is shown now, or the named page (`now`, `gnss`, `signal`, `network`, `sensors`, `system`, `attention`) drawn from the latest data |
 
 ### Peripheral and random-number diagnostics
 

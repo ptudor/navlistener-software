@@ -40,4 +40,35 @@ typedef struct {
     uint16_t revision;
 } observer_board_identity_t;
 void observer_board_identity(observer_board_identity_t *out);
+// What the board task last measured and decided, for a status display: a copy, from any
+// task. The sensor and rail readings are those of the latest environmental sample, taken at
+// least every 30 seconds; a reading that sample did not get is not valid here either.
+typedef struct {
+    bool temperature_valid, humidity_valid, pressure_valid;
+    int16_t centi_c;             // the board's MCP9808, or the humidity sensor's where it has none
+    uint16_t centi_rh;
+    uint32_t pressure_pa;
+    // The INA3221's rails, where the board has them: a NULL name is no rail.
+    struct {
+        const char *name;
+        bool valid;
+        int16_t bus_mv;
+        int32_t ma;
+    } rail[3];
+    bool rail_alert;             // the rail monitor reported an alert within the last minute
+    // The receiver's GNSS_ATTENTION_* flags (gnss_status.h), each held 10 s from its last
+    // report. These, rail_alert and reception_alarm are what the ATTENTION lamp is lit for.
+    uint8_t receiver_attention;
+    bool rtc_temperature_valid;
+    int16_t rtc_centi_c;
+    bool pulse_known, pulse;     // the GNSS pulse is captured; an edge arrived in the last 1.5 s
+    bool reception_alarm;        // the reception check the panel's ATTENTION lamp shows
+    unsigned brightness;         // the panel's, percent
+    uint32_t boot;               // this boot's number from the panel's count; 0 unknown
+    const char *receiver;        // the receiver the manifest lists, or NULL
+} observer_board_view_t;
+void observer_board_view(observer_board_view_t *out);
+// The last 32 bits of the board's serial, as the panel's identity sweep shows them. False
+// when the identity was not read.
+bool observer_board_serial(uint32_t *last);
 #endif

@@ -1,5 +1,24 @@
 # Unreleased
 
+- A ZED/X20 observer drives a status display on its display header. H3 takes the common
+  128×64 SSD1306 I2C module at `0x3c`, which the firmware looks for every two seconds, so
+  it can be fitted or removed while the board runs; a board without one logs a single line
+  and runs as before. Seven pages follow one another every six seconds: the UTC clock with
+  its origin, the fix and its accuracy, the uplink, the collector link and the weather in
+  the box; satellites per constellation with the antenna, jamming and spoofing states;
+  signals per band with a C/N0 bar for each satellite; the network, or the setup network's
+  name and address on a board not yet provisioned (the setup password stays on the label);
+  the sensors and supply rails; the board, serial and firmware; and, while the ATTENTION
+  lamp is lit, what it is lit for, shown at once when a cause joins. A short press of BOOT
+  holds the next page for a minute, and the armed configuration reset takes the whole
+  display. The display shares the I2C bus by writing only the bytes that changed, 32 to a
+  transfer at most, and by staying off it while the panel chain is read back and while the
+  secure element is in session; on the bench that came to about 200 bytes a second. Its contrast follows the panel brightness, the
+  picture moves a pixel a minute to spare the panel, and `oled status`, `oled rotate`,
+  `oled off`, `oled on` and `oled dump` on the USB console report on it, turn it for a
+  module mounted the other way up, blank it and print its frame as text. The receiver
+  status keeps a fix's horizontal accuracy estimate and PDOP from NAV-PVT for it
+  (`esp32/README.md`, Status display).
 - Reading a board's identity no longer fails while another part on the I2C bus is being
   spoken to. The ATECC wakes on any 60 µs of SDA held low, which a zero byte sent to another
   part is, and goes back to sleep when its watchdog ends, 0.7 to 1.7 seconds later. A session

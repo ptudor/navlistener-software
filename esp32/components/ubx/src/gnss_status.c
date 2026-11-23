@@ -147,6 +147,8 @@ void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
                        lon >= -1800000000 && lon <= 1800000000;
         s->fix_ms = now;
         if (s->fix_valid) { s->latitude = lat; s->longitude = lon; }
+        s->h_acc_mm = s->fix_valid ? le32(p+40) : 0;
+        s->p_dop = s->fix_valid ? le16(p+76) : 0;
     }
 }
 void gnss_status_compare(const gnss_status_t *s,const nr_expectation_t *e,nr_sample_t *r,int64_t now)

@@ -56,6 +56,12 @@ Send one line per command. Each answers with exactly one line beginning
 report from a captured console log and checks its shape. It reads files only; it
 never opens a serial port.
 
+The same console carries the RTC's service commands (`rtc ...`,
+[RTC-SERVICE.md](RTC-SERVICE.md)) and, on a board with a display header, the status
+display's (`oled status`, `oled rotate <0|180>`, `oled off`, `oled on`, `oled dump [page]`,
+[Status display](../README.md#status-display)), answered with `NVF-RTC-` and `NVF-OLED-`
+lines.
+
 ### The report
 
 ```json
@@ -219,6 +225,10 @@ only public values and ciphertext. They cannot generate a second key, cannot
 install a record for another board, and can at worst replace the record with an
 older genuine one for the same board, which a collector holding the registry
 answers with `superseded`. They already have the board.
+
+The display's commands read what the display shows and change how it shows it:
+its rotation, which is saved, and whether its panel is on, until the next start.
+The display never shows the setup password, so `oled dump` cannot print it.
 
 ## Presenting evidence
 
