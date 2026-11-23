@@ -300,13 +300,18 @@ and sets it, and the display's SYSTEM page shows it:
 | `rf lna low` / `rf lna normal` | saves the mode and applies it at once: the receiver's settings are sent again and, if the mode changed, the GNSS subsystem restarts, which costs the fix for some seconds. `NVF-RF-LNA-OK <mode>`, or `NVF-RF-LNA-ERROR` with the reason |
 | `rf signals` | `NVF-RF-SIGNALS {json}`: each healthy code-locked signal with its C/N0, for comparing reception in the two modes |
 
-Choose the mode that keeps the AGC off its floor. An AGC of 7 % (a PGA of 3 dB, the lowest
-these receivers have reported) on every block in normal gain means the antenna brings more
-than normal gain takes: set low gain. An antenna and cable that bring less than 20 dB to
-`RF_IN` are outside low gain: set normal gain. By their data sheets, a Beitian BT-800S
-survey antenna (an amplifier of 38 ± 2 dB) is a low-gain antenna, as measured below, and a
-u-blox ANN-MB2 (23 dB at the end of its 5 m cable) belongs in normal gain, which has not
-been measured here.
+Choose the mode from the AGC the antenna gives where it will stay. An AGC of 7 % (a PGA of
+3 dB, the lowest these receivers have reported) on every block in normal gain means the
+antenna brings more than normal gain takes: set low gain. An antenna and cable that bring
+less than 20 dB to `RF_IN` are outside low gain: set normal gain. An antenna in range of
+both is a choice of margin. In the measurements below the receiver flagged a path's
+frequencies only when that path's PGA reached 3 dB, so how far above 3 dB an antenna's PGA
+settles in a quiet place is about the rise in level that the receiver's own detector, and
+with it the ATTENTION lamp, waits for. A Beitian BT-800S survey antenna (an amplifier of
+38 ± 2 dB) needs low gain, which leaves it 8 dB on two paths. A u-blox ANN-MB2 (23 dB at
+the end of its 5 m cable) is in range in both modes with the same reception: normal gain
+leaves it 8 to 10 dB and low gain 16 to 21 dB. A level that rose on a running receiver and
+stopped short of the floor has not been tried.
 
 On an indoor bench with a BT-800S, three ZED/X20 boards in normal gain reported a PGA of
 3 dB on all three paths and an AGC of 7 %. UBX-SEC-SIG flagged all seven frequencies it
@@ -332,6 +337,7 @@ chain a higher noise figure in low gain (11 against 6.5 dB at L1, 10 against 6 d
 In normal gain, then, the warning reported a gain control with no range left on any path.
 How much of the level was the antenna's amplifier and how much was noise the antenna
 picked up indoors was not separated, and neither mode has been tried under a clear sky.
+The ANN-MB2 further down shows how much a place can add.
 
 Low gain showed what normal gain had hidden. Paths 0 and 1 held 25 % throughout. Path 2,
 which carries L2, E6 and B3, fell to its floor for about a second every 12 seconds: 20
@@ -346,6 +352,39 @@ frequencies fit aeronautical DME, but no source was identified. A warning that c
 goes with such a period, on one path's frequencies, with the other paths' AGC steady, is
 the receiver reporting a signal and not a gain setting.
 
+An ANN-MB2 on one of those boards was read in both modes in two places indoors: lying
+beside the bare board on the bench, and moved away from the bench.
+
+| ANN-MB2 | Internal LNAs | PGA, paths 0 / 1 / 2 | AGC, blocks 0 / 1 / 2 | Frequencies flagged | Reception |
+|---|---|---|---|---|---|
+| beside the board | normal gain | 3 / 3 to 5 / 5 dB | 7 / 7 to 11 / 11 % | those of each path at 3 dB: 1575.42 and 1602.00 MHz, and 1176.45 MHz while path 1 read 3 dB | no signal code-locked |
+| beside the board | low gain | 11 / 13 / 13 dB | 25 / 30 / 30 % | 0 of 7 | no signal code-locked |
+| moved away | normal gain | 13 / 13 / 11 dB | 30 / 30 / 25 % | 0 of 7 | a fix |
+| moved away | low gain | 24 / 22 / 19 dB | 54 / 50 / 43 % | 0 of 7 | a fix |
+
+Beside the board the receiver locked onto no signal in the seven minutes after a cold
+start, in either mode, and the level was higher than where the antenna was moved to, by
+the same amount in both modes (from the spectra, with each sweep's PGA taken off): 11 dB
+across the L1 path, from about 7 dB below 1560 MHz to 17 dB between 1590 and 1600 MHz and
+12 dB at GPS L1, 7 dB across the L5 path and 6 dB across the L2 path. In normal gain that
+left the L1 path at its floor, and the receiver flagged that path's two frequencies in 134
+of 134 reports: a true warning, of an antenna that heard nothing else. In low gain the same
+noise fitted inside the gain control's range and the receiver reported no jamming in 138
+reports, with no satellite either. The AGC showed it, 25 / 30 / 30 % against 54 / 50 / 43 %
+in the quieter place, and that departure is what a collector's AGC baseline measures
+([DEFENSE-PNT.md](../docs/DEFENSE-PNT.md#2-jamming-detection-the-rf-front-end)).
+
+Moved away, the receiver had a fix when it was next read and flagged nothing in either
+mode through ten changes of mode. In a run that changed the mode every 120 seconds, C/N0
+was the same in both: 0.25 dB higher in low gain on average over 194 pairs of one signal
+in two neighbouring phases (standard error 0.23 dB, median difference 0). The signals were
+weak, 13 to 39 dB-Hz, so this was not a clear sky, and the receiver was still filling in
+after a cold start: the healthy signals it held through a phase rose from 21 to 44 over
+the seven phases, with no step at a change of mode. The 12-second signal was there in both
+modes as one step of path 2's PGA (3 dB) for a reading, 52 times, each 12 seconds or a
+multiple of it after the last to the second. It never took that path to its floor and
+never raised a flag.
+
 When a ZED-X20P warns of jamming, read the AGC of every block first (`rf lna`, or the
 `RF:` line): the floor on every block points at the gain ahead of the receiver before it
 points at interference, while a warning with other blocks well above the floor is about
@@ -353,7 +392,11 @@ what the antenna hears
 ([Isolate an X20 jamming warning](../docs/OBSERVER-TELEMETRY.md#isolate-an-x20-jamming-warning)).
 Neither the PGA nor a MON-SPAN spectrum includes the internal LNA's gain (interface
 description UBXDOC-304424225-19967, 3.14.8), so a survey taken in normal gain is not
-comparable in level with one taken in low gain: note the mode with a survey.
+comparable in level with one taken in low gain: note the mode with a survey. A change of
+mode also moved every block's AGC by 8 to 11 dB of PGA here, so for an enrolled observer
+it is a change of the RF path like a new antenna or cable: give the station a new
+`power_model_epoch` ([RECEPTION.md](../docs/RECEPTION.md)), which starts its AGC baseline
+again.
 
 ### Custom-board status LEDs
 

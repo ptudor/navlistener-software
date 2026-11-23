@@ -50,7 +50,12 @@
   An RF survey taken in normal gain is not comparable in level with one taken in low gain,
   and a jamming warning with the PGA at 3 dB on every path points at the gain ahead of the
   receiver before it points at interference (`esp32/README.md`, The ZED-X20P's LNA mode;
-  `docs/OBSERVER-TELEMETRY.md`, Isolate an X20 jamming warning).
+  `docs/OBSERVER-TELEMETRY.md`, Isolate an X20 jamming warning). A u-blox ANN-MB2 (23 dB
+  at the end of its 5 m cable) was in range in both modes: 13 / 13 / 11 dB in normal gain
+  and 24 / 22 / 19 dB in low gain, with no frequency flagged and the same C/N0 (0.25 dB
+  apart on average over 194 paired signals, standard error 0.23 dB). Lying beside the bare
+  board the same antenna heard 6 to 11 dB more and no satellite, which the receiver
+  flagged in normal gain, where the L1 path sat at its floor, and did not in low gain.
 - A ZED/X20 observer drives a status display on its display header. H3 takes the common
   128×64 SSD1306 I2C module at `0x3c`, which the firmware looks for every two seconds, so
   it can be fitted or removed while the board runs; a board without one logs a single line

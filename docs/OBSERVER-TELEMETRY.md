@@ -616,8 +616,17 @@ so a collector still sees every flag and must make the same judgement for itself
    levels directly only at matching gain. Inspect each feature relative to nearby
    bins across multiple sweeps. Compare the assessed centers, event starts and
    stops, and reception quality over those same windows. Use tracking counts or
-   per-satellite C/N₀ where available. A missing assessment or missing fix
-   report is unknown.
+   per-satellite C/N₀ where available: `rf signals` on the USB console lists
+   each signal's. A missing assessment or missing fix report is unknown.
+
+One such move, measured: an ANN-MB2 lying beside a bare ZED/X20 board read a PGA of
+3 / 5 / 5 dB in normal gain, with the two centers of the L1 path flagged and no signal
+code-locked. Moved away from the bench it read 13 / 13 / 11 dB with no center flagged
+and a fix. With each sweep's PGA taken off, the level beside the board had been 11 dB
+higher across the L1 path (17 dB between 1590 and 1600 MHz), 7 dB across the L5 path
+and 6 dB across the L2 path. The antenna was not returned, so what beside the board
+radiated was not narrowed further
+([the measurements](../esp32/README.md#the-zed-x20ps-lna-mode)).
 
 From the `go` directory, run
 `go run ./cmd/rfsurvey compare original.log moved.log returned.log` on USB logs
