@@ -26,9 +26,8 @@ type record struct {
 	RF         *ingest.RawRF `json:"rf"`
 }
 
-func decode(in io.Reader, out io.Writer) error {
+func scan(in io.Reader, visit func(record) error) error {
 	s := bufio.NewScanner(in)
-	enc := json.NewEncoder(out)
 	count := 0
 	for line := 1; s.Scan(); line++ {
 		before, body, found := strings.Cut(s.Text(), "RF evidence=")
@@ -56,7 +55,7 @@ func decode(in io.Reader, out io.Writer) error {
 				r.CapturedAt = &t
 			}
 		}
-		if err := enc.Encode(r); err != nil {
+		if err := visit(r); err != nil {
 			return err
 		}
 		count++
@@ -70,8 +69,19 @@ func decode(in io.Reader, out io.Writer) error {
 	return nil
 }
 
+func run(args []string, in io.Reader, out io.Writer) error {
+	if len(args) == 0 {
+		enc := json.NewEncoder(out)
+		return scan(in, func(r record) error { return enc.Encode(r) })
+	}
+	if args[0] == "compare" && (len(args) == 3 || len(args) == 4) {
+		return compare(args[1:], out)
+	}
+	return fmt.Errorf("usage: rfsurvey < console.log | rfsurvey compare original.log moved.log [returned.log]")
+}
+
 func main() {
-	if err := decode(os.Stdin, os.Stdout); err != nil {
+	if err := run(os.Args[1:], os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

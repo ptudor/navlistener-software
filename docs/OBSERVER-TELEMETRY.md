@@ -562,6 +562,48 @@ and intent require independent evidence. The u-blox *X20 HPG 2.02 interface
 description* (UBXDOC-304424225-19967, R03, protocol 50.10) defines the UBX
 fields in §§3.14.8, 3.17.2–3 and the sensitivity setting in §6.9.21.
 
+#### Isolate an X20 jamming warning
+
+1. While the warning is active, save the console and request `rf survey` several
+   times over a minute. Record the time, antenna position and cable route. Check
+   whether the fix is valid, how many satellites it uses and whether the antenna
+   supervisor reports an open or short circuit. An electrical fault calls for
+   checking the antenna, connector and cable first. A valid fix can coexist with
+   impaired tracking.
+2. With the receiver still powered, move the connected antenna away from the
+   board and nearby electronics. Keep the case, supply and receiver fixed, and
+   keep the antenna orientation and sky view as similar as practical. Mark when
+   the antenna comes to rest. Take another minute of surveys, then return it to
+   the original position and repeat. Record any unavoidable change in sky view
+   or cable routing.
+3. Compare the same frequencies on the same RF path with matching center and
+   span. Record the gain at each position. A repeatable change in the receiver's
+   gain is evidence that its front end is responding differently. Compare spectrum
+   levels directly only at matching gain. Inspect each feature relative to nearby
+   bins across multiple sweeps. Compare the assessed centers, event starts and
+   stops, and reception quality over those same windows. Use tracking counts or
+   per-satellite C/N₀ where available. A missing assessment or missing fix
+   report is unknown.
+
+From the `go` directory, run
+`go run ./cmd/rfsurvey compare original.log moved.log returned.log` on USB logs
+from the three resting windows. The report counts flags and assessments per
+frequency, lists the measured gains and checks which centers changed and
+reverted. With two logs it shows the initial comparison.
+
+| Observation | What the operator can do next |
+|---|---|
+| Some centers clear at the new spot while ATTENTION stays lit | Check whether those same centers flag again on return. A repeatable change narrows the placement effect to those signals. The centers that stay flagged still need a separate test. |
+| A peak weakens at the new spot and returns at the original spot, and the warning follows | This implicates pickup that depends on antenna or cable placement. Repeat a change to just the cable route or one nearby device to narrow the path. |
+| Moving the antenna head changes the same flags on return, and rerouting just the loose coax leaves them unchanged | At the original spot, leave the receiver running and switch one nearby nonessential electronic device off, then on. Check for the same flags and gain change in both directions. A match provides a specific device and its cabling to test. |
+| A peak follows the move while the same centers stay flagged | The move identifies a placement-sensitive feature. Investigate the remaining warning independently, including the other RF paths. |
+| More satellites are used or their C/N₀ improves, with similar spectra and the same warning | Record the improved reception and any change in sky view. Compare the warning on a second receiver observing the same feed at the same time. |
+| The warning and spectra persist at both positions | Try a known-good compatible antenna or cable at the same spot, changing one at a time. If they persist, compare receivers simultaneously. With an active antenna and a suitable GNSS splitter, arrange a single antenna-bias supply. A feature present at both independent receivers points toward their shared antenna, feed or RF environment. A feature confined to one warrants testing that receiver's power and board. |
+
+Report the measured impact and which change reproduced or cleared it. Comparing
+only the lamps on two receiver models leaves their detection thresholds and RF
+conditions unresolved.
+
 ### Septentrio receiver context
 
 On the P3 the mosaic-G5's SBF fills the same fields ([SBF-RECEIVER.md](../esp32/docs/SBF-RECEIVER.md)

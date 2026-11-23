@@ -234,6 +234,11 @@ holds the same private record an enrolled observer sends to the collector. To de
 a saved console log into newline-delimited JSON, run `go run ./cmd/rfsurvey < console.log`
 from the `go` directory. [Fields, units and interpretation](../docs/OBSERVER-TELEMETRY.md#x20-rf-evidence)
 
+When a customer asks what caused a warning, compare surveys with the connected
+antenna at its original position, at a second position and back at the original.
+The field guide explains how to use a repeatable change in the spectrum, flagged
+frequencies or reception to choose the next test. [Isolate an X20 jamming warning](../docs/OBSERVER-TELEMETRY.md#isolate-an-x20-jamming-warning)
+
 The USB console reports `bytes`, checksum-valid `UBX`, checksum-valid `NMEA`,
 and emitted `SFRBX` every ten seconds, including before WiFi provisioning.
 Zero bytes calls for checking GNSS power and the UART path; bytes without valid
