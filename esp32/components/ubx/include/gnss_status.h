@@ -63,6 +63,27 @@ bool gnss_status_same_place(int32_t lat_a, int32_t lon_a, int32_t lat_b, int32_t
 uint8_t gnss_status_expected(const gnss_status_t *s, int64_t now_ms, uint8_t learned);
 void gnss_status_leds(const gnss_status_t *s, int64_t now_ms, uint8_t learned,
                       bool uplink, uint8_t *green, uint8_t *yellow);
+// What about the receiver needs an operator's attention at now_ms, as flags. The panel's
+// ATTENTION lamp is lit while any is set and flashes for GNSS_ATTENTION_FLASHING. Each is
+// the receiver's own report, at most 15 s old: nothing stale is an alarm, except silence
+// itself.
+enum {
+    // No report for 15 s. A receiver is given GNSS_ATTENTION_START_MS from the start of the
+    // observer before its silence counts.
+    GNSS_ATTENTION_SILENT = 1,
+    GNSS_ATTENTION_ANTENNA_SHORT = 2,     // an RF block's antenna supervisor reports a short circuit
+    GNSS_ATTENTION_ANTENNA_OPEN = 4,      // or an open one
+    GNSS_ATTENTION_JAMMING = 8,           // jamming indicated; the receiver still has its fix
+    GNSS_ATTENTION_JAMMING_CRITICAL = 16, // jamming indicated and no fix
+    GNSS_ATTENTION_SPOOFING = 32,         // spoofing indicated, once or several times over
+};
+#define GNSS_ATTENTION_FLASHING (GNSS_ATTENTION_JAMMING_CRITICAL | GNSS_ATTENTION_SPOOFING)
+#define GNSS_ATTENTION_START_MS 60000
+uint8_t gnss_status_attention(const gnss_status_t *s, int64_t now_ms);
+// The flags in words, most urgent first, for a log line: "jamming warning, antenna short".
+// Returns the length written, without the NUL it always adds when size is not zero; "none"
+// for no flag.
+size_t gnss_status_attention_text(uint8_t flags, char *out, size_t size);
 // Build fresh match evidence; an incomplete report invalidates its comparison.
 void gnss_status_compare(const gnss_status_t *s, const nr_expectation_t *e,
                          nr_sample_t *sample, int64_t now_ms);

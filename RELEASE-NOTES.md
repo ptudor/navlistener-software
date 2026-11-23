@@ -1,5 +1,20 @@
 # Unreleased
 
+- An observer with the 162mm panel lights its red ATTENTION lamp for what the receiver
+  itself reports. Until now the lamp followed only the reception alarm, the observer's check
+  against the collector's forecast, so a receiver that reported jamming lit nothing. It is
+  now lit while the receiver indicates jamming or spoofing, while an RF block's antenna
+  supervisor reports a short or an open circuit, while the receiver has sent no navigation
+  solution and no satellite list for 15 seconds (once the observer has run for a minute),
+  while the INA3221 holds a rail alert, and while a reception alarm is active. For critical
+  jamming, which is jamming with no fix, and for spoofing it flashes with the alarm
+  pattern's 250 ms; otherwise it is steady. Each of the receiver's causes is held for ten
+  seconds after its last report, and the console names the causes whenever they change
+  (`attention: jamming warning; the panel's ATTENTION lamp is lit`). The lamp shows the
+  receiver's own flags as it gives them and does not say where the energy comes from; the
+  telemetry is unchanged. On the bench a ZED-X20P reported a jamming warning with its AGC
+  at 7 % on all three RF paths, and the lamp lit with it (`esp32/README.md`, The ATTENTION
+  lamp).
 - An MCP79412 observer can show that its backup cell works. The part cannot sense its cell,
   but it stamps each loss of main power from its own calendar, when the power goes and when
   it returns. The firmware now saves each record it finds on a running clock and clears it,

@@ -149,6 +149,13 @@ unmistakable panel-wide flashing pattern for jamming, spoofing, clock-integrity,
 operator-attention alarms. The two discrete red LEDs remain narrowly defined: always-on
 `3V3_SYS` present and hardware-buffered GNSS PPS present.
 
+The 162mm panel's third driver carries that indication as one lamp, ATTENTION. The
+firmware lights it while the receiver reports jamming, spoofing or an antenna fault, while
+the receiver is silent, while a supply rail is in alert and while a reception alarm is
+active, and flashes it for critical jamming and for spoofing
+([the ATTENTION lamp](../esp32/README.md#the-attention-lamp)). It names no cause itself: the
+console and the telemetry do.
+
 Run them lean: 5–8 mA per channel is plenty behind a diffuser, and sixteen channels at 20 mA is
 320 mA of heat in an enclosure that already runs hot. `TLC5916`'s shift-then-latch structure
 means all sixteen change on one edge, so animation cannot tear.

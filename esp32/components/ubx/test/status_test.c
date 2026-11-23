@@ -142,11 +142,77 @@ static void satellites_by_name(void)
     s.satellite_count = 0;
     assert(gnss_status_satellites_text(&s, text, sizeof text) == 0 && !text[0]);
 }
+// What lights the panel's ATTENTION lamp: the receiver's own reports while they are fresh,
+// and its silence.
+static void attention(void)
+{
+    static gnss_status_t s;
+    char text[96];
+    memset(&s, 0, sizeof s);
+    // A receiver that has said nothing is given a minute from the start before that counts.
+    assert(gnss_status_attention(&s, 0) == 0 && gnss_status_attention(&s, GNSS_ATTENTION_START_MS - 1) == 0);
+    assert(gnss_status_attention(&s, GNSS_ATTENTION_START_MS) == GNSS_ATTENTION_SILENT);
+    // Reporting: a navigation solution, valid or not, or a satellite list. Fifteen seconds
+    // without either is silence again.
+    uint8_t pvt[92] = {0};
+    gnss_status_feed(&s, 1, 7, pvt, sizeof pvt, 100000);
+    assert(!s.fix_valid && gnss_status_attention(&s, 100000) == 0 && gnss_status_attention(&s, 115000) == 0);
+    assert(gnss_status_attention(&s, 115001) == GNSS_ATTENTION_SILENT);
+    uint8_t sat[8] = {0}; sat[4] = 1;
+    gnss_status_feed(&s, 1, 0x35, sat, sizeof sat, 120000);
+    assert(gnss_status_attention(&s, 130000) == 0);
+
+    // MON-RF: the antenna supervisor of any block, and the jamming flag where SEC-SIG is not used.
+    uint8_t rf[4 + 2*24] = {0}; rf[1] = 2;
+    rf[4+1] = 1; rf[4+2] = 2; rf[28+1] = 1; rf[28+2] = 2;              // both OK, no jamming
+    gnss_status_feed(&s, 0x0a, 0x38, rf, sizeof rf, 130000);
+    assert(gnss_status_attention(&s, 130000) == 0);
+    rf[28+2] = 3; gnss_status_feed(&s, 0x0a, 0x38, rf, sizeof rf, 130100); // second block SHORT
+    assert(gnss_status_attention(&s, 130100) == GNSS_ATTENTION_ANTENNA_SHORT);
+    rf[4+2] = 4; gnss_status_feed(&s, 0x0a, 0x38, rf, sizeof rf, 130200);  // and the first OPEN
+    assert(gnss_status_attention(&s, 130200) == (GNSS_ATTENTION_ANTENNA_SHORT | GNSS_ATTENTION_ANTENNA_OPEN));
+    rf[4+2] = rf[28+2] = 2; rf[28+1] = 2; gnss_status_feed(&s, 0x0a, 0x38, rf, sizeof rf, 130300);
+    assert(gnss_status_attention(&s, 130300) == GNSS_ATTENTION_JAMMING);
+    rf[4+1] = 3; gnss_status_feed(&s, 0x0a, 0x38, rf, sizeof rf, 130400);
+    assert(gnss_status_attention(&s, 130400) == GNSS_ATTENTION_JAMMING_CRITICAL);
+    // A report older than 15 s lights nothing: the satellites and the solution are stale by
+    // then too, so what is left is the silence.
+    assert(gnss_status_attention(&s, 130400 + 15001) == GNSS_ATTENTION_SILENT);
+    // NAV-STATUS: spoofing indicated (2) or several indications (3); none (1) and unknown (0) are not.
+    uint8_t ns[16] = {0};
+    for (unsigned state = 0; state < 4; state++) {
+        ns[7] = (uint8_t)(state << 3);
+        gnss_status_feed(&s, 1, 3, ns, sizeof ns, 200000 + state);
+        gnss_status_feed(&s, 1, 7, pvt, sizeof pvt, 200000 + state);
+        assert(gnss_status_attention(&s, 200000 + state) == (state >= 2 ? GNSS_ATTENTION_SPOOFING : 0));
+    }
+    // SEC-SIG's state where the receiver sends it: warning, then none.
+    uint8_t sec[4] = {2, 1 | 2 << 1, 0, 0};
+    gnss_status_feed(&s, 0x27, 9, sec, sizeof sec, 200010);
+    assert(gnss_status_attention(&s, 200010) == (GNSS_ATTENTION_SPOOFING | GNSS_ATTENTION_JAMMING));
+    sec[1] = 1 | 1 << 1; gnss_status_feed(&s, 0x27, 9, sec, sizeof sec, 200020);
+    assert(gnss_status_attention(&s, 200020) == GNSS_ATTENTION_SPOOFING);
+    assert((GNSS_ATTENTION_FLASHING & GNSS_ATTENTION_SPOOFING) && (GNSS_ATTENTION_FLASHING & GNSS_ATTENTION_JAMMING_CRITICAL) &&
+           !(GNSS_ATTENTION_FLASHING & GNSS_ATTENTION_JAMMING));
+
+    // In words, most urgent first; what does not fit whole is left out.
+    assert(gnss_status_attention_text(0, text, sizeof text) == 4 && !strcmp(text, "none"));
+    assert(gnss_status_attention_text(GNSS_ATTENTION_JAMMING, text, sizeof text) == 15 && !strcmp(text, "jamming warning"));
+    const uint8_t all = GNSS_ATTENTION_SILENT | GNSS_ATTENTION_ANTENNA_SHORT | GNSS_ATTENTION_ANTENNA_OPEN |
+                        GNSS_ATTENTION_JAMMING | GNSS_ATTENTION_JAMMING_CRITICAL | GNSS_ATTENTION_SPOOFING;
+    char every[128];
+    gnss_status_attention_text(all, every, sizeof every);
+    assert(!strcmp(every, "spoofing indicated, jamming critical, jamming warning, antenna short, antenna open, receiver silent"));
+    assert(gnss_status_attention_text(all, text, 30) == strlen("spoofing indicated") && !strcmp(text, "spoofing indicated"));
+    assert(gnss_status_attention_text(all, text, 3) == 0 && !text[0] && gnss_status_attention_text(all, text, 0) == 0);
+    assert(gnss_status_attention_text(0, text, 3) == 0 && !text[0]);
+}
 int main(void)
 {
     reception_evidence();
     rf_and_signals();
     satellites_by_name();
+    attention();
     gnss_status_t timing={0}; uint8_t tp[16]={0}; tp[14]=3; tp[15]=0x10;
     gnss_status_feed(&timing,0x0d,1,tp,sizeof tp,100);
     assert(timing.tp_valid && timing.tp_flags==3 && timing.tp_ref==0x10 && timing.tp_ms==100);
@@ -208,5 +274,5 @@ int main(void)
     assert(gnss_status_same_place(377000000,-1224000000,377010000,-1224010000));
     assert(!gnss_status_same_place(377000000,-1224000000,357000000,1397000000));
     assert(gnss_status_same_place(0,1799999000,0,-1799999000));
-    puts("GNSS status: tracking, stale data, regional expectations, learned override, movement, RF blocks, SEC-SIG jamming, signal kinds and satellites by name passed");
+    puts("GNSS status: tracking, stale data, regional expectations, learned override, movement, RF blocks, SEC-SIG jamming, signal kinds, satellites by name and the attention flags passed");
 }

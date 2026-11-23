@@ -82,6 +82,13 @@ static bool pwm_ready;
 // The panel's boot sequence (panel_boot.h): the identity from observer_board_manifest, the
 // rest from observer_board_start, before the refresh task that shows it starts.
 static panel_boot_t boot_sequence;
+// What needs an operator's attention besides a reception alarm, from the board task alone
+// (attention_poll): the receiver's own reports (gnss_status_attention) and a rail alert. The
+// panel refresh task lights the ATTENTION lamp from panel_attention, steadily or flashing.
+enum { PANEL_ATTENTION_OFF, PANEL_ATTENTION_ON, PANEL_ATTENTION_FLASHING };
+static atomic_uint panel_attention;
+static uint8_t receiver_attention;
+static bool rail_attention;
 // The RTK_STAT pin's latest change of state (rtk_stat.h), from the panel refresh task, which
 // samples it for the RTK lamp: RTK_STAT_REPORT | changes << 8 | state, taken by the board
 // task to log; 0 when none waits.
@@ -673,13 +680,17 @@ static void panel_refresh_task(void *arg)
         // while RTK is fixed, toggling while corrections are in use), sampled every 250 ms so a
         // toggling pin blinks the lamp rather than rewriting the chain at every pass, and the
         // same samples are the console's RTK_STAT report (rtk_stat.h); ATTENTION is lit while
-        // an alarm pattern is active.
+        // an alarm pattern is active or the board task has a cause for an operator, and flashes
+        // at the alarm pattern's pace for critical jamming and for spoofing.
         if(board&&board->rtk_stat>=0&&tick++%10==0){
             const bool high=gpio_get_level(board->rtk_stat)!=0;rtk=!high;
             if(rtk_stat_sample(&rtk_pin,high,esp_timer_get_time()/1000))
                 atomic_store(&rtk_stat_report,RTK_STAT_REPORT|(rtk_pin.window_changes>0xffff?0xffffu:rtk_pin.window_changes)<<8|rtk_pin.state);
         }
-        uint8_t status=board&&board->panel_status_byte?(rtk?PANEL_STATUS_RTK:0)|(alarm?PANEL_STATUS_ATTENTION:0):0;
+        const unsigned attention=atomic_load(&panel_attention);
+        const bool attention_lit=attention==PANEL_ATTENTION_FLASHING?((uint64_t)esp_timer_get_time()/1000/250)%2!=0:
+                                 alarm||attention==PANEL_ATTENTION_ON;
+        uint8_t status=board&&board->panel_status_byte?(rtk?PANEL_STATUS_RTK:0)|(attention_lit?PANEL_STATUS_ATTENTION:0):0;
         panel_lamps_t lamps;
         if(booting&&(booting=panel_boot_lamps(&boot_sequence,(uint32_t)(esp_timer_get_time()/1000-boot_ms),&lamps))){
             status=lamps.status;green=lamps.green;yellow=lamps.yellow;}
@@ -1103,6 +1114,47 @@ static void timing_poll(const gnss_status_t *status)
     hex[2*length]=0;
     ESP_LOGI("pulse_timing","sample=%s",hex);
 }
+// A cause stays held this long after its last report, so that a moment of jamming is a lamp
+// an eye can catch.
+#define ATTENTION_HOLD_MS 10000
+static uint8_t attention_hold(uint8_t flags, int64_t now)
+{
+    static int64_t seen_ms[8];
+    static uint8_t seen;
+    uint8_t held = 0;
+    for (unsigned b = 0; b < 8; b++) {
+        const uint8_t bit = (uint8_t)(1u << b);
+        if (flags & bit) { seen_ms[b] = now; seen |= bit; }
+        if ((seen & bit) && now - seen_ms[b] < ATTENTION_HOLD_MS) held |= bit;
+    }
+    return held;
+}
+// Each pass: what needs attention now, for the lamp, and one log line when that changes. A
+// rail alert that persists is logged again at every rail sample, 30 s apart at most, so it
+// counts for a minute from its last line.
+static void attention_poll(const gnss_status_t *status, uint8_t alarm, int64_t now)
+{
+    receiver_attention = attention_hold(gnss_status_attention(status, now), now);
+    rail_attention = rail_alert_logged && now - rail_alert_logged_ms < 60000;
+    const bool flashing = (receiver_attention & GNSS_ATTENTION_FLASHING) != 0;
+    atomic_store(&panel_attention, flashing ? PANEL_ATTENTION_FLASHING :
+                 receiver_attention || rail_attention ? PANEL_ATTENTION_ON : PANEL_ATTENTION_OFF);
+    static unsigned logged; // the receiver's flags; bit 8 the reception alarm, bit 9 a rail alert
+    const unsigned causes = receiver_attention | (alarm ? 0x100u : 0) | (rail_attention ? 0x200u : 0);
+    if (causes == logged) return;
+    logged = causes;
+    const bool lamp = board && board->panel_status_byte;
+    if (!causes) {
+        ESP_LOGI(TAG, "attention: nothing now%s", lamp ? "; the panel's ATTENTION lamp is off" : "");
+        return;
+    }
+    char text[160] = "";
+    size_t used = receiver_attention ? gnss_status_attention_text(receiver_attention, text, sizeof text) : 0;
+    if (alarm) used += (size_t)snprintf(text + used, sizeof text - used, "%sreception alarm", used ? ", " : "");
+    if (rail_attention) (void)snprintf(text + used, sizeof text - used, "%spower rail alert", used ? ", " : "");
+    ESP_LOGW(TAG, "attention: %s%s", text, !lamp ? "" : flashing ? "; the panel's ATTENTION lamp flashes" :
+             "; the panel's ATTENTION lamp is lit");
+}
 // Measured on xtensa with -fstack-usage: with the receiver status, the journal copy and
 // reception's wire scratch in static storage, the deepest measured path (board_task 192 B,
 // reception_poll 1168 B and the non-inlined nrp_decode temporary 2128 B) is about 3.4 KiB.
@@ -1163,6 +1215,7 @@ static void board_task(void *arg)
         if (expander_listed && io_expander_poll() && rails_listed) rail_alert_read(now);
         // The direct line stays low while an alert is latched, whether or not its edge woke us.
         if (rail_alert_direct && gpio_get_level(board->pwr_alert_n) == 0) rail_alert_read(now);
+        attention_poll(&status, alarm, now);
         rtk_stat_log();
         unsigned requested = atomic_load(&brightness);
         bool brightness_changed = requested != applied_brightness;

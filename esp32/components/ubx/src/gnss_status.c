@@ -220,6 +220,49 @@ void gnss_status_leds(const gnss_status_t *s, int64_t now, uint8_t learned,
     }
 }
 
+uint8_t gnss_status_attention(const gnss_status_t *s, int64_t now)
+{
+    uint8_t flags = 0;
+    // fix_ms is the uptime of the last navigation solution, valid or not; 0 before the first.
+    const bool reporting = (s->satellites_valid && fresh(s->satellites_ms, now)) || (s->fix_ms > 0 && fresh(s->fix_ms, now));
+    if (!reporting && now >= GNSS_ATTENTION_START_MS) flags |= GNSS_ATTENTION_SILENT;
+    if (s->rf_blocks_valid && fresh(s->rf_blocks_ms, now))
+        for (unsigned b = 0; b < s->rf_blocks; b++) {
+            if (s->rf_block[b].ant_status == 3) flags |= GNSS_ATTENTION_ANTENNA_SHORT;
+            if (s->rf_block[b].ant_status == 4) flags |= GNSS_ATTENTION_ANTENNA_OPEN;
+        }
+    if (s->rf_valid && fresh(s->rf_ms, now)) {
+        if ((s->jam & 3) == 2) flags |= GNSS_ATTENTION_JAMMING;
+        if ((s->jam & 3) == 3) flags |= GNSS_ATTENTION_JAMMING_CRITICAL;
+    }
+    if (s->status_valid && fresh(s->status_ms, now) && (s->spoof & 3) >= 2) flags |= GNSS_ATTENTION_SPOOFING;
+    return flags;
+}
+
+size_t gnss_status_attention_text(uint8_t flags, char *out, size_t size)
+{
+    static const struct { uint8_t flag; const char *text; } names[] = {
+        {GNSS_ATTENTION_SPOOFING, "spoofing indicated"}, {GNSS_ATTENTION_JAMMING_CRITICAL, "jamming critical"},
+        {GNSS_ATTENTION_JAMMING, "jamming warning"}, {GNSS_ATTENTION_ANTENNA_SHORT, "antenna short"},
+        {GNSS_ATTENTION_ANTENNA_OPEN, "antenna open"}, {GNSS_ATTENTION_SILENT, "receiver silent"},
+    };
+    size_t used = 0;
+    if (!size) return 0;
+    out[0] = 0;
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        if (!(flags & names[i].flag)) continue;
+        const int n = snprintf(out + used, size - used, "%s%s", used ? ", " : "", names[i].text);
+        if (n < 0 || (size_t)n >= size - used) { out[used] = 0; return used; } // what fits whole
+        used += (size_t)n;
+    }
+    if (!used) {
+        const int n = snprintf(out, size, "none");
+        used = n > 0 && (size_t)n < size ? (size_t)n : 0;
+        if (!used) out[0] = 0;
+    }
+    return used;
+}
+
 size_t gnss_status_satellites_text(const gnss_status_t *s, char *out, size_t size)
 {
     // RINEX's letter for each UBX gnssId, in the order the list is written.

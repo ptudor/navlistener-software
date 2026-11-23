@@ -294,6 +294,32 @@ coalesced to at most one flash commit per minute; a sudden reset can lose
 observations still waiting for that commit. Unsupported constellations stay
 off. The fitted NEO-M9N reports no NavIC support.
 
+### The ATTENTION lamp
+
+A panel with the status driver (the 162mm panel, on the ZED/X20 and the P3) has a red
+ATTENTION lamp. It is lit while any of these holds, and the console names them in one line
+whenever the set changes, for example `attention: jamming warning; the panel's ATTENTION
+lamp is lit`:
+
+| Cause | From |
+|---|---|
+| spoofing indicated | the receiver: UBX-NAV-STATUS `spoofDetState` 2 or 3, or a Septentrio RFStatus authenticity flag |
+| jamming critical | the receiver: jamming indicated and no fix (UBX-SEC-SIG, or MON-RF where the receiver sends no SEC-SIG) |
+| jamming warning | the receiver: jamming indicated, the fix held |
+| antenna short, antenna open | an RF block's antenna supervisor in UBX-MON-RF |
+| receiver silent | no navigation solution and no satellite list for 15 s, once the observer has run for a minute |
+| reception alarm | the observer's own check against the collector's forecast ([Reception alarms](#reception-alarms)), whose lamps also alternate |
+| power rail alert | the INA3221's Warning or Critical limit on a supply rail, for a minute after its last report |
+
+For critical jamming and for spoofing the lamp flashes, 250 ms on and 250 ms off; for the
+rest it is steady. The receiver's reports count while they are at most 15 s old, and each of
+its causes is held for 10 s after its last report, so a moment of jamming is a lamp an eye
+can catch. These are the receiver's own flags, shown as it gives them: a jamming warning is
+the receiver's judgement of its RF input and does not say where the energy comes from. They
+are in the telemetry as before; the lamp adds nothing to it. A panel without the status
+driver has no such lamp, and trouble with the network is not among its causes: the uplink
+column shows that.
+
 ### Peripheral and random-number diagnostics
 
 Startup probes the shared I2C bus and reads sensor identification registers.
@@ -392,7 +418,7 @@ second, while the wiper filter settles, and a reading at or above
 place. The board saves each applied brightness change, with the trimmer's position,
 in NVS and restores it before enabling PWM on subsequent boots. The ZED/X20's front panel is its only chain: GPIO1 carries a 24-bit frame (status, amber,
 green) whose status byte lights RTK while the receiver's RTK_STAT pin is low and ATTENTION
-while an alarm pattern is active. The console names what the RTK lamp shows: the same
+while something needs an operator ([The ATTENTION lamp](#the-attention-lamp)). The console names what the RTK lamp shows: the same
 250 ms samples of RTK_STAT (GPIO40), classified over 10-second windows, give one line
 whenever the state changes, beginning with the first window: `RTK_STAT high: no
 carrier-phase solution`, `RTK_STAT low: RTK fixed`, or `RTK_STAT toggling, N changes in
