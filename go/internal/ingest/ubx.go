@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"io"
 	"math"
@@ -38,6 +39,14 @@ func scanUBX(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 	br := bufio.NewReaderSize(r, 1<<16)
 	var epoch solutionAssembler
 	var secSig secSigJamming
+	emitRFDetail := func(b []byte, stamp time.Time) {
+		rf, err := decodeRFStats(b)
+		if err != nil {
+			onErr("ubx_rf_detail")
+			return
+		}
+		emit(&RawFrame{Source: source, Recv: stamp, MsgType: TelemJammingStats, Bytes: b, RF: rf})
+	}
 	emitSolution := func(e *completedEpoch) {
 		if e != nil {
 			emit(solutionFrame(e, source))
@@ -120,8 +129,32 @@ func scanUBX(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 				onErr("ubx_monrf")
 			}
 		case cls == ubxClassSEC && id == ubxIDSECSIG:
+			continuous := secSig.seen && secSig.age < 2
 			if !secSig.observe(body) {
 				onErr("ubx_secsig")
+				continue
+			}
+			body[0], body[1], body[2] = 2, body[0], body[1]
+			secSig.repeats++
+			if !continuous || !bytes.Equal(body, secSig.last) || secSig.repeats >= 30 {
+				secSig.last, secSig.repeats = body, 0
+				emitRFDetail(body, now())
+			}
+		case cls == ubxClassSEC && id == 0x10:
+			emitRFDetail(append([]byte{2, id}, body...), now())
+		case cls == 0x06 && id == 0x8b:
+			if len(body) == 9 && body[0] == 1 && body[1] == 0 && binary.LittleEndian.Uint32(body[4:]) == 0x10f60051 {
+				emitRFDetail([]byte{2, 0x51, body[8]}, now())
+			}
+		case cls == ubxClassMON && id == 0x31:
+			if len(body) < 4 || body[0] != 0 || body[1] == 0 || len(body) != 4+272*int(body[1]) {
+				onErr("ubx_monspan")
+				continue
+			}
+			stamp := now()
+			for i := 0; i < int(body[1]); i++ {
+				row := body[4+272*i : 4+272*(i+1)]
+				emitRFDetail(append([]byte{2, id, byte(i), body[1]}, row...), stamp)
 			}
 		case cls == ubxClassMON && id == ubxIDMONHW:
 			if f := parseMONHW(body, source, now()); f != nil {
@@ -333,6 +366,8 @@ func parseMONRF(p []byte, source string, recv time.Time) *RawFrame {
 type secSigJamming struct {
 	state, age int
 	seen       bool
+	last       []byte
+	repeats    int
 }
 
 // observe takes one SEC-SIG payload; false when it is not a version 2 or 3 body.

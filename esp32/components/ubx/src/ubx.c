@@ -74,16 +74,30 @@ static void emit_sfrbx(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
     atomic_fetch_add_explicit(&p->frames_nav, 1, memory_order_relaxed); /* regression fix */
 }
 
-// observe_secsig: UBX-SEC-SIG version 2 or 3 (version U1, sigSecFlags X1 [bit 0
-// jamDetEnabled, bits 2..1 jamState], reserved U1, jamNumCentFreqs U1, then 4 bytes per
-// centre frequency). From the X20's HPG 2.00 on, MON-RF's jammingState always reads 0 and
-// SEC-SIG carries it: 0 unknown, 1 OK, 2 warning, and 0 while detection is disabled.
-static void observe_secsig(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
+// Send the native detector assessment, event history or spectrum. SEC-SIG also
+// supplies the receiver-wide state used by the original MON-RF record below.
+static void emit_rf_details(ubx_parser_t *p)
 {
-    if (len < 4 || (payload[0] != 2 && payload[0] != 3) || len != 4u + 4u * payload[3]) return;
-    p->sec_sig = true;
-    p->sec_sig_jam = (payload[1] & 1) ? (payload[1] >> 1) & 3 : 0;
-    p->sec_sig_age = 0;
+    uint8_t *body = p->scratch + GNF1_RECORD_HDR;
+    uint64_t stamp = p->now(); // all paths of the same sweep share its arrival time
+    for (unsigned path = 0;; path++) {
+        size_t len = rf_detail_encode(body, GNF1_MAX_RAW, p->cls, p->id, p->payload, p->len, path);
+        if (!len) return;
+        if (p->cls == UBX_CLASS_SEC && p->id == UBX_ID_SECSIG) {
+            bool continuous = p->sec_sig && p->sec_sig_age < 2;
+            p->sec_sig = true;
+            p->sec_sig_jam = (body[2] & 1) ? (body[2] >> 1) & 3 : 0;
+            p->sec_sig_age = 0;
+            if (!continuous) p->security_cache.length = 0;
+            if (!rf_security_due(&p->security_cache, body, len)) return;
+        }
+        gnf1_be64(p->scratch, stamp);
+        memset(p->scratch + 8, 0, 4);
+        p->scratch[12] = GNF1_T_JAMMING;
+        p->emit(p->scratch, GNF1_RECORD_HDR + len, p->ctx);
+        atomic_fetch_add_explicit(&p->frames_telem, 1, memory_order_relaxed);
+        if (p->rf_detail) p->rf_detail(body, len);
+    }
 }
 
 // emit_monrf: UBX-MON-RF (F9+) -> JammingStats (0x05). Layout: version U1, nBlocks U1,
@@ -182,7 +196,9 @@ static void dispatch(ubx_parser_t *p)
     if (p->observe) p->observe(p->cls, p->id, p->payload, p->len, p->observe_ctx);
     if (p->cls == UBX_CLASS_RXM && p->id == UBX_ID_SFRBX)      emit_sfrbx(p, p->payload, p->len);
     else if (p->cls == UBX_CLASS_MON && p->id == UBX_ID_MONRF) emit_monrf(p, p->payload, p->len);
-    else if (p->cls == UBX_CLASS_SEC && p->id == UBX_ID_SECSIG) observe_secsig(p, p->payload, p->len);
+    else if ((p->cls == UBX_CLASS_SEC && (p->id == UBX_ID_SECSIG || p->id == 0x10)) ||
+             (p->cls == UBX_CLASS_MON && p->id == 0x31) ||
+             (p->cls == 0x06 && p->id == 0x8b)) emit_rf_details(p);
     else if (p->cls == UBX_CLASS_MON && p->id == UBX_ID_MONHW) emit_monhw(p, p->payload, p->len);
     else if (p->cls == UBX_CLASS_NAV && p->id == UBX_ID_NAVSAT) emit_navsat(p, p->payload, p->len);
     else if (p->cls == UBX_CLASS_NAV) {

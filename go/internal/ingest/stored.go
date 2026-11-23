@@ -41,8 +41,7 @@ func StoredFrame(in StoredInput) (*RawFrame, error) {
 		f.RF.Sats, err = decodeReceptionData(in.Raw)
 	case in.Origin == "rf" && in.Kind == "jamming":
 		f.MsgType = TelemJammingStats
-		f.RF = &RawRF{}
-		f.RF.Bands, err = decodeJammingStats(in.Raw)
+		f.RF, err = decodeRFStats(in.Raw)
 	case in.Origin == "rf" && in.Kind == "solution":
 		f.MsgType = TelemReceiverSolution
 		f.Solution, err = decodeReceiverSolution(in.Raw)

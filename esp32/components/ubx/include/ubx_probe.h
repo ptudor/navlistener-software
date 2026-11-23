@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 size_t ubx_poll_version(uint8_t out[8]);
+size_t ubx_get_ram(uint8_t out[16], uint32_t key);
 // UBX-SEC-UNIQID: the poll, and the answer's chip ID as lower-case hex (10 or 12 digits).
 size_t ubx_poll_unique_id(uint8_t out[8]);
 bool ubx_unique_id(const uint8_t *body, size_t len, char out[13]);

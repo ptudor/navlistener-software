@@ -40,7 +40,14 @@ static bool sbf_mode;
 static receiver_sbf_pins_t sbf_pins = {.rts = -1, .cts = -1, .reset = -1};
 static atomic_uint s_ticks;
 static atomic_bool snapshot_requested;
+static atomic_bool rf_requested;
 void receiver_request_snapshot(void) {atomic_store(&snapshot_requested,true);}
+bool receiver_request_rf_survey(void)
+{
+    if (!module || strcmp(module, "ZED-X20P")) return false;
+    atomic_store(&rf_requested, true);
+    return true;
+}
 static bool version_seen, expected_model, unique_id_logged;
 static int cfg_ack;
 static gnss_status_t health = {.supported = 0x6f}, snapshot = {.supported = 0x6f};
@@ -92,6 +99,57 @@ static void poll_unique_id(void)
     uint8_t pkt[8];
     size_t n = ubx_poll_unique_id(pkt);
     uart_write_bytes(RX_UART, pkt, n);
+}
+static void poll_message(uint8_t cls, uint8_t id)
+{
+    uint8_t pkt[8] = {0xb5, 0x62, cls, id, 0, 0, 0, 0};
+    for (size_t i = 2; i < 6; i++) { pkt[6] += pkt[i]; pkt[7] += pkt[6]; }
+    uart_write_bytes(RX_UART, pkt, sizeof pkt);
+}
+
+// Same private body that the collector decodes. A customer can capture a survey over
+// USB even before enrollment. Static storage keeps the receiver task's stack bounded.
+static void log_rf_detail(const uint8_t *body, size_t len)
+{
+    static const char digits[] = "0123456789abcdef";
+    static char hex[2 * GNF1_MAX_RAW + 1];
+    for (size_t i = 0; i < len; i++) {
+        hex[2*i] = digits[body[i] >> 4];
+        hex[2*i+1] = digits[body[i] & 15];
+    }
+    hex[2*len] = 0;
+    ESP_LOGI(TAG, "RF evidence=%s", hex);
+    if (body[1] == RF_SENSITIVITY)
+        ESP_LOGI(TAG, "RF jamming detector high sensitivity=%s (RAM)", body[2] ? "on" : "off");
+    if (body[1] == 0x10) {
+        static const char *const changes[] = {"started", "stopped", "triggered", "timed out"};
+        ESP_LOGI(TAG, "SEC-SIGLOG: %u recorded events", body[3]);
+        for (size_t off = 10; off < len; off += 8) {
+            uint8_t detection = body[off+4], event = body[off+5];
+            const char *change = event < sizeof changes / sizeof *changes ? changes[event] : "unknown";
+            ESP_LOGI(TAG, "SEC-SIGLOG: %s %s age_s=%lu detection=%u event=%u",
+                     detection == 4 ? "jamming" : "security indication", change,
+                     (unsigned long)rf_le32(body + off), detection, event);
+        }
+    }
+    if (body[1] == 0x31)
+        ESP_LOGI(TAG, "MON-SPAN: path=%u center_Hz=%lu span_Hz=%lu resolution_Hz=%lu PGA_dB=%u",
+                 body[2], (unsigned long)rf_le32(body + 268), (unsigned long)rf_le32(body + 260),
+                 (unsigned long)rf_le32(body + 264), body[272]);
+    if (body[1] == 2 || body[1] == 3) {
+        static char centers[512];
+        size_t used = 0;
+        centers[0] = 0;
+        for (size_t off = 4; off < len && used < sizeof centers; off += 4) {
+            uint32_t word = rf_le32(body + off);
+            int n = snprintf(centers + used, sizeof centers - used, " %lu=%s",
+                             (unsigned long)(word & RF_CENTER_KHZ), word & RF_JAMMED ? "flagged" : "clear");
+            if (n < 0) break;
+            used += (size_t)n;
+        }
+        ESP_LOGI(TAG, "SEC-SIG: detector=%s state=%u assessed=%u centers (kHz):%s",
+                 body[2] & 1 ? "on" : "off", (body[2] >> 1) & 3, body[3], centers);
+    }
 }
 static const char *antenna_status(uint8_t v)
 {
@@ -239,6 +297,8 @@ static void rx_task(void *arg)
     int switched_from = 0; // the rate the receiver was found at, when it was moved to CONFIG_NVF_RX_BAUD
     unsigned acknowledged = 0;
     int64_t cfg_deadline = 0, rf_seen_ms = 0;
+    int64_t last_survey = -60000;
+    uint32_t survey_event = 0;
     esp_task_wdt_add(NULL);
     for (;;) {
         esp_task_wdt_reset();
@@ -249,12 +309,27 @@ static void rx_task(void *arg)
             for (int i = 0; i < n; i++) if (nmea_probe_feed(&nmea, buf[i])) nmea_count++;
         }
         int64_t now = esp_timer_get_time() / 1000;
-        if(atomic_exchange(&snapshot_requested,false)) {
+        bool requested = atomic_exchange(&snapshot_requested,false);
+        if(requested) {
             const uint8_t polls[][2]={{1,0x35},{1,0x43},{0x0a,0x38},{1,3},{1,7}};
-            for(unsigned i=0;i<sizeof polls/sizeof polls[0];i++) {
-                uint8_t packet[8]={0xb5,0x62,polls[i][0],polls[i][1],0,0,0,0};
-                for(unsigned j=2;j<6;j++){packet[6]+=packet[j];packet[7]+=packet[6];}
-                uart_write_bytes(RX_UART,packet,sizeof packet);
+            for(unsigned i=0;i<sizeof polls/sizeof polls[0];i++) poll_message(polls[i][0], polls[i][1]);
+        }
+        if (locked && expected_model && !strcmp(module, "ZED-X20P") && health.sec_sig) {
+            bool manual = atomic_exchange(&rf_requested, false);
+            if (manual || requested || now - last_survey >= 60000 ||
+                (health.event_count != survey_event && now - last_survey >= 5000)) {
+                // Pull a spectrum in clear conditions too, to give a later alert a comparison.
+                if (manual || requested) {
+                    parser->security_cache.length = 0;
+                    poll_message(0x27, 0x09);
+                }
+                poll_message(0x27, 0x10);
+                poll_message(0x0a, 0x31);
+                uint8_t poll[16];
+                size_t n = ubx_get_ram(poll, RF_JAM_SENSITIVITY_KEY);
+                uart_write_bytes(RX_UART, poll, n);
+                last_survey = now;
+                survey_event = health.event_count;
             }
         }
         uint32_t valid = atomic_load_explicit(&parser->frames_valid, memory_order_relaxed);
@@ -347,6 +422,14 @@ static void rx_task(void *arg)
                 health.tracked[5], health.tracked[6], health.tracked[7],
                 gnss_status_position_fresh(&health, now) ? "valid" : "unavailable");
             if (health.rf_blocks_valid && now >= health.rf_blocks_ms && now - health.rf_blocks_ms <= 15000) log_rf(&health);
+            if (health.sec_sig && health.jam == 2 && now - health.rf_ms <= 15000 &&
+                health.fix_ms > 0 && now - health.fix_ms <= 15000) {
+                if (gnss_status_position_fresh(&health, now))
+                    ESP_LOGI(TAG, "RF fix: valid=1 type=%u used=%u hAcc=%lu mm pDOP=%.2f",
+                             health.pvt_utc[16], health.pvt_utc[19], (unsigned long)health.h_acc_mm, health.p_dop / 100.0);
+                else
+                    ESP_LOGI(TAG, "RF fix: valid=0 type=%u used=%u", health.pvt_utc[16], health.pvt_utc[19]);
+            }
             if (health.signals_valid && now >= health.signals_ms && now - health.signals_ms <= 15000) log_signals(&health);
             next_log = now + 10000;
         }
@@ -639,6 +722,7 @@ esp_err_t receiver_start(ubx_parser_t *parser)
     if ((err = uart_param_config(RX_UART, &cfg)) != ESP_OK) return err;
     if ((err = uart_set_pin(RX_UART, RX_PIN_TX, RX_PIN_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)) != ESP_OK) return err;
     parser->observe = observe;
+    parser->rf_detail = log_rf_detail;
     return xTaskCreate(rx_task, "rx", 4096, parser, 7, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 bool receiver_alive(void)

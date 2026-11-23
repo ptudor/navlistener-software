@@ -15,6 +15,39 @@ func rfSample(source string, block, agc, cw, ant int, recv time.Time) *ingest.Ra
 	}
 }
 
+func TestReceiverRFEvidenceAgeAndSweep(t *testing.T) {
+	s := New(4)
+	at := time.Unix(1700000000, 0)
+	apply := func(delta, delay time.Duration, rf *ingest.RawRF) {
+		s.Apply(&ingest.RawFrame{Source: "station", RecvStamped: true, Recv: at.Add(delta),
+			RecvLocal: at.Add(delta + delay), RF: rf})
+	}
+	events := []ingest.SecurityEvent{}
+	high := false
+	apply(0, 20*time.Second, &ingest.RawRF{SignalSecurity: &ingest.SignalSecurity{JamState: 2}, SecurityLog: &events, HighSensitivity: &high})
+	apply(-time.Second, 30*time.Second, &ingest.RawRF{SignalSecurity: &ingest.SignalSecurity{JamState: 1}})
+	path := func(i byte) *ingest.RawRF {
+		return &ingest.RawRF{Spectrum: &ingest.RFSpectrum{Path: i, Paths: 2}}
+	}
+	apply(0, 0, path(1))
+	apply(0, time.Second, path(0))
+	first := s.FeedStationRF(at.Add(30 * time.Second))["station"]
+	if first.SignalSecurity == nil || first.SignalSecurity.Value.JamState != 2 || len(first.Spectra) != 2 ||
+		first.Spectra[0].Value.Path != 0 || first.SecurityLog == nil || first.HighSensitivity == nil || *first.HighSensitivity.Value {
+		t.Fatalf("incorrect first survey %+v", first)
+	}
+	apply(10*time.Second, 0, path(1))
+	apply(0, 12*time.Second, path(0))
+	next := s.FeedStationRF(at.Add(46 * time.Second))["station"]
+	if next.SignalSecurity != nil || next.SecurityLog == nil || len(next.Spectra) != 1 || next.Spectra[0].Value.Path != 1 {
+		t.Fatalf("mixed sweeps or stale detector %+v", next)
+	}
+	end := s.FeedStationRF(at.Add(101 * time.Second))["station"]
+	if end.SecurityLog != nil || end.HighSensitivity != nil || len(end.Spectra) != 0 {
+		t.Fatalf("stale survey %+v", end)
+	}
+}
+
 // clearSky feeds one band's quiet AGC near level at 1 Hz for the given duration and
 // returns the instant after the last sample.
 func clearSky(s *Store, source string, level int, from time.Time, d time.Duration) time.Time {

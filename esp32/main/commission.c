@@ -45,6 +45,7 @@
 #include "update_runtime.h"
 #include "update_tuf.h"
 #include "observer_oled.h"
+#include "receiver.h"
 #include "observer_rtc.h"
 #include "observer_time.h"
 #include "esp_timer.h"
@@ -313,6 +314,10 @@ static void run(char *line)
 {
     if(!strncmp(line,"rtc ",4)){rtc_command(line+4);return;}
     if(!strncmp(line,"oled ",5)){observer_oled_console(line+5);return;}
+    if (!strcmp(line, "rf survey")) {
+        puts(receiver_request_rf_survey() ? "NVF-RF-SURVEY queued" : "NVF-RF-SURVEY requires ZED-X20P");
+        return;
+    }
     static const char prefix[] = "commission ";
     if (strncmp(line, prefix, sizeof prefix - 1)) return; // not ours: the console sees stray keys
     char *command = line + sizeof prefix - 1, *argument = strchr(command, ' ');

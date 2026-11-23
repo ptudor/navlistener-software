@@ -34,6 +34,14 @@ func TestProjectPublicFailsClosedAndDoesNotMutateInput(t *testing.T) {
 	}
 }
 
+func TestRFDiagnosticsRemainPrivate(t *testing.T) {
+	f := &ingest.RawFrame{Observer: contextFor(identity.AggregatePublicAttributed, identity.MetadataFull),
+		MsgType: ingest.TelemJammingStats, Bytes: []byte{2, 0x51, 0}, RF: &ingest.RawRF{}}
+	if public, ok := ProjectPublic(f); ok || public != nil {
+		t.Fatal("RF diagnostic bytes projected publicly")
+	}
+}
+
 func TestProjectPublicAnonymousContributesWithoutStationEvidence(t *testing.T) {
 	in := &ingest.RawFrame{
 		Source: "hardware-id", Recv: time.Now(), GnssID: gnss.GPS, SvID: 5,

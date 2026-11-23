@@ -51,6 +51,10 @@ typedef struct {
     // replaces it: from the ZED-X20P's HPG 2.00 on, MON-RF reports 0 there. Until SEC-SIG
     // first reports a state, its unknown readings set no baseline.
     bool sec_sig, sec_sig_known;
+    // The display has room for only a few affected frequencies. The telemetry retains
+    // every assessed frequency and its flag, including those past the display limit.
+    uint8_t centers_assessed, centers_jammed;
+    uint32_t jammed_khz[16];
     bool rf_valid, status_valid;
     uint8_t jam, spoof, event_flags, event_states;
     uint32_t event_count;

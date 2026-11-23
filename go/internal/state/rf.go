@@ -244,7 +244,12 @@ type rfStation struct {
 	bands    map[int]*rfBand
 	// frontEnds are a Septentrio receiver's front ends, by FrontEndID. A station has
 	// bands or front ends, by its receiver.
-	frontEnds map[uint8]*rfFrontEnd
+	frontEnds       map[uint8]*rfFrontEnd
+	security        *RFReading[ingest.SignalSecurity]
+	securityLog     *RFReading[[]ingest.SecurityEvent]
+	highSensitivity *RFReading[bool]
+	spectra         map[byte]*RFReading[ingest.RFSpectrum]
+	sweepAt         time.Time
 
 	haveCn0     bool
 	cn0Mean     float64
@@ -277,6 +282,21 @@ func (s *Store) applyRF(f *ingest.RawFrame) {
 		s.rf[f.Source] = st
 	}
 	st.lastSeen = recv
+	updateRFReading(&st.security, f, f.RF.SignalSecurity)
+	updateRFReading(&st.securityLog, f, f.RF.SecurityLog)
+	updateRFReading(&st.highSensitivity, f, f.RF.HighSensitivity)
+	if spectrum := f.RF.Spectrum; spectrum != nil {
+		stamp, ok := f.WallClockStamp()
+		if ok && stamp.After(st.sweepAt) {
+			st.sweepAt = stamp
+			st.spectra = make(map[byte]*RFReading[ingest.RFSpectrum])
+		}
+		if ok && stamp.Equal(st.sweepAt) && st.spectra != nil {
+			path := st.spectra[spectrum.Path]
+			updateRFReading(&path, f, spectrum)
+			st.spectra[spectrum.Path] = path
+		}
+	}
 
 	bandRules := s.bandRules()
 	for _, b := range f.RF.Bands {
@@ -504,10 +524,30 @@ func cn0ElevationResidual(sats []ingest.SatCN0) (mean, residVar float64, n int) 
 	return mean, ss / fn, n
 }
 
-// StationRF is one observer's RF-defense read model (docs/OUTPUT.md §1.3 / DEFENSE-PNT
-// §6). Derived metrics are pointers so an unlearned/absent one is omitted, never a
-// sentinel. RFTrust is how much this station's votes are currently down-weighted
-// (1 = fully trusted).
+// RFReading keeps the independent sample clock for SIGLOG event ages and for
+// grouping all paths from one spectrum sweep, including after a spool delay.
+type RFReading[T any] struct {
+	ReceivedAt time.Time `json:"received_at"`
+	SampleTime time.Time `json:"sample_time"`
+	Value      *T        `json:"value"`
+}
+
+func updateRFReading[T any](dst **RFReading[T], f *ingest.RawFrame, value *T) {
+	if value == nil {
+		return
+	}
+	stamp, ok := f.WallClockStamp()
+	if ok && !stamp.IsZero() && (*dst == nil || stamp.After((*dst).SampleTime)) {
+		*dst = &RFReading[T]{ReceivedAt: f.LocalRecv(), SampleTime: stamp, Value: value}
+	}
+}
+
+func (r *RFReading[T]) fresh(now time.Time, age time.Duration) bool {
+	return r != nil && now.Sub(r.SampleTime) <= age && now.Sub(r.ReceivedAt) <= age
+}
+
+// StationRF is one observer's RF-defense read model (docs/OUTPUT.md §1.3).
+// RFTrust is the weight given to this station's votes (1 = fully trusted).
 type StationRF struct {
 	ID       string          `json:"id"`
 	LastSeen int64           `json:"last_seen"`
@@ -518,7 +558,11 @@ type StationRF struct {
 	RFTrust  float64         `json:"rf_trust"`
 	// FrontEnds are a Septentrio receiver's front ends, in FrontEndID order; a u-blox
 	// receiver has Bands instead.
-	FrontEnds []StationFrontEnd `json:"front_ends,omitempty"`
+	FrontEnds       []StationFrontEnd                  `json:"front_ends,omitempty"`
+	SignalSecurity  *RFReading[ingest.SignalSecurity]  `json:"signal_security,omitempty"`
+	HighSensitivity *RFReading[bool]                   `json:"jamming_high_sensitivity,omitempty"`
+	SecurityLog     *RFReading[[]ingest.SecurityEvent] `json:"security_log,omitempty"`
+	Spectra         []*RFReading[ingest.RFSpectrum]    `json:"spectra,omitempty"`
 	// Neighbours lists, sorted by id, the nearest maxNamedNeighbours stations within
 	// the neighbour radius that show corroborated interference evidence of their own
 	// (Store.interferingNeighbours), computed only while this station shows an AGC
@@ -615,6 +659,20 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 			ID:       id,
 			LastSeen: st.lastSeen.Unix(),
 			RFTrust:  st.rfTrust(now),
+		}
+		if st.security.fresh(now, 45*time.Second) {
+			entry.SignalSecurity = st.security
+		}
+		if st.securityLog.fresh(now, 90*time.Second) {
+			entry.SecurityLog = st.securityLog
+		}
+		if st.highSensitivity.fresh(now, 90*time.Second) {
+			entry.HighSensitivity = st.highSensitivity
+		}
+		for _, path := range slices.Sorted(maps.Keys(st.spectra)) {
+			if r := st.spectra[path]; r.fresh(now, 90*time.Second) {
+				entry.Spectra = append(entry.Spectra, r)
+			}
 		}
 		// MON-RF and NAV-SAT arrive as independent frames and jointly keep
 		// the station-level lastSeen fresh; without its own staleness check, a

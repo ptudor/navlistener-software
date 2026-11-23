@@ -88,6 +88,7 @@
 #include "../common/endpoint_fallback.h"
 #include "../common/receiver_solution.h"
 #include "../common/reception_data.h"
+#include "../common/receiver_rf.h"
 
 #define MAGIC "GNF1"
 #define F_HELLO 0x01
@@ -1338,15 +1339,24 @@ static int emit_solution(const rs_epoch_t *epoch) {
  * is disabled. Its per-frequency flags are not mapped to blocks, whose bands are the
  * product's configuration. The ESP32's ubx.c and the collector's scanUBX apply the same rule.
  * Touched only by the reader. */
-static struct { int seen; unsigned char jam, age; } g_sec_sig;
+static struct { int seen; unsigned char jam, age; rf_security_cache_t cache; } g_sec_sig;
 
-/* observe_secsig takes one SEC-SIG payload. Returns 1 if it was a version 2 or 3 body. */
-static int observe_secsig(const unsigned char *p, unsigned len) {
-	if (len < 4 || (p[0] != 2 && p[0] != 3) || len != 4u + 4u * p[3]) return 0;
-	g_sec_sig.seen = 1;
-	g_sec_sig.jam = (p[1] & 1) ? (unsigned char)((p[1] >> 1) & 3) : 0;
-	g_sec_sig.age = 0;
-	return 1;
+static int emit_rf_details(unsigned char cls, unsigned char id, const unsigned char *p, unsigned len) {
+	unsigned char body[MAX_RAW];
+	uint64_t stamp = now_unix_ns();
+	int delivered = 0;
+	for (unsigned path = 0;; path++) {
+		size_t n = rf_detail_encode(body, sizeof body, cls, id, p, len, path);
+		if (!n) return delivered;
+		if (cls == UBX_CLASS_SEC && id == UBX_ID_SECSIG) {
+			if (!g_sec_sig.seen || g_sec_sig.age >= 2) g_sec_sig.cache.length = 0;
+			g_sec_sig.seen = 1;
+			g_sec_sig.jam = (p[1] & 1) ? (unsigned char)((p[1] >> 1) & 3) : 0;
+			g_sec_sig.age = 0;
+			if (!rf_security_due(&g_sec_sig.cache, body, n)) return delivered;
+		}
+		delivered += emit_telem_at(F_T_JAMMING, body, (unsigned)n, stamp);
+	}
 }
 
 /* emit_monrf converts a UBX-MON-RF payload (F9+ RF-front-end telemetry) into a JammingStats
@@ -1532,6 +1542,7 @@ static void log_ubx_stats(const char *what, unsigned long recognized, unsigned l
  * spooling": `delivered` counts the records that actually reached the spool, separately, and
  * both counts are logged (periodically and at source close). Do not merge the two counters. */
 static int run_ubx(int fd, int configure_ubx, int enable_gps_l5) {
+	memset(&g_sec_sig, 0, sizeof g_sec_sig);
 	struct rdbuf rb = { .fd = fd, .config = {
 		.port = configure_ubx, .enable_gps_l5 = enable_gps_l5,
 	} };
@@ -1561,8 +1572,10 @@ static int run_ubx(int fd, int configure_ubx, int enable_gps_l5) {
 			{ delivered += emit_monrf(payload, len); frames++; }
 		else if (head[0] == UBX_CLASS_MON && head[1] == UBX_ID_MONHW)
 			{ delivered += emit_monhw(payload, len); frames++; }
-		else if (head[0] == UBX_CLASS_SEC && head[1] == UBX_ID_SECSIG)
-			observe_secsig(payload, len);
+		else if ((head[0] == UBX_CLASS_SEC && (head[1] == UBX_ID_SECSIG || head[1] == 0x10)) ||
+		         (head[0] == UBX_CLASS_MON && head[1] == 0x31) ||
+		         (head[0] == 0x06 && head[1] == 0x8b))
+			{ delivered += emit_rf_details(head[0], head[1], payload, len); frames++; }
 		else if (head[0] == UBX_CLASS_NAV && head[1] == UBX_ID_NAVSAT)
 			{ delivered += emit_navsat(payload, len); frames++; }
 		else if (head[0] == RS_UBX_CLASS_NAV && (head[1] == RS_UBX_ID_PVT || head[1] == RS_UBX_ID_CLOCK ||

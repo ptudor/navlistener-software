@@ -9,6 +9,7 @@ void oled_gnss_from_status(oled_gnss_t *out, const gnss_status_t *s, int64_t now
     const bool satellites = s->satellites_valid && fresh(s->satellites_ms, now);
     // fix_ms is the uptime of the last navigation solution, valid or not; 0 before the first.
     const bool solution = s->fix_ms > 0 && fresh(s->fix_ms, now);
+    out->solution_fresh = solution;
     out->receiving = satellites || solution;
 
     // NAV-PVT bytes 20..23 are pvt_utc[16..19]: fixType, flags, flags2 and numSV. A Septentrio
@@ -74,6 +75,15 @@ void oled_gnss_from_status(oled_gnss_t *out, const gnss_status_t *s, int64_t now
         }
         out->antenna = shorted ? OLED_ANTENNA_SHORT : open ? OLED_ANTENNA_OPEN : ok ? OLED_ANTENNA_OK : OLED_ANTENNA_UNKNOWN;
     }
-    if (s->rf_valid && fresh(s->rf_ms, now)) out->jam = s->jam & 3;
+    if (s->rf_valid && fresh(s->rf_ms, now)) {
+        out->jam = s->jam & 3;
+        if (s->sec_sig) {
+            out->security_fresh = true;
+            out->assessed = s->centers_assessed;
+            out->jammed = s->centers_jammed;
+            _Static_assert(sizeof out->jammed_khz == sizeof s->jammed_khz, "display frequency capacity");
+            memcpy(out->jammed_khz, s->jammed_khz, sizeof out->jammed_khz);
+        }
+    }
     if (s->status_valid && fresh(s->status_ms, now)) out->spoof = s->spoof & 3;
 }

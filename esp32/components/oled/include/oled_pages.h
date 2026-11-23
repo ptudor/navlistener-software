@@ -66,6 +66,9 @@ typedef struct {
     uint8_t cno_max;       // dB-Hz
     oled_antenna_t antenna;
     uint8_t jam, spoof;    // OLED_RF_*
+    bool solution_fresh, security_fresh;
+    uint8_t assessed, jammed;
+    uint32_t jammed_khz[16];
 } oled_gnss_t;
 
 typedef struct {

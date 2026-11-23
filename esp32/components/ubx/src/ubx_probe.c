@@ -14,6 +14,13 @@ size_t ubx_poll_version(uint8_t out[8])
     out[2] = 0x0a; out[3] = 0x04;
     return finish(out, 0);
 }
+size_t ubx_get_ram(uint8_t out[16], uint32_t key)
+{
+    out[2] = 0x06; out[3] = 0x8b; // CFG-VALGET version 0, RAM, first result
+    memset(out + 6, 0, 4);
+    for (unsigned i = 0; i < 4; i++) out[10 + i] = key >> (8 * i);
+    return finish(out, 8);
+}
 size_t ubx_poll_unique_id(uint8_t out[8])
 {
     out[2] = 0x27; out[3] = 0x03;

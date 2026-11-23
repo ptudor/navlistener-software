@@ -24,8 +24,8 @@ static uint64_t now(void) { return 1700000000000000000ull; }
 
 static void feed(ubx_parser_t *p, uint8_t cls, uint8_t id, const uint8_t *payload, size_t len)
 {
-    uint8_t buf[8 + 64];
-    assert(len <= 64);
+    uint8_t buf[8 + UBX_MAX_PAYLOAD];
+    assert(len <= UBX_MAX_PAYLOAD);
     buf[0] = 0xb5; buf[1] = 0x62; buf[2] = cls; buf[3] = id;
     buf[4] = (uint8_t)len; buf[5] = (uint8_t)(len >> 8);
     memcpy(buf + 6, payload, len);
@@ -66,7 +66,13 @@ int main(void)
 
     // SEC-SIG version 2, detection on, warning: both blocks carry it over the X20's 0 flags.
     secsig(&parser, 2, 1 | 2 << 1, 8);
-    assert(emitted == 1); // SEC-SIG itself is not a record
+    const uint8_t assessment[] = {2, 2, 5, 1, 0x10, 0x0a, 0x18, 0};
+    assert(emitted == 2 && got_len == GNF1_RECORD_HDR + sizeof assessment);
+    assert(!memcmp(got + GNF1_RECORD_HDR, assessment, sizeof assessment));
+    for (unsigned i = 0; i < 29; i++) secsig(&parser, 2, 5, 8);
+    assert(emitted == 2);
+    secsig(&parser, 2, 5, 8);
+    assert(emitted == 3);
     monrf(&parser, 0, 0);
     assert(jam(0) == 2 && jam(1) == 2);
     monrf(&parser, 0, 0);
@@ -88,6 +94,24 @@ int main(void)
     secsig(&parser, 2, 1 | 2 << 1, 7);
     monrf(&parser, 1, 0);
     assert(jam(0) == 1 && jam(1) == 0 && !parser.sec_sig);
+    unsigned before = emitted;
+    const uint8_t log[] = {1, 1, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 4, 0, 0, 0};
+    feed(&parser, 0x27, 0x10, log, sizeof log);
+    assert(emitted == before + 1 && got_len == GNF1_RECORD_HDR + 2 + sizeof log);
+    assert(got[GNF1_RECORD_HDR+1] == 0x10 && !memcmp(got + GNF1_RECORD_HDR+2, log, sizeof log));
+    uint8_t sweep[4 + 2 * RF_SPAN_BLOCK] = {0, 2};
+    sweep[4+RF_SPAN_BLOCK] = 217;
+    feed(&parser, 0x0a, 0x31, sweep, sizeof sweep);
+    assert(emitted == before + 3 && got_len == GNF1_RECORD_HDR + 276);
+    assert(!memcmp(got + GNF1_RECORD_HDR, (uint8_t[]){2, 0x31, 1, 2, 217}, 5));
+    uint8_t response[] = {1, 0, 0, 0, 0x51, 0, 0xf6, 0x10, 1};
+    feed(&parser, 6, 0x8b, response, sizeof response);
+    assert(emitted == before + 4 && !memcmp(got + GNF1_RECORD_HDR, (uint8_t[]){2, 0x51, 1}, 3));
+    response[1] = 7; // default layer is independent of the active RAM setting
+    feed(&parser, 6, 0x8b, response, sizeof response);
+    feed(&parser, 0x0a, 0x31, sweep, sizeof sweep - 1);
+    feed(&parser, 0x27, 0x10, log, sizeof log - 1);
+    assert(emitted == before + 4);
     puts("UBX jamming: MON-RF flags, SEC-SIG in their place while current, and malformed SEC-SIG ignored passed");
     return 0;
 }

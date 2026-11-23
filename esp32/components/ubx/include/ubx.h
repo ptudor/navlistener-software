@@ -26,6 +26,7 @@
 #include "gnf1.h"
 #include "../../../../common/receiver_solution.h"
 #include "../../../../common/reception_data.h"
+#include "../../../../common/receiver_rf.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -68,6 +69,10 @@ typedef struct {
     // records while it is current: sent within the last two MON-RF messages (ubx.c).
     bool sec_sig;
     uint8_t sec_sig_jam, sec_sig_age;
+    // Suppress identical SEC-SIG detail between periodic check-ins. Updates to the
+    // receiver-wide jamming state above still run on every valid message.
+    rf_security_cache_t security_cache;
+    void (*rf_detail)(const uint8_t *body, size_t len); // optional console copy
 
     // counters (for the display/telemetry) — _Atomic : written by rx_task's
     // parser and read by ui_task's dashboard, so plain uint32_t cross-task access is a

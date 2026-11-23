@@ -27,8 +27,8 @@ func TestNavfeederTelemetryEndToEnd(t *testing.T) {
 
 	// Ground truth: the RF frames the Go scanner lifts off the synthetic stream.
 	expected := scanRF(t, capBytes)
-	if len(expected) != 3 {
-		t.Fatalf("expected 3 RF frames from the synthetic capture, got %d", len(expected))
+	if len(expected) != 8 {
+		t.Fatalf("expected 8 RF frames from the synthetic capture, got %d", len(expected))
 	}
 
 	got := feederFrames(t, bin, "rf-e2e", capBytes, len(expected))
@@ -38,11 +38,14 @@ func TestNavfeederTelemetryEndToEnd(t *testing.T) {
 		if g.RF == nil {
 			t.Fatalf("frame %d: collector produced no RF sample", i)
 		}
-		if !reflect.DeepEqual(e.RF.Bands, g.RF.Bands) {
-			t.Errorf("frame %d bands: scanner %+v vs feeder %+v", i, e.RF.Bands, g.RF.Bands)
+		if !reflect.DeepEqual(e.RF, g.RF) {
+			t.Errorf("frame %d: scanner %+v vs feeder %+v", i, e.RF, g.RF)
 		}
-		if !reflect.DeepEqual(e.RF.Sats, g.RF.Sats) {
-			t.Errorf("frame %d sats: scanner %+v vs feeder %+v", i, e.RF.Sats, g.RF.Sats)
+		if len(e.Bytes) > 0 && e.MsgType == TelemJammingStats && e.Bytes[0] == 2 {
+			replayed, err := StoredFrame(StoredInput{Origin: "rf", Kind: "jamming", Raw: g.Bytes})
+			if err != nil || !bytes.Equal(e.Bytes, g.Bytes) || !reflect.DeepEqual(e.RF, replayed.RF) {
+				t.Errorf("RF evidence changed between dial, push and replay at frame %d: %v", i, err)
+			}
 		}
 	}
 	t.Logf("cross-checked %d RF telemetry frames C-feeder↔Go-collector", len(got))
@@ -103,6 +106,23 @@ func syntheticRFCapture() []byte {
 	s = append(s, ubxMsg(ubxClassMON, ubxIDMONRF, monrf)...)
 	s = append(s, ubxMsg(ubxClassNAV, ubxIDNAVSAT, navsat)...)
 	s = append(s, ubxMsg(ubxClassMON, ubxIDMONHW, monhw)...)
+	security := []byte{2, 0x1d, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0}
+	binary.LittleEndian.PutUint32(security[4:], 1575420|1<<24)
+	binary.LittleEndian.PutUint32(security[8:], 1176450)
+	s = append(s, ubxMsg(ubxClassSEC, ubxIDSECSIG, security)...)
+	log := []byte{1, 1, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 4, 0, 0, 0}
+	s = append(s, ubxMsg(ubxClassSEC, 0x10, log)...)
+	sweep := make([]byte, 4+2*272)
+	sweep[1] = 2
+	for path := range 2 {
+		b := sweep[4+path*272:]
+		b[127+path], b[268] = 80, 3
+		binary.LittleEndian.PutUint32(b[256:], 128000000)
+		binary.LittleEndian.PutUint32(b[260:], 500000)
+		binary.LittleEndian.PutUint32(b[264:], uint32(1586000000-400000000*path))
+	}
+	s = append(s, ubxMsg(ubxClassMON, 0x31, sweep)...)
+	s = append(s, ubxMsg(6, 0x8b, []byte{1, 0, 0, 0, 0x51, 0, 0xf6, 0x10, 0})...)
 	return s
 }
 

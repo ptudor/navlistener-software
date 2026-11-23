@@ -176,7 +176,11 @@ type RawRF struct {
 	// Status is a Septentrio ReceiverStatus block (SBF 4014): each front end's AGC gain
 	// in dB with the receiver's own temperature, load and state. A u-blox band's AGC is
 	// a count on another scale, so the two are never mixed; nil on every other sample.
-	Status *SBFReceiverStatus `json:",omitempty"`
+	Status          *SBFReceiverStatus `json:",omitempty"`
+	SignalSecurity  *SignalSecurity    `json:"signal_security,omitempty"`
+	HighSensitivity *bool              `json:"jamming_high_sensitivity,omitempty"`
+	SecurityLog     *[]SecurityEvent   `json:"security_log,omitempty"`
+	Spectrum        *RFSpectrum        `json:"spectrum,omitempty"`
 }
 
 // RFBand is one RF path's front-end state (UBX-MON-RF block, or the single MON-HW

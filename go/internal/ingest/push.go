@@ -1508,11 +1508,11 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) 
 		}
 		return &RawFrame{Recv: recv, RecvLocal: local, Source: source, MsgType: int(rec.FrameType), Details: details, Bytes: append([]byte(nil), rec.Raw...), BoardSampleStamped: stamped}
 	case TelemJammingStats:
-		bands, err := decodeJammingStats(rec.Raw)
+		var err error
+		rf, err = decodeRFStats(rec.Raw)
 		if err != nil {
 			return nil
 		}
-		rf.Bands = bands
 	case TelemReceptionData:
 		sats, err := decodeReceptionData(rec.Raw)
 		if err != nil {

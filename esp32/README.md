@@ -224,6 +224,16 @@ code-locked signals per system and kind from NAV-SIG, pairs of halves counted on
 satellite and unhealthy ones noted, then the bands they cover). A change in any block's
 antenna supervisor is logged when it happens, SHORT and OPEN as warnings.
 
+On a ZED-X20P, enter `rf survey` on the USB console while ATTENTION is lit.
+The receiver reports which GNSS center frequencies it assessed, the jamming flag at
+each center, its recent security events, the active detector sensitivity, and a
+256-bin spectrum for each RF path. The firmware also polls these diagnostics once a
+minute and after receiver security transitions. Capture the console before cycling
+power because the X20 clears its event history on restart. Each `RF evidence=` line
+holds the same private record an enrolled observer sends to the collector. To decode
+a saved console log into newline-delimited JSON, run `go run ./cmd/rfsurvey < console.log`
+from the `go` directory. [Fields, units and interpretation](../docs/OBSERVER-TELEMETRY.md#x20-rf-evidence)
+
 The USB console reports `bytes`, checksum-valid `UBX`, checksum-valid `NMEA`,
 and emitted `SFRBX` every ten seconds, including before WiFi provisioning.
 Zero bytes calls for checking GNSS power and the UART path; bytes without valid
@@ -306,8 +316,8 @@ lamp is lit`:
 | Cause | From |
 |---|---|
 | spoofing indicated | the receiver: UBX-NAV-STATUS `spoofDetState` 2 or 3, or a Septentrio RFStatus authenticity flag |
-| jamming critical | the receiver: jamming indicated and no fix (UBX-SEC-SIG, or MON-RF where the receiver sends no SEC-SIG) |
-| jamming warning | the receiver: jamming indicated, the fix held |
+| jamming critical | MON-RF critical, or a Septentrio interference indication with loss of fix |
+| jamming warning | X20 SEC-SIG warning, MON-RF warning, or a Septentrio interference indication while a fix holds |
 | antenna short, antenna open | an RF block's antenna supervisor in UBX-MON-RF |
 | receiver silent | no navigation solution and no satellite list for 15 s, once the observer has run for a minute |
 | reception alarm | the observer's own check against the collector's forecast ([Reception alarms](#reception-alarms)), whose lamps also alternate |
@@ -318,7 +328,9 @@ rest it is steady. The receiver's reports count while they are at most 15 s old,
 its causes is held for 10 s after its last report, so a moment of jamming is a lamp an eye
 can catch. These are the receiver's own flags, shown as it gives them: a jamming warning is
 the receiver's judgement of its RF input and does not say where the energy comes from. They
-are in the telemetry as before; the lamp adds nothing to it. A panel without the status
+appear on the OLED ATTENTION page. For a current X20 warning the page includes the fix,
+satellites used and flagged/assessed count. It cycles through up to 16 flagged center
+frequencies in MHz. Read the full assessment over USB or in the collector. A panel without the status
 driver has no such lamp, and trouble with the network is not among its causes: the uplink
 column shows that.
 

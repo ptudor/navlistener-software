@@ -1,4 +1,5 @@
 #include "gnss_status.h"
+#include "../../../../common/receiver_rf.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -64,11 +65,20 @@ void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
         }
         s->rf_blocks_valid = true; s->rf_blocks_ms = now;
         if (!s->sec_sig) jam_reading(s, jam, !s->rf_valid, now);
-    } else if (cls == 0x27 && id == 9 && len >= 4 && (p[0] == 2 || p[0] == 3) && len == 4u + 4u*p[3]) {
+    } else if (cls == 0x27 && id == 9 && rf_sec_sig_valid(p, len)) {
         // SEC-SIG jamState (0 unknown, 1 none, 2 warning) while jamDetEnabled is set.
         const uint8_t jam = (p[1] & 1) ? (p[1] >> 1) & 3 : 0;
         const bool first = !s->sec_sig_known;
         s->sec_sig = true;
+        s->centers_assessed = p[3];
+        s->centers_jammed = 0;
+        for (size_t i = 4; i < len; i += 4) {
+            uint32_t word = rf_le32(p + i);
+            if (!(word & RF_JAMMED)) continue;
+            if (s->centers_jammed < sizeof s->jammed_khz / sizeof *s->jammed_khz)
+                s->jammed_khz[s->centers_jammed] = word & RF_CENTER_KHZ;
+            s->centers_jammed++;
+        }
         if (jam) s->sec_sig_known = true;
         jam_reading(s, jam, first, now);
     } else if (cls == 1 && id == 3 && len == 16) {

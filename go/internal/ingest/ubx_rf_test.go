@@ -84,13 +84,18 @@ func TestSECSIGJammingInMONRF(t *testing.T) {
 	_ = scanUBX(bytes.NewReader(stream), "stn", fixedTime,
 		func(f *RawFrame) { frames = append(frames, f) }, func(kind string) { errs = append(errs, kind) })
 	want := [][2]int{{2, 1}, {2, 2}, {2, 2}, {0, 0}, {1, 1}, {0, 0}}
-	if len(frames) != len(want) {
-		t.Fatalf("got %d frames, want %d", len(frames), len(want))
+	if len(frames) != len(want)+3 {
+		t.Fatalf("got %d frames, want six MON-RF and three SEC-SIG", len(frames))
 	}
-	for i, f := range frames {
+	i := 0
+	for _, f := range frames {
+		if f.RF.SignalSecurity != nil {
+			continue
+		}
 		if got := [2]int{f.RF.Bands[0].JamState, f.RF.Bands[1].JamState}; got != want[i] {
 			t.Errorf("MON-RF %d: jamState %v, want %v", i, got, want[i])
 		}
+		i++
 	}
 	if len(errs) != 0 {
 		t.Errorf("errors = %v", errs)

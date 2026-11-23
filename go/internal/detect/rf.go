@@ -83,9 +83,10 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, now time.Time,
 			params := map[string]any{"station": id, "agc_departure": maxDep, "cw": cwHigh, "rx_jam": rxJam, "cn0_drop": cn0Drop,
 				"neighbours": neighbours, "neighbour_count": neighbourCount}
 			gain.addParams(params)
+			assessment := receiverRFContext(params, rf)
 			return Event{
 				Type: "jamming_detected", OldValue: old, NewValue: jamBand, Severity: jamSev,
-				Message: fmt.Sprintf("station %s jamming %s (%s)", id, jamBand, departureText(maxDep, gain)) +
+				Message: fmt.Sprintf("station %s jamming %s (%s)", id, jamBand, departureText(maxDep, gain)) + assessment +
 					relearnedNote(params, relearned && jamRank(jamBand) < jamRank(old)),
 				Params: params,
 			}
@@ -129,11 +130,12 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, now time.Time,
 	if measured {
 		emit(id, "rf_degraded", boolState(degraded, "degraded", "ok"), func(old string) Event {
 			params := map[string]any{"station": id, "agc_departure": maxDep, "cw": cwHigh, "rx_jam": rxJam, "cn0_drop": cn0Drop}
+			assessment := receiverRFContext(params, rf)
 			gain.addParams(params)
 			return Event{
 				Type: "station_rf_degraded", OldValue: old, NewValue: boolState(degraded, "degraded", "ok"),
 				Severity: degradedSev,
-				Message: fmt.Sprintf("station %s RF degraded (%s, cw=%v, rx_jam=%v, cn0_drop=%v)", id, departureText(maxDep, gain), cwHigh, rxJam, cn0Drop) +
+				Message: fmt.Sprintf("station %s RF degraded (%s, cw=%v, rx_jam=%v, cn0_drop=%v)", id, departureText(maxDep, gain), cwHigh, rxJam, cn0Drop) + assessment +
 					relearnedNote(params, relearned && !degraded && old == "degraded"),
 				Params: params,
 			}
@@ -243,4 +245,29 @@ func (d *Detector) detectStationOffline(id string, lastSeenS int, emit emitFunc)
 			Params:   map[string]any{"station": id, "last_seen_s": lastSeenS},
 		}
 	})
+}
+
+// receiverRFContext attaches the dated assessment supporting a station event.
+func receiverRFContext(params map[string]any, rf state.StationRF) string {
+	if rf.HighSensitivity != nil {
+		params["jamming_high_sensitivity"] = rf.HighSensitivity
+	}
+	if rf.SignalSecurity == nil || rf.SignalSecurity.Value == nil {
+		return ""
+	}
+	params["signal_security"] = rf.SignalSecurity
+	s := rf.SignalSecurity.Value
+	if !s.JamEnabled || s.JamState != 2 {
+		return ""
+	}
+	if len(s.Centers) == 0 {
+		return ", receiver gave no frequency assessment"
+	}
+	flagged := 0
+	for _, c := range s.Centers {
+		if c.Jammed {
+			flagged++
+		}
+	}
+	return fmt.Sprintf(", receiver flagged %d of %d assessed frequencies", flagged, len(s.Centers))
 }

@@ -519,6 +519,47 @@ MON-RF" validity bit and its uptime then describe the latest SEC-SIG. SEC-SIG re
 are still unknown when the receiver starts set no baseline, so the first state it reports is
 the baseline, as the first MON-RF reading is on other receivers.
 
+### X20 RF evidence
+
+For an X20 warning, read the current fix and satellites used alongside the
+receiver's security assessment. A warning can persist through acquisition and
+after a 3D fix returns. The affected centers identify GNSS signals the receiver
+judges impaired. Finding the source of interference requires a comparison such
+as a second receiver observing at the same time or a repeatable hardware change.
+The antenna supervisor reports electrical faults. Its OK state is compatible
+with RF interference.
+
+GNF1 `JammingStats` (0x05) continues to send the version 1 MON-RF counters.
+Version 2 uses a separate record for each of the following measurements. All
+offsets below are from the start of the telemetry body. Byte 0 is 2.
+
+| Byte 1 | Source | Layout and meaning |
+|---|---|---|
+| 2 or 3 | SEC-SIG of that version | Byte 2 contains the native detector enable and state bits. Byte 3 counts assessed centers. From offset 4, each little-endian U4 carries kHz in bits 0–23 and the receiver's jamming flag in bit 24. A missing center has no assessment. |
+| 0x10 | SEC-SIGLOG | From offset 2, the complete version 1 receiver payload, including the event count and up to 16 events. Detection 4 means jamming, with event 0 for onset and 1 for clearance. Subtract the reported age in seconds from the sample time. Age 0xffffffff means over 45 days. A receiver restart clears the log. |
+| 0x31 | MON-SPAN | Bytes 2 and 3 give the zero-based RF path and total path count. One native 272-byte block follows, including 256 bins in quarter-dB steps, span, resolution and center in Hz, and programmable gain in dB. All paths from one sweep have the same sample timestamp. |
+| 0x51 | CFG-VALGET | Byte 2 gives the active RAM value of `CFG-SEC-JAMDET_SENSITIVITY_HI` (0 or 1). The observer reads this value. High sensitivity trades additional detections for a higher false-alarm rate. |
+
+The ESP32 sends a fresh SEC-SIG assessment when its contents change and every
+30 unchanged reports. It polls history, spectrum and sensitivity every minute,
+on a receiver security transition, and on demand with `rf survey` or a remote
+snapshot. A completed survey can contain a present, empty event log. Missing
+messages remain unavailable. The standalone feeder and collector UBX reader
+forward diagnostics present in their input stream.
+
+The authorized observers feed exposes `rf.signal_security`, `rf.security_log`,
+`rf.spectra` and `rf.jamming_high_sensitivity` with sample and receipt times.
+The live view ages out the assessment after 45 seconds and the other readings
+after 90 seconds. The historian keeps the exact bodies as private `jamming`
+rows. A sweep's 256 unsigned bin values are encoded as base64 in JSON.
+Bin `i` is centered at `center_hz + (i - 127) * span_hz / 256`.
+`peak_above_median_db` compares the strongest bin with the median of the
+whole path, including the filter shoulders. Compare the same path at the same
+gain across surveys. Absolute incident power, transmitter identity, location
+and intent require independent evidence. [X20 HPG 2.02 interface description, sections 3.14.8, 3.17.2–3 and 6.9.21](https://content.u-blox.com/sites/default/files/documents/u-blox-X20-HPG-2.02_InterfaceDescription_UBXDOC-304424225-19967.pdf)
+
+### Septentrio receiver context
+
 On the P3 the mosaic-G5's SBF fills the same fields ([SBF-RECEIVER.md](../esp32/docs/SBF-RECEIVER.md)
 §6). Counts come from MeasEpoch, and the fix from PVTGeodetic. Both RF fields and their uptimes
 come from RFStatus: jamming is OK without detected interference, and with it warning while a fix

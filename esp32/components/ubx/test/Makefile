@@ -32,3 +32,4 @@ build/rtk_stat_test: rtk_stat_test.c ../src/rtk_stat.c ../include/rtk_stat.h
 	$(CC) $(CFLAGS) -I../include rtk_stat_test.c ../src/rtk_stat.c -o $@
 clean:
 	rm -rf build
+build/jamming_test build/sfrbx_test build/solution_test build/reception_test build/probe_test build/status_test: ../../../../common/receiver_rf.h

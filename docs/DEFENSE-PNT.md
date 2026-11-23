@@ -50,8 +50,8 @@ blind when a receiver boots inside an already degraded environment (§5).
 
 The table maps receiver telemetry to current and proposed detector inputs. Current
 GNF1 telemetry carries the supported UBX records described in
-`docs/CONSTELLATIONS.md §6.2`. SEC-SIG's jamming state is carried as described below;
-its spoofing state and SEC-SIGLOG remain planned. From a Septentrio receiver the collector
+`docs/CONSTELLATIONS.md §6.2`. The collector retains the X20's detector states,
+assessed frequencies, security log, spectrum and active jamming sensitivity. From a Septentrio receiver the collector
 decodes one block, ReceiverStatus, for its front-end gains; its solution, measurement and
 interference blocks are stored and not yet decoded. Listing a
 receiver message here does not imply a wired detector.
@@ -60,7 +60,8 @@ receiver message here does not imply a wired detector.
 |---|---|---|---|
 | **UBX-MON-RF** (F9+) | per-RF-band AGC, noise level, CW-suppression %, jamming state, antenna status | `JammingStats` (0x05) | broadband + narrowband jamming (§2) |
 | **UBX-MON-HW** (legacy) | AGC monitor, noise, `jammingState`, CW indicator | `JammingStats` (0x05) | jamming, older receivers |
-| **UBX-SEC-SIG / SEC-SIGLOG** | per-signal spoofing-detection state, jamming-detection state (multi-tier) | `JammingStats` (0x05) jamState, from SEC-SIG's jamState | the receiver's own jamming flag (§2); its spoofing verdict (an input, §3) is planned |
+| **UBX-SEC-SIG / SEC-SIGLOG** | receiver-wide detector states, per-center jamming assessments and recent events | `JammingStats` (0x05) | the receiver's jamming flag (§2) and supporting evidence |
+| **UBX-MON-SPAN / CFG-VALGET** | spectrum per RF path and current high-sensitivity setting | `JammingStats` (0x05) | diagnostic evidence for a reported warning |
 | **UBX-NAV-SAT** | per-SV C/N₀, elevation, azimuth, pseudorange residual, quality indicator, health, used-in-solution | `ReceptionData` (0x01) | C/N₀-vs-elevation plausibility (§3), simultaneous C/N₀ drop (§2) |
 | **UBX-RXM-RAWX** | pseudorange, carrier phase, Doppler, lock-time, C/N₀ | `RFData` (0x02) | Doppler plausibility, measured iono (§3, `docs/MATH.md §7.4`) |
 | **UBX-NAV-PVT / NAV-CLOCK / NAV-STATUS** | position, velocity, UTC, clock bias/drift, fix and spoofing state | `ReceiverSolution` (0x03) | position, clock and time-reference integrity checks |
@@ -80,8 +81,8 @@ SEC-SIG's jamState (0 unknown, 1 OK, 2 warning; 0 while detection is disabled) i
 block's jamState while a SEC-SIG arrived within the last two MON-RF messages, and each
 block's own flag otherwise. SEC-SIG's per-frequency jammed flags are not mapped to blocks,
 whose bands are the product's configuration. The feeder does not enable SEC-SIG output.
-**Remaining:** fold the UBX-SEC-SIG / SEC-SIGLOG per-signal spoofing state into the
-`JammingStats` body (raises the spoof-gate fusion count, §3) once that source is wired.
+The X20's spoofing state is retained as evidence. Its use in the spoofing gate (§3)
+remains planned. [X20 RF evidence](OBSERVER-TELEMETRY.md#x20-rf-evidence)
 
 ---
 

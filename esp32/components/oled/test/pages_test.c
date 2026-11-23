@@ -407,6 +407,22 @@ static void attention(void)
 
     // The GNSS page words the receiver's states itself, from its own reading of them.
     in_service(&m);
+    m.receiver_attention = GNSS_ATTENTION_JAMMING;
+    m.gnss.jam = OLED_RF_WARNING;
+    m.gnss.security_fresh = true;
+    m.gnss.solution_fresh = true;
+    m.gnss.assessed = 5;
+    m.gnss.jammed = 4;
+    memcpy(m.gnss.jammed_khz, (uint32_t[]){1575420, 1227600, 1176450, 1246000}, 4*sizeof(uint32_t));
+    m.uptime_s = 0;
+    c = draw(&m, OLED_PAGE_ATTENTION, NULL);
+    assert(shows(c, 0, LINE(2), 1, "4/5 FLAGGED") && shows(c, 0, LINE(3), 1, "1575.420 MHz L1/E1"));
+    m.uptime_s = 4;
+    assert(shows(draw(&m, OLED_PAGE_ATTENTION, NULL), 0, LINE(3), 1, "1246.000 MHz G2"));
+    m.gnss.assessed = m.gnss.jammed = 0;
+    assert(shows(draw(&m, OLED_PAGE_ATTENTION, NULL), 0, LINE(2), 1, "NO CENTERS ASSESSED"));
+
+    in_service(&m);
     m.gnss.antenna = OLED_ANTENNA_SHORT;
     m.gnss.jam = OLED_RF_CRITICAL;
     m.gnss.spoof = OLED_RF_WARNING;

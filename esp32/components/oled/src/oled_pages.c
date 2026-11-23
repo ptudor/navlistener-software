@@ -524,6 +524,43 @@ static void page_attention(oled_canvas_t *c, const oled_model_t *m)
     header(c, m, OLED_PAGE_ATTENTION, "ATTENTION", false);
     for (unsigned i = 0; i < count; i++) put(c, 0, LINE_Y(i), lines[i]);
     if (!count) put(c, 0, LINE_Y(0), "NOTHING TO REPORT");
+    const oled_gnss_t *g = &m->gnss;
+    if (!(m->receiver_attention & GNSS_ATTENTION_JAMMING) || !g->security_fresh || g->jam != OLED_RF_WARNING) return;
+    unsigned row = count;
+    char text[OLED_TEXT];
+    if (g->solution_fresh && row < OLED_ATTENTION_MAX) {
+        snprintf(text, sizeof text, "%s  %u SV USED", fix_name(g->fix), g->used);
+        put(c, 0, LINE_Y(row++), text);
+    }
+    if (row < OLED_ATTENTION_MAX) {
+        if (g->assessed) snprintf(text, sizeof text, "%u/%u FLAGGED", g->jammed, g->assessed);
+        else snprintf(text, sizeof text, "NO CENTERS ASSESSED");
+        put(c, 0, LINE_Y(row++), text);
+    }
+    const unsigned capacity = sizeof g->jammed_khz / sizeof *g->jammed_khz;
+    const unsigned available = g->jammed < capacity ? g->jammed : capacity;
+    const unsigned rows = OLED_ATTENTION_MAX - row;
+    if (!available || !rows) return;
+    const unsigned groups = (available + rows - 1) / rows;
+    const unsigned start = (m->uptime_s / 4 % groups) * rows;
+    for (unsigned i = start; i < available && row < OLED_ATTENTION_MAX; i++) {
+        uint32_t khz = g->jammed_khz[i] & 0xffffffu;
+        const char *band = "";
+        switch (khz) {
+        case 1575420: band = "L1/E1"; break;
+        case 1227600: band = "L2"; break;
+        case 1176450: band = "L5/E5a"; break;
+        case 1207140: band = "E5b/B2"; break;
+        case 1278750: band = "E6"; break;
+        case 1561098: band = "B1I"; break;
+        case 1268520: band = "B3I"; break;
+        case 1602000: band = "G1"; break;
+        case 1246000: band = "G2"; break;
+        }
+        snprintf(text, sizeof text, "%lu.%03lu MHz %s", (unsigned long)(khz / 1000),
+                 (unsigned long)(khz % 1000), band);
+        put(c, 0, LINE_Y(row++), text);
+    }
 }
 
 void oled_draw_page(oled_canvas_t *c, const oled_model_t *m, oled_page_t page)

@@ -31,6 +31,11 @@ func ProjectPublic(f *ingest.RawFrame) (*ingest.RawFrame, bool) {
 	if f == nil || f.Details != nil {
 		return nil, false
 	}
+	// A survey is private station evidence. Its Bytes contain the entire
+	// measurement even after stripping the decoded RF projection.
+	if f.MsgType == ingest.TelemJammingStats && len(f.Bytes) > 0 && f.Bytes[0] == 2 {
+		return nil, false
+	}
 	c := f.Observer
 	if c.ObserverID == "" {
 		c = identity.NewPrivateContext(f.Source, identity.CredentialLocalDial)
