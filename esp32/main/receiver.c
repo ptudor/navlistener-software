@@ -313,13 +313,15 @@ static void rx_task(void *arg)
         if(requested) {
             const uint8_t polls[][2]={{1,0x35},{1,0x43},{0x0a,0x38},{1,3},{1,7}};
             for(unsigned i=0;i<sizeof polls/sizeof polls[0];i++) poll_message(polls[i][0], polls[i][1]);
+            receiver_request_rf_survey();
         }
-        if (locked && expected_model && !strcmp(module, "ZED-X20P") && health.sec_sig) {
+        if (locked && expected_model && !strcmp(module, "ZED-X20P") && (configured || !CONFIG_NVF_RX_CONFIGURE)) {
             bool manual = atomic_exchange(&rf_requested, false);
-            if (manual || requested || now - last_survey >= 60000 ||
+            if (manual || now - last_survey >= 60000 ||
                 (health.event_count != survey_event && now - last_survey >= 5000)) {
                 // Pull a spectrum in clear conditions too, to give a later alert a comparison.
-                if (manual || requested) {
+                // A receiver with silent periodic SEC-SIG can still answer a direct poll.
+                if (manual || !health.sec_sig || now - health.rf_ms > 15000) {
                     parser->security_cache.length = 0;
                     poll_message(0x27, 0x09);
                 }
