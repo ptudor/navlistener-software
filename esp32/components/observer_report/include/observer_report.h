@@ -69,8 +69,9 @@ enum { HUMIDITY_NOT_LISTED = 0, HUMIDITY_HDC2080 = 1, HUMIDITY_HDC2022 = 2, HUMI
 typedef struct { bool present; uint8_t part; } report_humidity_t;
 // The barometer the manifest lists for the environment component's slot (tag 1 bit 2); tag
 // 15. BMP388 and BMP384 share a chip ID, as do BMP580 and BMP581, so the manifest names it.
+// The values are the wire's: BMP384 took the next one free.
 enum { PRESSURE_PART_NOT_LISTED = 0, PRESSURE_PART_BMP388 = 1, PRESSURE_PART_BMP580 = 2,
-       PRESSURE_PART_BMP581 = 3, PRESSURE_PART_CONFLICT = 4 };
+       PRESSURE_PART_BMP581 = 3, PRESSURE_PART_CONFLICT = 4, PRESSURE_PART_BMP384 = 5 };
 typedef struct { bool present; uint8_t part; } report_pressure_t;
 // The ZED/X20's INA3221 rail monitor; tag 16. Per channel, the bus voltage (IN- to ground),
 // the voltage across the shunt, and the board's shunt resistance, which is zero for a

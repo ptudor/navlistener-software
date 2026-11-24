@@ -31,9 +31,10 @@ type ObserverDetails struct {
 	// unconfigured board) or "conflicting" (both listed; not measured).
 	HumiditySensor string `json:"humidity_sensor,omitempty"`
 	// PressureSensor is the barometer the manifest lists for the environment's barometer
-	// slot: "bmp388_bmp384", "bmp580" or "bmp581" (each pair shares a chip ID), "not_listed"
-	// or "conflicting" (more than one listed; none measured). On a board that lists a BMP580
-	// or BMP581, bmp388_bmp384_c and pressure_pa are that part's readings.
+	// slot: "bmp388", "bmp384", "bmp580" or "bmp581" (each pair shares a chip ID, so the
+	// manifest is what tells them apart), "not_listed" or "conflicting" (more than one
+	// listed; none measured). bmp388_bmp384_c and pressure_pa are that part's readings,
+	// whichever of the four it is.
 	PressureSensor string          `json:"pressure_sensor,omitempty"`
 	Rails          *BoardRails     `json:"rails,omitempty"`
 	Regulator      *BoardRegulator `json:"regulator,omitempty"`
@@ -318,10 +319,10 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 			}
 			d.HumiditySensor = []string{"not_listed", "hdc2080", "hdc2022", "conflicting"}[v[1]]
 		case 15:
-			if n != 2 || v[0] != 1 || v[1] > 4 {
+			if n != 2 || v[0] != 1 || v[1] > 5 {
 				return nil, ErrBadTelemetry
 			}
-			d.PressureSensor = []string{"not_listed", "bmp388_bmp384", "bmp580", "bmp581", "conflicting"}[v[1]]
+			d.PressureSensor = []string{"not_listed", "bmp388", "bmp580", "bmp581", "conflicting", "bmp384"}[v[1]]
 		case 16:
 			var err error
 			if d.Rails, err = decodeRails(v); err != nil {

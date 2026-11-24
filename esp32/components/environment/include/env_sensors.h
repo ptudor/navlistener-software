@@ -37,9 +37,10 @@ typedef struct {
     bool hdc_bus_error; // a transfer with the HDC failed; the heater's safety stop looks only at this
     double mcp_c, hdc_c, rh_percent, bmp_c, pressure_pa;
 } env_sample_t;
-// The MCP9808 and BMP388 are probed only when parts lists them (the manifest does);
-// an unknown/disabled HDC variant leaves the HDC unavailable. Others still initialize.
-enum { ENV_PART_MCP9808 = 1, ENV_PART_BMP388 = 4 };
+// The MCP9808 and the BMP3 at 0x76 (a BMP388 or a BMP384: one register map, chip ID and
+// compensation) are probed only when parts lists them (the manifest does); an
+// unknown/disabled HDC variant leaves the HDC unavailable. Others still initialize.
+enum { ENV_PART_MCP9808 = 1, ENV_PART_BMP3 = 4 };
 void env_sensors_init(env_sensors_t *s, const env_io_t *io, env_hdc_variant_t hdc_variant, unsigned parts);
 // Repeats the HDC identification and heater-off configuration if it failed at init. A reboot
 // during a heater run leaves HEAT_EN set until the part is configured again. True once ready.
@@ -47,7 +48,7 @@ bool env_sensors_retry_hdc(env_sensors_t *s);
 // Always clears validity first: a failed conversion cannot expose an old value.
 void env_sensors_read(env_sensors_t *s, env_sample_t *sample);
 // The same for sensors in mask (bit 0 MCP9808, 1 HDC, 2 BMP); the others stay invalid.
-// Listed MCP9808/BMP388 parts retry identification after a failed init/read. HDC retries
+// A listed MCP9808 or BMP3 retries identification after a failed init/read. HDC retries
 // remain explicit so they cannot turn off the heater during a managed heater run.
 void env_sensors_read_some(env_sensors_t *s, env_sample_t *sample, uint8_t mask);
 // HDC CONFIG HEAT_EN (0x0E bit 3), read-modify-write keeping the interrupt and measurement

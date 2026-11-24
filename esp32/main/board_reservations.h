@@ -154,7 +154,7 @@ NVF_PINS_CHECK(NVF_PINS_MOSAIC_P3, "the P3 pin map");
 #define NVF_I2C_RECEIVER_EXPANDER 0x25 /* MCP23008 U41, X20 revision B receiver service */
 #define NVF_I2C_IMU           0x69 /* ICM-45686, MAX, strapped     */
 #define NVF_I2C_RTC           0x6f /* MCP79412 RTCC, NEO, MAX and P3 */
-#define NVF_I2C_PRESSURE      0x76 /* BMP388, NEO                  */
+#define NVF_I2C_PRESSURE      0x76 /* BMP388 or BMP384, NEO        */
 #define NVF_I2C_PRESSURE_ALT  0x77 /* MS5607, MAX and P3, CSB low  */
 
 // U41 receiver-service functions. GP0-GP3 are only ever driven low or released;

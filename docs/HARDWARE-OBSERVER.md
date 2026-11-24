@@ -600,7 +600,7 @@ other entries say which parts are installed.
 | `CAT_INTSAT`, revision | `INTSAT_NEO`, 1 | `INTSAT_MAX`, 1 | `INTSAT_X20`, 1 (A) or 2 (B) | `INTSAT_MOSAIC_P3`, 1 |
 | `CAT_GPS` | `GPS_NEO_M9N` | `GPS_MAX_M10S` | `GPS_ZED_X20P` | `GPS_MOSAIC_G5_P3` |
 | `CAT_RTC` | `RTC_MCP79412` `0x6F` | `RTC_MCP79412` `0x6F` | `RTC_DS3231M` `0x68` | `RTC_MCP79412` `0x6F` |
-| `CAT_PRESSURE` | `PRESSURE_BMP388` `0x76` | `PRESSURE_MS5607` `0x77` | `PRESSURE_BMP581` `0x46` | `PRESSURE_MS5607` `0x77` |
+| `CAT_PRESSURE` | `PRESSURE_BMP388` or `PRESSURE_BMP384` `0x76`, as the batch was built | `PRESSURE_MS5607` `0x77` | `PRESSURE_BMP581` `0x46` | `PRESSURE_MS5607` `0x77` |
 | `CAT_POWER`, GPIO38 (`3V3_GNSS`) | `POWER_ADM7150` | `POWER_TPS7A20` | `POWER_ADM7150` | `POWER_ADM7150` |
 | `CAT_POWER`, GPIO21 (`3V3_SENS`) | `POWER_RT9193` | `POWER_TPS7A20` | `POWER_TPS7A20` | `POWER_RT9193` |
 | `CAT_POWER`, I2C | — | — | `POWER_INA3221` `0x41` (rail monitor) | `POWER_INA3221` `0x41` (rail monitor) |
@@ -610,7 +610,8 @@ other entries say which parts are installed.
 | `CAT_BATTERY` | `BATTERY_CR123A` | `BATTERY_CR2032`; `BATTERY_CR123A` not populated (optional external cell) | `BATTERY_CR2032`, `BATTERY_CR123A` (carrier) | `BATTERY_CR2032` (RTC only) |
 | `CAT_BUTTON` | `BUTTON_BOOT` GPIO0 | `BUTTON_BOOT` GPIO0, `BUTTON_USER_2` GPIO18 (brightness) | `BUTTON_BOOT` GPIO0, `BUTTON_USER_2` GPIO18 (brightness) | `BUTTON_BOOT` GPIO0, `BUTTON_USER_2` GPIO18 (brightness, on the card and the panel) |
 
-All four also list the ESP32-S3, ATECC608C `0x60`, MCP9808 `0x18`, HDC2080 `0x40`, the
+All four also list the ESP32-S3, ATECC608C `0x60`, MCP9808 `0x18`, the batch's HDC2080 or
+HDC2022 at `0x40`, the
 TLC5916 drivers by output-enable GPIO47/GPIO48 (two on the NEO and MAX; the 162mm panel's
 three, of which U12 and U14 share GPIO47), USB-OTG and the Qwiic port. The ZED-X20P column is
 the 162mm mainboard with its required LED panel; revision A was redefined to it on
@@ -619,7 +620,11 @@ brought to the same parts so it can carry the list. Revision B keeps that instal
 adds U41 at `0x25`; the default-DNP receiver USB option is deliberately absent. The P3 column is the mosaic-G5 P3 card in
 the same enclosure with the same panel on its 24-bit ribbon. It carries two MCP9808s, so
 firmware tells their roles apart by address (`eeprom_has_ic_at()`): `0x18` measures the board,
-`0x1F` the LDL1117 system regulator's heat spreader (§6.2).
+`0x1F` the LDL1117 system regulator's heat spreader (§6.2). The NEO's U2 is a BMP388 in
+its BOM and a BMP384 on the first-article lot. The two data sheets give one register map,
+chip ID (`0x50`), trimming table and compensation formula, so the driver is the same and
+nothing on the bus says which is fitted: the batch names it when the manifest is written, as
+it names the humidity sensor, and the manifest is the only record of it.
 
 One universal firmware image serves all four boards. It drives a board's pins only when the
 manifest's `CAT_INTSAT` entry names that board and a revision it knows, and runs each driver

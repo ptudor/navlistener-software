@@ -53,6 +53,10 @@ func TestStationProfileValidate(t *testing.T) {
 		{Mode: ModeMobile},
 		{Mode: ModeFixed, Position: &Surveyed{LatDeg: 37.4, LonDeg: -122.1, HeightM: 12},
 			Barometer: &BarometerPolicy{Sensor: "bmp581", Vented: true, RelativeUncertaintyPa: 10}},
+		{Mode: ModeFixed, Position: &Surveyed{LatDeg: 37.4, LonDeg: -122.1, HeightM: 12},
+			Barometer: &BarometerPolicy{Sensor: "bmp388", Vented: true, RelativeUncertaintyPa: 10}},
+		{Mode: ModeFixed, Position: &Surveyed{LatDeg: 37.4, LonDeg: -122.1, HeightM: 12},
+			Barometer: &BarometerPolicy{Sensor: "bmp384", Vented: true, RelativeUncertaintyPa: 10}},
 	}
 	for _, s := range good {
 		if err := s.Validate(); err != nil {
@@ -70,6 +74,8 @@ func TestStationProfileValidate(t *testing.T) {
 		{Mode: ModeFixed, Barometer: &BarometerPolicy{Sensor: "bmp581", Vented: true, RelativeUncertaintyPa: 10}},
 		{Mode: ModeFixed, Position: &Surveyed{}, Barometer: &BarometerPolicy{Sensor: "bmp581", RelativeUncertaintyPa: 10}},
 		{Mode: ModeFixed, Position: &Surveyed{}, Barometer: &BarometerPolicy{Sensor: "wrong", Vented: true, RelativeUncertaintyPa: 10}},
+		// The two parts are told apart by the manifest, so a policy names one of them.
+		{Mode: ModeFixed, Position: &Surveyed{}, Barometer: &BarometerPolicy{Sensor: "bmp388_bmp384", Vented: true, RelativeUncertaintyPa: 10}},
 	}
 	for _, s := range bad {
 		if s.Validate() == nil {

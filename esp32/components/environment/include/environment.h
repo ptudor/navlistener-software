@@ -12,15 +12,19 @@
 #include "sht3x.h"
 #include "hih8121.h"
 #include "driver/i2c_master.h"
+// The BMP3 part the manifest lists at 0x76. BMP388 and BMP384 share their register map,
+// CHIP_ID and compensation, so this only names it.
+typedef enum { ENV_BMP3_NONE = 0, ENV_BMP388, ENV_BMP384 } env_bmp3_t;
 // The BMP5 part the manifest lists at 0x46. BMP580 and BMP581 share their register map and
 // CHIP_ID, so this only names it.
 typedef enum { ENV_BMP5_NONE = 0, ENV_BMP580, ENV_BMP581 } env_bmp5_t;
 // The parts the manifest lists; call before the first sample. Nothing unlisted is probed
 // or measured. hdc is the variant listed at 0x40, or ENV_HDC_NONE, which measures no
-// humidity (see env_hdc_heater_off_unlisted). The BMP388 and a BMP5 fill the same
+// humidity (see env_hdc_heater_off_unlisted). A BMP3 and a BMP5 fill the same
 // barometer slot of the sample, so at most one of them is listed.
 typedef struct {
-    bool mcp9808, bmp388, ms5607, mmc34160, ina3221;
+    bool mcp9808, ms5607, mmc34160, ina3221;
+    env_bmp3_t bmp3;
     env_bmp5_t bmp5;
     env_hdc_variant_t hdc;
     // The INA3221's alert limits per channel in shunt microvolts, from the board's rails;

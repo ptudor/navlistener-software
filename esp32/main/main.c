@@ -106,6 +106,9 @@ static size_t session_evidence(const uint8_t *exported, uint8_t *out, size_t cap
 // literal false in ordinary builds instead of requiring scattered #ifdefs.
 #define CONFIG_NVF_MANIFEST_FACTORY_INIT 0
 #endif
+#ifndef CONFIG_NVF_MANIFEST_FACTORY_CORRECT
+#define CONFIG_NVF_MANIFEST_FACTORY_CORRECT 0
+#endif
 
 #if CONFIG_NVF_CONFIG_RESET_GPIO >= 0
 #define CONFIG_RESET_POLL_MS 20u
@@ -450,7 +453,7 @@ void app_main(void)
 
 #if CONFIG_NVF_BOARD_GNSS_COLOR
     hardware_manifest_result_t manifest={0};
-    err = hardware_manifest_boot(CONFIG_NVF_MANIFEST_FACTORY_INIT, &manifest);
+    err = hardware_manifest_boot(CONFIG_NVF_MANIFEST_FACTORY_INIT, CONFIG_NVF_MANIFEST_FACTORY_CORRECT, &manifest);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "hardware manifest inspection failed: %s", esp_err_to_name(err));
         manifest.action = HARDWARE_MANIFEST_ACTION_IO_ERROR;

@@ -134,6 +134,22 @@ int main(int argc, char **argv)
     observer_report_sent(&p,&x); x.uptime_ms+=60000; x.pressure.part=PRESSURE_PART_CONFLICT;
     assert(observer_report_due(&p,&x)==REPORT_CHANGE);
 
+    // The barometer part's values are the wire's. A BMP384 is its own part: it is sent as 5,
+    // and a manifest corrected from the BMP388 to it is a change worth a report.
+    _Static_assert(PRESSURE_PART_NOT_LISTED==0 && PRESSURE_PART_BMP388==1 && PRESSURE_PART_BMP580==2 &&
+                   PRESSURE_PART_BMP581==3 && PRESSURE_PART_CONFLICT==4 && PRESSURE_PART_BMP384==5,
+                   "tag 15 part values are on the wire; append, never renumber");
+    observer_report_t neo=golden;
+    neo.pressure=(report_pressure_t){.present=true,.part=PRESSURE_PART_BMP384};
+    size_t neo_count=observer_report_encode(actual,sizeof actual,&neo), found=0;
+    static const uint8_t bmp384[]={0x0f,0,2, 1,5};
+    for (size_t i=0;i+sizeof bmp384<=neo_count;i++) found+=!memcmp(actual+i,bmp384,sizeof bmp384);
+    assert(neo_count && found==1);
+    p=(report_policy_t){0}; observer_report_sent(&p,&neo); neo.uptime_ms+=60000;
+    assert(!observer_report_due(&p,&neo));
+    neo.pressure.part=PRESSURE_PART_BMP388;
+    assert(observer_report_due(&p,&neo)==REPORT_CHANGE);
+
     // The regulator tag (23) follows the rails: the X20 fixture with a throttled spreader.
     observer_report_t g=x; g.pressure.part=PRESSURE_PART_BMP581;
     g.rails.state=1; g.rails.valid=7;

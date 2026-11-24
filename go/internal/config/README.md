@@ -338,7 +338,7 @@ surveyed positions and, when both are given, must agree with it within a metre. 
 belongs to at most one pair, and a pair needs no other installation.
 
 `[integrity.station.barometer]` opts a surveyed fixed station into regional-pressure and
-barometric-height checks. It must name the exact reported channel (`bmp388_bmp384`, `bmp580`,
+barometric-height checks. It must name the exact reported channel (`bmp388`, `bmp384`, `bmp580`,
 `bmp581`, or `ms5607`), set `vented = true` only after the installed pressure path has been
 qualified, and provide `relative_uncertainty_pa`. That uncertainty covers the installed
 channel's repeatability, temperature behavior, vent response, mounting, and calibration; it is

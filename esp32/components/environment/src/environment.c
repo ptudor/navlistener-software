@@ -23,15 +23,16 @@ static env_parts_t parts = {.hdc = ENV_HDC_NONE};
 static env_hdc_variant_t hdc_variant = ENV_HDC_NONE;
 static const char *hdc_name = "HDC";
 static const char *hdc_conversion = "";
-// The part in the sample's barometer slot, for the logs.
-static const char *barometer_name = "BMP388/BMP384";
+// The part the manifest names for the sample's barometer slot, for the logs.
+static const char *barometer_name = "barometer";
 void environment_configure(const env_parts_t *listed)
 {
     parts = *listed;
     addresses[REGULATOR_DEVICE] = parts.regulator_mcp9808;
     addresses[SHT3X_DEVICE] = parts.sht3x;
     addresses[HIH8121_DEVICE] = parts.hih8121;
-    barometer_name = parts.bmp5 == ENV_BMP581 ? "BMP581" : parts.bmp5 == ENV_BMP580 ? "BMP580" : "BMP388/BMP384";
+    barometer_name = parts.bmp5 == ENV_BMP581 ? "BMP581" : parts.bmp5 == ENV_BMP580 ? "BMP580" :
+                     parts.bmp3 == ENV_BMP384 ? "BMP384" : parts.bmp3 == ENV_BMP388 ? "BMP388" : "barometer";
     hdc_variant = parts.hdc;
     hdc_name = hdc_variant == ENV_HDC2022 ? "HDC2022" : hdc_variant == ENV_HDC2080 ? "HDC2080" : "HDC";
     hdc_conversion = hdc_variant == ENV_HDC2022 ? "Rev A conversion" :
@@ -237,10 +238,10 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
         sensor_bus = bus;
         if (parts.mcp9808) attach(bus, TEMPERATURE_DEVICE);
         attach(bus, HUMIDITY_DEVICE);
-        if (parts.bmp388) attach(bus, PRESSURE_DEVICE);
+        if (parts.bmp3) attach(bus, PRESSURE_DEVICE);
         env_io_t io = {.read = read_register, .write = write_register, .delay_ms = delay_ms};
         env_sensors_init(&sensors, &io, hdc_variant,
-                         (parts.mcp9808 ? ENV_PART_MCP9808 : 0) | (parts.bmp388 ? ENV_PART_BMP388 : 0));
+                         (parts.mcp9808 ? ENV_PART_MCP9808 : 0) | (parts.bmp3 ? ENV_PART_BMP3 : 0));
         initialized = true;
         if (hdc_variant == ENV_HDC_NONE) {
             // Not measured, but a heater left on by an earlier boot is still turned off.
@@ -256,7 +257,7 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
         ESP_LOGI(TAG, "measurement setup: MCP9808=%s %s=%s %s=%s",
             !parts.mcp9808 ? "not listed" : sensors.mcp_ready ? "ready" : "unavailable", hdc_name,
             hdc_variant == ENV_HDC_NONE ? "not listed" : sensors.hdc_ready ? "ready" : "unavailable", barometer_name,
-            parts.bmp5 ? "identified at each sample" : !parts.bmp388 ? "not listed" : sensors.bmp_ready ? "ready" : "unavailable");
+            parts.bmp5 ? "identified at each sample" : !parts.bmp3 ? "not listed" : sensors.bmp_ready ? "ready" : "unavailable");
         if (sensors.hdc_ready) heater_load();
     } else if (!sensors.hdc_ready && hdc_variant != ENV_HDC_NONE) {
         // A reboot during a heater run leaves HEAT_EN set until the HDC is configured again, so
@@ -268,7 +269,7 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
         }
     }
     if (parts.mcp9808 && !sensors.mcp_ready) attach(bus, TEMPERATURE_DEVICE);
-    if (parts.bmp388 && !sensors.bmp_ready) attach(bus, PRESSURE_DEVICE);
+    if (parts.bmp3 && !sensors.bmp_ready) attach(bus, PRESSURE_DEVICE);
     env_sample_t sample;
     // While HEAT_EN may be set, only the heater steps convert the HDC.
     bool heating = heater.state == ENV_HEATER_HEATING || heater.state == ENV_HEATER_STOPPING;
@@ -298,7 +299,7 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
     else if (!heating && hdc_variant != ENV_HDC_NONE) ESP_LOGW(TAG, "%s measurement unavailable", hdc_name);
     if (sample.bmp_valid) ESP_LOGI(TAG, "%s temperature=%.2f C pressure=%.2f hPa (local absolute)%s", barometer_name,
                                    sample.bmp_c, sample.pressure_pa / 100.0, mark);
-    else if (parts.bmp388 || parts.bmp5) ESP_LOGW(TAG, "%s measurement unavailable", barometer_name);
+    else if (parts.bmp3 || parts.bmp5) ESP_LOGW(TAG, "%s measurement unavailable", barometer_name);
     if (heater.state != ENV_HEATER_NORMAL) { sample.hdc_valid = false; sample.hdc_c = sample.rh_percent = 0; }
     *out = sample;
 }

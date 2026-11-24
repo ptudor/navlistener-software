@@ -2,8 +2,10 @@
 board is judged only on what its firmware printed, and the report never carries the
 setup password the capture holds."""
 
+import contextlib
 from datetime import datetime, timedelta, timezone
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -52,12 +54,14 @@ def console(lines=BOOT) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
-def judge(text: str, mac="02a1b2c3d4e5", expect=None) -> dict:
+def judge(text: str, mac="02a1b2c3d4e5", expect=None, barometer=None) -> dict:
     profile = bench_check.PROFILES[expect] if expect else None
     facts = bench_check.parse_console(text)
     return {
         c["name"]: (c["result"], c["detail"])
-        for c in bench_check.evaluate(facts, elf_sha256=ELF_SHA256, mac=mac, seconds=30, expect=profile)
+        for c in bench_check.evaluate(
+            facts, elf_sha256=ELF_SHA256, mac=mac, seconds=30, expect=profile, barometer=barometer
+        )
     }
 
 
@@ -229,11 +233,83 @@ class ConsoleTests(unittest.TestCase):
         text = console().replace(OBSERVER, "board-0003-" + "0" * 32)
         self.assertEqual(judge(text)["board_uid"][0], "fail")
 
-    def test_a_manifest_written_this_boot_says_so(self):
-        text = console(
-            [*BOOT[:9], log("W", "hw_manifest", "factory-init enabled: programming blank NEO first-spin revision A manifest"), *BOOT[9:]]
+    def test_a_manifest_written_this_boot_says_so_and_with_which_batch_parts(self):
+        written = "factory-init enabled: programming blank NEO first-spin revision A manifest"
+        text = console([*BOOT[:9], log("W", "hw_manifest", written + " with HDC2080 and BMP384"), *BOOT[9:]])
+        self.assertEqual(
+            judge(text)["manifest"], ("pass", "NEO revision A; programmed this boot with HDC2080 and BMP384")
         )
+        # An image from before the firmware named the batch.
+        text = console([*BOOT[:9], log("W", "hw_manifest", written), *BOOT[9:]])
         self.assertEqual(judge(text)["manifest"], ("pass", "NEO revision A; programmed this boot"))
+
+    def test_a_correcting_image_says_what_it_did_to_the_batch_parts(self):
+        def run(*lines):
+            return judge(console([*BOOT[:9], *[log(level, "hw_manifest", line) for level, line in lines], *BOOT[9:]]))
+
+        corrected = run(
+            ("W", "batch correction enabled: rewriting the NEO first-spin revision A manifest, which lists "
+                  "HDC2080 and BMP388, with HDC2080 and BMP384"),
+            ("W", "manifest batch parts corrected this boot: HDC2080 and BMP388 became HDC2080 and BMP384"),
+        )  # fmt: skip
+        self.assertEqual(
+            corrected["manifest"],
+            ("pass", "NEO revision A; batch parts corrected this boot: HDC2080 and BMP388 became HDC2080 and BMP384"),
+        )
+        unchanged = run(("I", "batch correction enabled: the manifest already lists HDC2080 and BMP384; nothing written"))
+        self.assertEqual(
+            unchanged["manifest"], ("pass", "NEO revision A; batch correction found HDC2080 and BMP384 already listed")
+        )
+        # A manifest that is none of the image's lists is left alone, and the run fails for it.
+        refused = run(
+            ("E", "batch correction enabled, but the stored manifest is not a NEO first-spin revision A "
+                  "list this firmware builds; it is left as it is")
+        )  # fmt: skip
+        self.assertEqual(
+            refused["manifest"],
+            ("fail", "NEO revision A; batch correction refused: the stored manifest is not a list this image builds"),
+        )
+        # A rewrite that was announced but never confirmed is not reported as a correction.
+        announced = run(
+            ("W", "batch correction enabled: rewriting the NEO first-spin revision A manifest, which lists "
+                  "HDC2080 and BMP388, with HDC2080 and BMP384")
+        )  # fmt: skip
+        self.assertEqual(announced["manifest"], ("pass", "NEO revision A"))
+
+    def test_the_barometer_a_neo_manifest_names_is_held_to_the_one_asked_for(self):
+        def neo(part):
+            lines = [log("I", "observer_board", "pressure at 0x76: ESP_OK")]
+            if part:
+                family = f"pressure chip ID=0x50; BMP388/BMP384 family verified (the manifest names the {part})"
+                lines.append(log("I", "observer_board", family))
+            return console([*BOOT, *lines])
+
+        named = judge(neo("BMP384"), expect="neo", barometer="BMP384")
+        self.assertEqual(
+            named["identity:pressure@0x76"], ("pass", "BMP388/BMP384 family verified (the manifest names the BMP384)")
+        )
+        self.assertEqual(named["manifest.barometer"], ("pass", "the manifest names the BMP384"))
+        self.assertEqual(
+            judge(neo("BMP388"), expect="neo", barometer="BMP384")["manifest.barometer"],
+            ("fail", "the manifest names the BMP388, expected the BMP384"),
+        )
+        self.assertEqual(
+            judge(neo(None), expect="neo", barometer="BMP384")["manifest.barometer"],
+            ("fail", "the firmware did not report which barometer the manifest names"),
+        )
+        # An image from before the firmware named the part says only the family.
+        older = neo(None).replace("pressure at 0x76: ESP_OK", "pressure chip ID=0x50; BMP388/BMP384 family (ID cannot distinguish them)")
+        self.assertEqual(
+            judge(older, expect="neo", barometer="BMP384")["manifest.barometer"],
+            ("fail", "the firmware did not report which barometer the manifest names"),
+        )
+        # Not asked for, not checked.
+        self.assertNotIn("manifest.barometer", judge(neo("BMP384"), expect="neo"))
+
+    def test_the_barometer_option_needs_the_neo_profile(self):
+        for argv in (["--barometer", "bmp384"], ["--barometer", "bmp384", "--expect", "zed-x20"]):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                bench_check.main(["--port", "/dev/null", "--build-dir", "/nonexistent", "--station", "bench-1", *argv])
 
     def test_a_p3_receiver_counts_as_traffic_without_expect(self):
         self.assertEqual(judge(console(P3))["receiver"], ("pass", "COM2 configured for SBF"))

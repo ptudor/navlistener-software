@@ -73,7 +73,7 @@ static void init_mcp(env_sensors_t *s)
 static void init_bmp(env_sensors_t *s)
 {
     uint8_t p[21];
-    if (!(s->parts & ENV_PART_BMP388) || !read_reg(s, 0x76, 0, p, 1) || p[0] != 0x50 ||
+    if (!(s->parts & ENV_PART_BMP3) || !read_reg(s, 0x76, 0, p, 1) || p[0] != 0x50 ||
         !read_reg(s, 0x76, 0x31, p, sizeof p)) return;
     bool all_zero = true, all_ff = true;
     for (unsigned i = 0; i < sizeof p; i++) { all_zero &= p[i] == 0; all_ff &= p[i] == 255; }

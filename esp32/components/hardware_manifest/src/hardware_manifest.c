@@ -1,5 +1,6 @@
 #include "hardware_manifest.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_check.h"
@@ -169,6 +170,26 @@ static esp_err_t adopted_uid_store(const uint8_t uid[NVF_BOARD_UID_SIZE])
 #else
 #define MANIFEST_HDC SENSOR_HDC2080
 #endif
+// The barometer at 0x76 on a NEO batch. A BMP388 and a BMP384 answer alike, so the manifest
+// is the only record of which is fitted. Every other board's list names its own barometer
+// and takes none from the batch.
+#if CONFIG_NVF_MANIFEST_BARO_BMP384
+#define MANIFEST_BARO PRESSURE_BMP384
+#elif CONFIG_NVF_MANIFEST_BARO_BMP388
+#define MANIFEST_BARO PRESSURE_BMP388
+#else
+#define MANIFEST_BARO 0
+#endif
+
+// "HDC2080", or "HDC2080 and BMP384" for a batch that names a barometer.
+static const char *batch_name(const eeprom_intsat_options_t *batch, char *out, size_t size)
+{
+    const eeprom_ic_descriptor_t humidity = IC_I2C(CAT_SENSOR, batch->humidity_id, 0x40);
+    const eeprom_ic_descriptor_t pressure = IC_I2C(CAT_PRESSURE, batch->pressure_id, 0x76);
+    if (batch->pressure_id) snprintf(out, size, "%s and %s", eeprom_ic_name(&humidity), eeprom_ic_name(&pressure));
+    else snprintf(out, size, "%s", eeprom_ic_name(&humidity));
+    return out;
+}
 
 static bool capabilities_match_board(const eeprom_capabilities_t *caps)
 {
@@ -220,7 +241,7 @@ static esp_err_t inspect(hardware_manifest_result_t *result,
     return ESP_OK;
 }
 
-esp_err_t hardware_manifest_boot(bool allow_factory_init,
+esp_err_t hardware_manifest_boot(bool allow_factory_init, bool allow_batch_correction,
                                  hardware_manifest_result_t *result)
 {
     ESP_RETURN_ON_FALSE(result != NULL, ESP_ERR_INVALID_ARG, TAG, "NULL result");
@@ -266,15 +287,17 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
     if (nvf_uid_observer(result->identity.eeprom_uid, observer))
         ESP_LOGI(TAG, "manifest EEPROM factory serial: %s", observer);
 
+    const eeprom_intsat_options_t batch = {.humidity_id = MANIFEST_HDC, .pressure_id = MANIFEST_BARO};
+    char batch_parts[32], stored_parts[32];
     if (result->action == HARDWARE_MANIFEST_ACTION_INITIALIZE &&
         allow_factory_init) {
         eeprom_capabilities_t defaults;
-        const eeprom_intsat_options_t batch = {.humidity_id = MANIFEST_HDC};
         ESP_RETURN_ON_FALSE(eeprom_intsat_template(MANIFEST_BOARD_ID, MANIFEST_BOARD_REVISION,
                                                    &batch, profile, &defaults) &&
                             defaults.i2c_address == address, ESP_ERR_NOT_SUPPORTED, TAG,
-                            "no " MANIFEST_BOARD_NAME " manifest for this EEPROM");
-        ESP_LOGW(TAG, "factory-init enabled: programming blank " MANIFEST_BOARD_NAME " manifest");
+                            "no " MANIFEST_BOARD_NAME " manifest for this EEPROM and batch");
+        ESP_LOGW(TAG, "factory-init enabled: programming blank " MANIFEST_BOARD_NAME " manifest with %s",
+                 batch_name(&batch, batch_parts, sizeof batch_parts));
         if (!eeprom_write_capabilities(address, &defaults, false)) {
             result->action = HARDWARE_MANIFEST_ACTION_IO_ERROR;
             return ESP_FAIL;
@@ -287,6 +310,48 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
         if (result->action != HARDWARE_MANIFEST_ACTION_USE) {
             ESP_LOGE(TAG, "programmed manifest did not validate");
             return ESP_ERR_INVALID_RESPONSE;
+        }
+    } else if (result->action == HARDWARE_MANIFEST_ACTION_USE && result->capabilities_valid &&
+               allow_factory_init && allow_batch_correction) {
+        // A board initialized with the wrong batch setting. Only a manifest that is, byte for
+        // byte, this board revision's list for other batch parts is rewritten; one that carries
+        // anything else (another board, a field status, a hand edit) is left as it is.
+        eeprom_intsat_options_t stored_batch = {0};
+        eeprom_capabilities_t corrected;
+        switch (manifest_batch_classify(&result->capabilities, MANIFEST_BOARD_ID, MANIFEST_BOARD_REVISION,
+                                        &batch, profile, &stored_batch)) {
+        case MANIFEST_BATCH_SELECTED:
+            ESP_LOGI(TAG, "batch correction enabled: the manifest already lists %s; nothing written",
+                     batch_name(&batch, batch_parts, sizeof batch_parts));
+            break;
+        case MANIFEST_BATCH_OTHER:
+            ESP_RETURN_ON_FALSE(eeprom_intsat_template(MANIFEST_BOARD_ID, MANIFEST_BOARD_REVISION,
+                                                       &batch, profile, &corrected) &&
+                                corrected.i2c_address == address, ESP_ERR_NOT_SUPPORTED, TAG,
+                                "no " MANIFEST_BOARD_NAME " manifest for this EEPROM and batch");
+            corrected.timestamp = result->capabilities.timestamp;
+            ESP_LOGW(TAG, "batch correction enabled: rewriting the " MANIFEST_BOARD_NAME " manifest, which lists %s, with %s",
+                     batch_name(&stored_batch, stored_parts, sizeof stored_parts),
+                     batch_name(&batch, batch_parts, sizeof batch_parts));
+            if (!eeprom_write_capabilities(address, &corrected, true)) {
+                result->action = HARDWARE_MANIFEST_ACTION_IO_ERROR;
+                return ESP_FAIL;
+            }
+            memset(&result->capabilities, 0, sizeof(result->capabilities));
+            result->capabilities_valid = false;
+            ESP_RETURN_ON_ERROR(inspect(result, known_present, known_eui), TAG, "verify corrected manifest");
+            if (result->action != HARDWARE_MANIFEST_ACTION_USE || !result->capabilities_valid ||
+                manifest_batch_classify(&result->capabilities, MANIFEST_BOARD_ID, MANIFEST_BOARD_REVISION,
+                                        &batch, profile, &stored_batch) != MANIFEST_BATCH_SELECTED) {
+                ESP_LOGE(TAG, "corrected manifest did not read back as written");
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+            ESP_LOGW(TAG, "manifest batch parts corrected this boot: %s became %s", stored_parts, batch_parts);
+            break;
+        default:
+            ESP_LOGE(TAG, "batch correction enabled, but the stored manifest is not a " MANIFEST_BOARD_NAME
+                          " list this firmware builds; it is left as it is");
+            break;
         }
     }
 

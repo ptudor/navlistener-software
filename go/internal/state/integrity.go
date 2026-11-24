@@ -371,9 +371,9 @@ func integrityEnvironment(d *ingest.ObserverDetails, recv time.Time) (integrity.
 			})
 		}
 
-		pressureExpected := d.PressureSensor == "bmp388_bmp384" || d.PressureSensor == "bmp580" ||
-			d.PressureSensor == "bmp581" || d.PressureSensor == "conflicting" || e.ReadyMask&4 != 0 ||
-			e.BMP3C != nil || e.PressurePa != nil
+		pressureExpected := d.PressureSensor == "bmp388" || d.PressureSensor == "bmp384" ||
+			d.PressureSensor == "bmp580" || d.PressureSensor == "bmp581" || d.PressureSensor == "conflicting" ||
+			e.ReadyMask&4 != 0 || e.BMP3C != nil || e.PressurePa != nil
 		if pressureExpected {
 			name := d.PressureSensor
 			if name == "" || name == "conflicting" {

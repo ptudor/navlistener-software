@@ -132,7 +132,9 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
 - BMP388/BMP384: temperature and pressure compensated using the chip's factory
   trim and the pinned Bosch BMP3 SensorAPI. Fresh forced conversions use pressure
   8× and temperature 2× oversampling. Chip ID `0x50` does not distinguish these
-  two variants. Pressure is local absolute pressure, without sea-level correction.
+  two variants, whose data sheets give one register map, trimming table and
+  compensation formula; the manifest names the one fitted and tag 15 reports it.
+  Pressure is local absolute pressure, without sea-level correction.
 - ZED/X20 BMP581 (or BMP580) at `0x46`: the part compensates on chip. At each
   sample it is identified after a soft reset (CHIP_ID `0x50` at register `0x01`, NVM
   ready without error, reset reported), then makes one forced conversion at pressure
@@ -365,7 +367,7 @@ invalid lengths/enums/ranges, and trailing partial TLVs are rejected.
 | 12 thermocouple | 12 | MAX board MAX31856; layout below |
 | 13 motion | 95 | MAX board ICM-45686 and MMC34160PJ summary; layout below |
 | 14 humidity sensor | 2 | version U8 = 1, part U8: not listed=0, HDC2080=1, HDC2022=2, both listed=3 |
-| 15 pressure sensor | 2 | version U8 = 1, part U8 in tag 1's barometer slot: not listed=0, BMP388/BMP384=1, BMP580=2, BMP581=3, more than one listed=4 |
+| 15 pressure sensor | 2 | version U8 = 1, part U8 in tag 1's barometer slot: not listed=0, BMP388=1, BMP580=2, BMP581=3, more than one listed=4, BMP384=5 |
 | 16 rails | 27 | ZED/X20 INA3221 rail monitor; layout below |
 | 17 reception | 76 | Current edge assessment against a collector forecast; [layout and rules](RECEPTION.md) |
 | 18 reception event | 76 | A retained local journal transition; never advances the live evaluator |
@@ -816,7 +818,7 @@ The existing `hdc2080_c` field carries the HDC2080 or HDC2022 temperature; the
 top-level `humidity_sensor` (tag 14) says which part the manifest listed:
 `hdc2080`, `hdc2022`, `not_listed` or `conflicting` (the last two measure nothing).
 Likewise `bmp388_bmp384_c` and `pressure_pa` carry the barometer that the top-level
-`pressure_sensor` (tag 15) names: `bmp388_bmp384`, `bmp580`, `bmp581`, `not_listed`
+`pressure_sensor` (tag 15) names: `bmp388`, `bmp384`, `bmp580`, `bmp581`, `not_listed`
 or `conflicting`. ZED/X20 and P3 boards add `rails` (tag 16): `state` and `channels`, each
 with `channel`, `shunt_milliohms`, and nullable `bus_v`, `shunt_uv` and `current_a`. P3
 boards add `regulator` (tag 23): `state`, nullable `spreader_c` and `peak_c`,

@@ -1,5 +1,24 @@
 # Unreleased
 
+- A NEO observer's manifest names its barometer exactly. The board's U2 is a BMP388 in the
+  BOM and a BMP384 on the first-article lot; the two data sheets give one register map,
+  chip ID, trimming table and compensation formula, so the driver is unchanged and only the
+  manifest can say which is fitted. The discovery library gains `PRESSURE_BMP384` and its
+  NEO list takes the barometer from the batch, with no default: a manifest-initialization
+  build for a NEO needs `NVF_MANIFEST_BARO=bmp388|bmp384` beside `NVF_MANIFEST_HDC`. The
+  firmware logs and reports the part the manifest names (`BMP384 temperature=…`, and
+  `pressure chip ID=0x50; BMP388/BMP384 family verified (the manifest names the BMP384)`),
+  ObserverDetails tag 15 sends the BMP384 as part 5 while part 1 now means the BMP388
+  alone, and the collector's `pressure_sensor` is `bmp388` or `bmp384` where it was
+  `bmp388_bmp384`, as is the name a station's barometer policy gives. No unit reporting to
+  a collector had a manifest that named either part, so part 1 had not been sent.
+  `bench_check.py --expect neo --barometer bmp384` holds a board's manifest to the part.
+- A manufacturing image can correct a manifest that was written with the wrong batch part.
+  `NVF_MANIFEST_CORRECT=1` beside `NVF_MANIFEST_INIT` builds the initialization image with
+  `NVF_MANIFEST_FACTORY_CORRECT`: where the stored manifest is, byte for byte, the same
+  board revision's list for the other humidity sensor or barometer, it writes the list for
+  the selected parts and reads it back, and it leaves any other manifest as it is
+  (`esp32/docs/COMMISSIONING.md`, A manifest written with the wrong batch part).
 - `rf signals` on the USB console lists every healthy signal the receiver has code lock on,
   with its C/N0 and its satellite's elevation, as one `NVF-RF-SIGNALS {json}` line:
   `["G05","L1C/A",45,61]` for each, a data and pilot pair as one entry. The same signals

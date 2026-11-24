@@ -276,14 +276,16 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
         ESP_LOGW(TAG, "the manifest lists no HDC2080 or HDC2022; humidity is not measured");
     else if (report.humidity.part == HUMIDITY_CONFLICT)
         ESP_LOGE(TAG, "the manifest lists both HDC2080 and HDC2022; humidity is not measured until it is corrected");
-    // The environment component has one barometer slot: a BMP388 (or BMP384) or a BMP580 or
+    // The environment component has one barometer slot: a BMP388 or BMP384, or a BMP580 or
     // BMP581. Each pair shares a chip ID, so only the manifest names the part.
     bool bmp388 = observer_board_lists(CAT_PRESSURE, PRESSURE_BMP388);
+    bool bmp384 = observer_board_lists(CAT_PRESSURE, PRESSURE_BMP384);
     bool bmp580 = observer_board_lists(CAT_PRESSURE, PRESSURE_BMP580);
     bool bmp581 = observer_board_lists(CAT_PRESSURE, PRESSURE_BMP581);
     report.pressure = (report_pressure_t){.present = true,
-        .part = bmp388 + bmp580 + bmp581 > 1 ? PRESSURE_PART_CONFLICT : bmp388 ? PRESSURE_PART_BMP388 :
-                bmp580 ? PRESSURE_PART_BMP580 : bmp581 ? PRESSURE_PART_BMP581 : PRESSURE_PART_NOT_LISTED};
+        .part = bmp388 + bmp384 + bmp580 + bmp581 > 1 ? PRESSURE_PART_CONFLICT : bmp388 ? PRESSURE_PART_BMP388 :
+                bmp384 ? PRESSURE_PART_BMP384 : bmp580 ? PRESSURE_PART_BMP580 :
+                bmp581 ? PRESSURE_PART_BMP581 : PRESSURE_PART_NOT_LISTED};
     if (report.pressure.part == PRESSURE_PART_CONFLICT)
         ESP_LOGE(TAG, "the manifest lists more than one BMP barometer; none is measured until it is corrected");
     barometer_listed = observer_board_lists(CAT_PRESSURE, PRESSURE_MS5607);
@@ -296,7 +298,8 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
     }
     env_parts_t parts = {
         .mcp9808 = observer_board_lists_at(CAT_TEMP, TEMP_MCP9808, NVF_I2C_TEMPERATURE),
-        .bmp388 = report.pressure.part == PRESSURE_PART_BMP388,
+        .bmp3 = report.pressure.part == PRESSURE_PART_BMP388 ? ENV_BMP388 :
+                report.pressure.part == PRESSURE_PART_BMP384 ? ENV_BMP384 : ENV_BMP3_NONE,
         .bmp5 = report.pressure.part == PRESSURE_PART_BMP580 ? ENV_BMP580 :
                 report.pressure.part == PRESSURE_PART_BMP581 ? ENV_BMP581 : ENV_BMP5_NONE,
         .ms5607 = barometer_listed, .mmc34160 = magnetometer_listed, .ina3221 = rails_listed,
@@ -596,6 +599,7 @@ static void identify_peripherals(void)
         {CAT_TEMP, TEMP_SHT35, NVF_I2C_HUMIDITY_SHT3X, "SHT35 humidity"},
         {CAT_SENSOR, SENSOR_HIH8121, NVF_I2C_HUMIDITY_HIH, "HIH8121 humidity"},
         {CAT_PRESSURE, PRESSURE_BMP388, NVF_I2C_PRESSURE, "pressure"},
+        {CAT_PRESSURE, PRESSURE_BMP384, NVF_I2C_PRESSURE, "pressure"},
         {CAT_PRESSURE, PRESSURE_BMP580, NVF_I2C_PRESSURE_BMP5, "pressure"},
         {CAT_PRESSURE, PRESSURE_BMP581, NVF_I2C_PRESSURE_BMP5, "pressure"},
         {CAT_PRESSURE, PRESSURE_MS5607, NVF_I2C_PRESSURE_ALT, "pressure"},
@@ -623,8 +627,11 @@ static void identify_peripherals(void)
             ESP_LOGI(TAG, "humidity IDs=%02x%02x/%02x%02x%s", data[1], data[0], data[3], data[2],
                 !memcmp(data, "\x49\x54\xd0\x07", 4) ? "; HDC2080/HDC2022 family verified (the manifest names the variant)" : "; unexpected identity");
         } else if (address == 0x76 && read_reg(0x76, 0, data, 1) == ESP_OK) {
-            ESP_LOGI(TAG, "pressure chip ID=0x%02x%s", data[0], data[0] == 0x50 ?
-                "; BMP388/BMP384 family (ID cannot distinguish them)" : "; unexpected identity");
+            // The two parts answer alike, so the ID confirms the family and the manifest names the part.
+            if (data[0] == 0x50)
+                ESP_LOGI(TAG, "pressure chip ID=0x50; BMP388/BMP384 family verified (the manifest names the %s)",
+                         parts[i].id == PRESSURE_BMP384 ? "BMP384" : "BMP388");
+            else ESP_LOGI(TAG, "pressure chip ID=0x%02x; unexpected identity", data[0]);
         } else if (address == NVF_I2C_PRESSURE_BMP5 && read_reg(NVF_I2C_PRESSURE_BMP5, 0x01, data, 2) == ESP_OK) {
             ESP_LOGI(TAG, "pressure chip ID=0x%02x revision=0x%02x%s", data[0], data[1], data[0] == 0x50 ?
                 "; BMP580/BMP581 family (ID cannot distinguish them)" : "; unexpected identity");

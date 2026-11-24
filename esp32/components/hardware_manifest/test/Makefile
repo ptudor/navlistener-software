@@ -13,11 +13,13 @@ all: $(TEST) build/checks_test build/identity_test build/manifest_board_test
 	./build/manifest_board_test
 	python3 ../../../tools/test_bench_check.py
 
-# The discovery library's header, compiled against stubs of the two ESP-IDF headers it includes.
+# The discovery library's header, compiled against stubs of the two ESP-IDF headers it includes,
+# and its board lists, which are data and copying with no bus access.
 DISCOVERY := ../../../managed_components/esp_hardware_discovery/include
-build/manifest_board_test: manifest_board_test.c ../src/manifest_board.c ../include/manifest_board.h $(wildcard stubs/*.h stubs/driver/*.h)
+DISCOVERY_LISTS := ../../../managed_components/esp_hardware_discovery/src/intsat_boards.c
+build/manifest_board_test: manifest_board_test.c ../src/manifest_board.c ../include/manifest_board.h $(DISCOVERY_LISTS) $(wildcard stubs/*.h stubs/driver/*.h)
 	@mkdir -p build
-	$(CC) $(CFLAGS) -Istubs -I$(DISCOVERY) $(INC) manifest_board_test.c ../src/manifest_board.c -o $@
+	$(CC) $(CFLAGS) -Istubs -I$(DISCOVERY) $(INC) manifest_board_test.c ../src/manifest_board.c $(DISCOVERY_LISTS) -o $@
 
 build/checks_test: checks_test.c ../src/hardware_checks.c ../include/hardware_checks.h
 	@mkdir -p build

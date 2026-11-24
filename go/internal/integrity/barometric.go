@@ -46,9 +46,9 @@ type BarometerPolicy struct {
 
 func (p BarometerPolicy) validate() error {
 	switch p.Sensor {
-	case "bmp388_bmp384", "bmp580", "bmp581", "ms5607":
+	case "bmp388", "bmp384", "bmp580", "bmp581", "ms5607":
 	default:
-		return &profileError{message: "barometer sensor must be bmp388_bmp384, bmp580, bmp581 or ms5607"}
+		return &profileError{message: "barometer sensor must be bmp388, bmp384, bmp580, bmp581 or ms5607"}
 	}
 	if !p.Vented {
 		return &profileError{message: "barometer must be explicitly qualified as vented"}

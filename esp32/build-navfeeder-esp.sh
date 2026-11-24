@@ -3,13 +3,17 @@ set -e
 # Build the supported ESP32-S3 observer (16 MiB flash, 8 MiB PSRAM, layout 3).
 # Usage: [NVF_BOARD=universal|neo|zed-x20|max|mosaic-p3] ./build-navfeeder-esp.sh [flash]
 #        NVF_MANIFEST_INIT=neo|zed-x20|zed-x20-b|max|mosaic-p3 NVF_MANIFEST_HDC=hdc2080|hdc2022 \
-#            ./build-navfeeder-esp.sh [flash]
+#            [NVF_MANIFEST_BARO=bmp388|bmp384] [NVF_MANIFEST_CORRECT=1] ./build-navfeeder-esp.sh [flash]
 # NVF_BOARD selects the universal image (the default, in build/s3-layout3) or a
 # single-board test build, each in its own build directory.
 # NVF_MANIFEST_INIT builds the manufacturing image of the pre-enrollment sequence
 # (docs/COMMISSIONING.md): the universal image with NVF_MANIFEST_FACTORY_INIT, which
 # writes a blank, never-seen manifest EEPROM with that board revision's list and
-# the batch's humidity sensor, in build/s3-manifest-init-<board>-<hdc>-layout3.
+# the batch's humidity sensor, in build/s3-manifest-init-<board>-<hdc>-layout3. A NEO
+# batch names its barometer too (NVF_MANIFEST_BARO, required for neo and refused for
+# the other boards), in build/s3-manifest-init-neo-<hdc>-<baro>-layout3.
+# NVF_MANIFEST_CORRECT=1 adds NVF_MANIFEST_FACTORY_CORRECT, for boards initialized with
+# the wrong batch setting, in a directory of its own (...-correct-layout3).
 # S3_BUILD_DIR selects a separate generated configuration; existing values survive.
 case "${1:-}" in
     ""|flash) ;;
@@ -46,9 +50,24 @@ if [ -n "$init" ]; then
         hdc2022) init_hdc=HDC2022 ;;
         *) echo "NVF_MANIFEST_HDC must name the batch's humidity sensor: hdc2080 or hdc2022" >&2; exit 2 ;;
     esac
-    default_dir="build/s3-manifest-init-$init-$NVF_MANIFEST_HDC-layout3"
-elif [ -n "${NVF_MANIFEST_HDC:-}" ]; then
-    echo "NVF_MANIFEST_HDC applies only with NVF_MANIFEST_INIT" >&2
+    # A NEO's barometer is a BMP388 or a BMP384, which answer alike on the bus, so the
+    # batch's BOM names it as well: there is no default. Other boards' lists name theirs.
+    init_baro=
+    case "$init:${NVF_MANIFEST_BARO:-}" in
+        neo:bmp388) init_baro=BMP388 ;;
+        neo:bmp384) init_baro=BMP384 ;;
+        neo:*) echo "NVF_MANIFEST_BARO must name the NEO batch's barometer: bmp388 or bmp384" >&2; exit 2 ;;
+        *:) ;;
+        *) echo "NVF_MANIFEST_BARO applies only to NVF_MANIFEST_INIT=neo" >&2; exit 2 ;;
+    esac
+    case "${NVF_MANIFEST_CORRECT:-}" in
+        "") init_correct= ;;
+        1) init_correct=-correct ;;
+        *) echo "NVF_MANIFEST_CORRECT is 1 or unset" >&2; exit 2 ;;
+    esac
+    default_dir="build/s3-manifest-init-$init-$NVF_MANIFEST_HDC${NVF_MANIFEST_BARO:+-$NVF_MANIFEST_BARO}$init_correct-layout3"
+elif [ -n "${NVF_MANIFEST_HDC:-}${NVF_MANIFEST_BARO:-}${NVF_MANIFEST_CORRECT:-}" ]; then
+    echo "NVF_MANIFEST_HDC, NVF_MANIFEST_BARO and NVF_MANIFEST_CORRECT apply only with NVF_MANIFEST_INIT" >&2
     exit 2
 fi
 IDF="${IDF_PATH:?Set IDF_PATH to your ESP-IDF 5.5.x checkout}"
@@ -69,6 +88,15 @@ if [ -n "$init" ]; then
     mkdir -p "$build_dir"
     printf 'CONFIG_NVF_MANIFEST_FACTORY_INIT=y\nCONFIG_NVF_MANIFEST_BOARD_%s=y\nCONFIG_NVF_MANIFEST_%s=y\n' \
         "$init_board" "$init_hdc" > "$init_defaults"
+    if [ -n "$init_baro" ]; then
+        printf 'CONFIG_NVF_MANIFEST_BARO_%s=y\n' "$init_baro" >> "$init_defaults"
+    fi
+    # Written either way, so a directory built for one cannot quietly serve the other.
+    if [ -n "$init_correct" ]; then
+        printf 'CONFIG_NVF_MANIFEST_FACTORY_CORRECT=y\n' >> "$init_defaults"
+    else
+        printf '# CONFIG_NVF_MANIFEST_FACTORY_CORRECT is not set\n' >> "$init_defaults"
+    fi
 fi
 
 idf.py -B "$build_dir" -D "SDKCONFIG=$build_dir/sdkconfig" \

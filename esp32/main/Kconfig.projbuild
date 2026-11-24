@@ -294,8 +294,9 @@ menu "navfeeder-esp"
             that identity has never been recorded
             in the independent hwmanifest NVS namespace, program the compiled
             GNSS_PCB_MAIN board-and-revision component list chosen below, with the
-            fitted humidity sensor, and verify it by readback. Field firmware
-            reads every optional and alternate part from that manifest.
+            fitted humidity sensor and, on the NEO, the fitted barometer, and
+            verify it by readback. Field firmware reads every optional and
+            alternate part from that manifest.
 
             Leave this off in ordinary firmware. I2C errors, malformed records,
             a blank previously-known EEPROM, and a different/replacement
@@ -345,6 +346,34 @@ menu "navfeeder-esp"
         config NVF_MANIFEST_HDC2022
             bool "HDC2022 (Rev A formula)"
     endchoice
+
+    choice NVF_MANIFEST_BARO
+        prompt "Barometer fitted to the NEO boards being initialized"
+        depends on NVF_MANIFEST_BOARD_NEO_A
+        default NVF_MANIFEST_BARO_BMP388
+        help
+            The part at 0x76 on this NEO batch, written into each new manifest.
+            BMP388 and BMP384 share their register map, chip ID and
+            compensation, so only the manifest can say which one is fitted.
+            Every other board's list names its own barometer.
+
+        config NVF_MANIFEST_BARO_BMP388
+            bool "BMP388"
+        config NVF_MANIFEST_BARO_BMP384
+            bool "BMP384"
+    endchoice
+
+    config NVF_MANIFEST_FACTORY_CORRECT
+        bool "Correct the batch parts of a programmed manifest"
+        depends on NVF_MANIFEST_FACTORY_INIT
+        default n
+        help
+            Manufacturing-only permission, for boards initialized with the
+            wrong batch setting. If the stored manifest is, byte for byte, the
+            list of the board and revision chosen above for other batch parts
+            (the other humidity sensor or, on the NEO, the other barometer),
+            replace it with the list for the parts chosen here and verify it by
+            readback. A manifest that is anything else is left as it is.
 
     config NVF_OTA
         bool "On-demand authenticated HTTPS OTA"

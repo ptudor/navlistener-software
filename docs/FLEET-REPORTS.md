@@ -100,7 +100,14 @@ capture window and judges only lines the firmware printed:
 | `setup` | An unprovisioned board raised its setup network and the app's provisioning | It did not | The board is provisioned |
 
 A board whose manifest a factory-initialization image wrote during the capture
-has `; programmed this boot` after the board's name in `manifest`.
+has `; programmed this boot` after the board's name in `manifest`, with the batch
+parts it wrote (`with HDC2080 and BMP384`; a board whose list names its own barometer
+gives the humidity sensor alone). A correcting image
+([a manifest written with the wrong batch part](../esp32/docs/COMMISSIONING.md#a-manifest-written-with-the-wrong-batch-part))
+adds `; batch parts corrected this boot: … became …` when it rewrote them and
+`; batch correction found … already listed` when they were right. `manifest` fails
+with `batch correction refused` when the stored manifest was none of that image's
+lists, which it then left alone.
 
 The firmware runs board-specific code, including the secure element read and the
 part probes, only once the manifest names a supported board, and probes only the
@@ -121,7 +128,8 @@ It changes these checks and adds the rest:
 |---|---|---|
 | `manifest` | The manifest names the expected board revision; the detail ends `, as expected` | Another board, or none |
 | `i2c:<part>@0x<addr>` | Each part the revision lists and the firmware probes at boot answered | A listed part was not probed or did not answer, or a part the revision does not list was probed |
-| `identity:<part>@0x<addr>` | The part's identity registers read as that part: the MCP9808, the HDC2080/HDC2022 family, the BMP388 or BMP58x family and the INA3221 | An unexpected identity, or no identity read |
+| `identity:<part>@0x<addr>` | The part's identity registers read as that part: the MCP9808, the HDC2080/HDC2022 family, the BMP388/BMP384 or BMP58x family and the INA3221. For the BMP388/BMP384 the detail gives the part the manifest names | An unexpected identity, or no identity read |
+| `manifest.barometer` | Only with `--barometer bmp388\|bmp384` beside `--expect neo`: the manifest names that part | It names the other, or the firmware did not say which it names |
 | `receiver` | As above | As above, and also when there is no verdict within the window |
 | `receiver.model` | MON-VER confirms the model the revision lists, or the mosaic-G5's ReceiverSetup names a mosaic-G5 | Another model, an unconfirmed one, or no answer within the window |
 | `receiver.config` | u-blox receivers only: the receiver acknowledged every setting the firmware makes in its RAM (one key, or keys valid only together, such as the MAX-M10S's four GNSS), or already held one the firmware reads before writing (the ZED-X20P's LNA modes, which apply from a GNSS restart); the detail gives the UART1 rate it runs at and the rate it was moved from and, on a ZED-X20P, the LNA mode the unit is set to | A key refused or unanswered (each named), no configuration result within the window, or a ZED-X20P's stored LNA mode could not be read or was not reported; a skip when the model was not confirmed, so nothing was set |

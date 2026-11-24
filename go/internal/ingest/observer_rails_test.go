@@ -67,7 +67,7 @@ func TestObserverDetailsX20Validation(t *testing.T) {
 		why    string
 	}{
 		{pressureBody, 2, "pressure-sensor version"},
-		{pressureBody + 1, 5, "an unknown pressure-sensor part"},
+		{pressureBody + 1, 6, "an unknown pressure-sensor part"},
 		{railsBody, 2, "rails version"},
 		{railsBody + 1, 2, "an unknown rails state"},
 		{railsBody + 1, 0, "readings from a monitor that is not responding"},
@@ -100,6 +100,23 @@ func TestObserverDetailsX20Validation(t *testing.T) {
 	for _, cut := range []int{pressureBody + 1, railsBody + 26} {
 		if _, err := decodeObserverDetails(good[:cut]); err == nil {
 			t.Errorf("accepted truncation at %d", cut)
+		}
+	}
+}
+
+// Each pair of Bosch parts shares a chip ID, so the manifest's name is the only one there is:
+// every part value has its own name, the BMP384's (5, the last added) included.
+func TestObserverDetailsPressureSensorNames(t *testing.T) {
+	good := observerX20Golden(t)
+	for part, want := range []string{"not_listed", "bmp388", "bmp580", "bmp581", "conflicting", "bmp384"} {
+		b := append([]byte(nil), good...)
+		b[pressureBody+1] = byte(part)
+		d, err := decodeObserverDetails(b)
+		if err != nil {
+			t.Fatalf("part %d: %v", part, err)
+		}
+		if d.PressureSensor != want {
+			t.Errorf("part %d decoded as %q, want %q", part, d.PressureSensor, want)
 		}
 	}
 }

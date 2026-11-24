@@ -47,6 +47,13 @@ supported substitute. Its drivers and partition table remain as legacy source.
   templates, tabulated in
   [the observer contract](../docs/HARDWARE-OBSERVER.md#52-how-navlistener-consumes-it). It never
   writes after an I2C error, to a known-but-blank EEPROM, or across an identity replacement.
+  A list leaves two parts to the batch, because nothing on the bus tells the candidates apart:
+  the humidity sensor at `0x40` (HDC2080 or HDC2022) on every board, and the barometer at
+  `0x76` (BMP388 or BMP384) on the NEO. `NVF_MANIFEST_FACTORY_CORRECT` is a second
+  manufacturing-only, default-off permission, for a board initialized with the wrong batch
+  setting: it rewrites a programmed manifest only when that manifest is, byte for byte, the
+  same board revision's list for other batch parts, reads it back, and leaves any other
+  manifest as it is.
   An absent, never-adopted EEPROM is supported during bring-up: the receiver streams,
   unconfigured, and the status panel and the provisioned station ID remain usable. Firmware does not synthesize an EUI
   or claim hardware attestation. A previously adopted EEPROM disappearing still
@@ -84,9 +91,15 @@ refuses builds that enable chip locking.
 ./build-navfeeder-esp.sh` builds the manufacturing image that writes a blank
 manifest EEPROM: the universal image with `NVF_MANIFEST_FACTORY_INIT`, that board's
 selected revision list and the lot's humidity sensor, in
-`build/s3-manifest-init-<board>-<hdc>-layout3`. Both settings are required. It is
+`build/s3-manifest-init-<board>-<hdc>-layout3`. Both settings are required. A NEO lot
+names its barometer as well, `NVF_MANIFEST_BARO=bmp388|bmp384`
+(`build/s3-manifest-init-neo-<hdc>-<baro>-layout3`): the two parts answer alike, so there
+is no default, and the setting is refused for the other boards, whose lists name their own
+barometer. It is
 the first image of the [pre-enrollment QA](docs/COMMISSIONING.md#pre-enrollment-qa)
-sequence, after which the board runs the ordinary image.
+sequence, after which the board runs the ordinary image. `NVF_MANIFEST_CORRECT=1` adds
+`NVF_MANIFEST_FACTORY_CORRECT` in a directory of its own (`...-correct-layout3`), for
+[a board written with the wrong batch part](docs/COMMISSIONING.md#a-manifest-written-with-the-wrong-batch-part).
 
 For direct ESP-IDF use, load the shared settings and S3 board profile:
 
@@ -590,7 +603,8 @@ Startup probes the shared I2C bus and reads sensor identification registers.
 The 2026-09-14 bench check found MCP9808 at `0x18`, HDC2080 at `0x40`, readable
 MCP79412 RTC registers at `0x6f`, and pressure chip ID `0x50` at `0x76`.
 That pressure ID is shared by BMP388/BMP384 and cannot identify the exact
-variant. The initial RTC status reported a stopped oscillator and disabled
+variant; the manifest names which of the two is fitted, and the firmware reports
+the part under that name. The initial RTC status reported a stopped oscillator and disabled
 battery backup. Live factory-compensated sensor readings now supply
 [ObserverDetails telemetry](../docs/OBSERVER-TELEMETRY.md): all three
 individual temperatures, humidity, local absolute pressure and board diagnostics.
@@ -1114,13 +1128,14 @@ The pusher reconnects when sent records remain outstanding without durable ACK a
 ### Hardware-discovery dependency and release evidence
 
 Normal builds pin `esp_hardware_discovery` to commit
-`f0011c5bb3471ca0915653e41506e89b30086254` (24CS256/24CS512 support, the `POWER_TPS7A20`,
+`e701756bf22fdf4f5fb441e23362ca8d63ccf8bc` (24CS256/24CS512 support, the `POWER_TPS7A20`,
 `COMM_W5500`, `SENSOR_THERMOCOUPLE_MAX31856`, `PRESSURE_BMP580`, `PRESSURE_BMP581`,
-`RTC_DS3231M` and `GPS_MOSAIC_G5_P3` catalog IDs, the `CAT_INTSAT` board category with
-`INTSAT_MOSAIC_P3`, part identification, `eeprom_has_ic_at()` and the Intsat board templates,
-whose X20 revision-B list adds the receiver-control MCP23008 at `0x25` to the 162mm
-assembly's DS3231M, interrupt collector and BMP581, and whose P3 list
-names both MCP9808s), with the IDF 5.5.4/ESP32-S3
+`PRESSURE_BMP384`, `RTC_DS3231M` and `GPS_MOSAIC_G5_P3` catalog IDs, the `CAT_INTSAT` board
+category with `INTSAT_MOSAIC_P3`, part identification, `eeprom_has_ic_at()` and the Intsat
+board templates, whose X20 revision-B list adds the receiver-control MCP23008 at `0x25` to
+the 162mm assembly's DS3231M, interrupt collector and BMP581, whose P3 list
+names both MCP9808s, and whose NEO list takes its barometer, a BMP388 or a BMP384, from the
+batch), with the IDF 5.5.4/ESP32-S3
 resolution committed in `dependencies.lock`. Updating the pin is a deliberate
 source change: review upstream layout changes and run the component's
 `test/host` read/write, page-boundary, interrupted-write, timestamp/footer,

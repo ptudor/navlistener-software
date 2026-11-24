@@ -57,6 +57,8 @@ _ATECC = re.compile(r"ATECC Info revision=([0-9a-f]{1,16}); (\S{1,32}) \(CRC ver
 # The identity reads board.c makes after a part answers: (part, the firmware's verdict).
 _IDENTITY = re.compile(r"(temperature|humidity|rail monitor) IDs=[0-9a-f]{4}/[0-9a-f]{4}; (.+)")
 _PRESSURE_ID = re.compile(r"pressure chip ID=0x[0-9a-f]{2}(?: revision=0x[0-9a-f]{2})?; (.+)")
+# The part a manifest names where the identity registers cannot tell two parts apart.
+_NAMED_PART = re.compile(r"\(the manifest names the ([A-Z0-9]+)\)$")
 _MON_VER = re.compile(r"MON-VER: software=.*; (\S{1,32})=(yes|unconfirmed)")
 _SBF_IDENTITY = re.compile(r"receiver: (.{1,40}?) \(engine .*")
 # The u-blox link once MON-VER confirms the model: the rate it runs at, and the rate the
@@ -113,7 +115,9 @@ class BoardProfile:
 
 # Keyed as NVF_BOARD and NVF_MANIFEST_INIT name the boards. Not reported at boot, so not
 # checked: the HDC2080/HDC2022 variant (identical ID registers; the manifest names it),
-# the P3's second MCP9808 at 0x1F, the MAX's SPI thermocouple converter.
+# the P3's second MCP9808 at 0x1F, the MAX's SPI thermocouple converter. A NEO's barometer
+# is a BMP388 or a BMP384 (identical chip IDs); the firmware reports which one the manifest
+# names, and --barometer holds the board to it.
 PROFILES = {
     "neo": BoardProfile(
         manifest="NEO revision A",
@@ -179,6 +183,10 @@ class ConsoleFacts:
     observer_id: str | None = None
     manifest: tuple[str, str] | None = None  # (boot action, board)
     manifest_programmed: bool = False  # a factory-init image wrote the manifest this boot
+    manifest_batch: str | None = None  # the batch parts it wrote, as the firmware names them
+    # A correcting image's verdict: ("corrected", "A became B"), ("unchanged", the parts
+    # already listed) or ("refused", ""), the stored manifest being none of its lists.
+    manifest_correction: tuple[str, str] | None = None
     atecc: tuple[str, str] | None = None  # (revision, model)
     parts: dict[tuple[str, str], list[str]] = field(default_factory=dict)  # (name, address) → results
     identities: dict[str, list[str]] = field(default_factory=dict)  # part name → the firmware's verdicts
@@ -241,6 +249,14 @@ def parse_console(text: str) -> ConsoleFacts:
             facts.manifest = (action, board)
         elif tag == "hw_manifest" and message.startswith("factory-init enabled: programming blank "):
             facts.manifest_programmed = True
+            facts.manifest_batch = message.partition(" manifest with ")[2] or None
+        elif tag == "hw_manifest" and message.startswith("manifest batch parts corrected this boot: "):
+            facts.manifest_correction = ("corrected", message.partition(": ")[2])
+        elif tag == "hw_manifest" and message.startswith("batch correction enabled: the manifest already lists "):
+            listed = message.removeprefix("batch correction enabled: the manifest already lists ")
+            facts.manifest_correction = facts.manifest_correction or ("unchanged", listed.partition(";")[0])
+        elif tag == "hw_manifest" and message.startswith("batch correction enabled, but the stored manifest is not "):
+            facts.manifest_correction = ("refused", "")
         elif tag == "observer_board":
             atecc = _ATECC.fullmatch(message)
             part = _PART.fullmatch(message)
@@ -342,10 +358,17 @@ def _check(name: str, result: str, detail: str) -> dict:
 
 
 def evaluate(
-    facts: ConsoleFacts, *, elf_sha256: str, mac: str | None, seconds: float, expect: BoardProfile | None = None
+    facts: ConsoleFacts,
+    *,
+    elf_sha256: str,
+    mac: str | None,
+    seconds: float,
+    expect: BoardProfile | None = None,
+    barometer: str | None = None,
 ) -> list[dict]:
     """Judge each check from what the firmware printed, the build's ELF digest and the
-    MAC the ROM bootloader gave. With `expect`, also hold the board to that profile."""
+    MAC the ROM bootloader gave. With `expect`, also hold the board to that profile, and
+    with `barometer` ("BMP388" or "BMP384") hold its manifest to that part."""
     checks = []
     if facts.elf_prefix is None:
         checks.append(_check("firmware.image", "fail", "no ELF SHA-256 printed"))
@@ -378,10 +401,20 @@ def evaluate(
     # only once the manifest names a supported board.
     named = facts.manifest is not None and facts.manifest[0] == "use manifest" and facts.manifest[1] not in _NO_BOARD
     programmed = "; programmed this boot" if facts.manifest_programmed else ""
+    if facts.manifest_programmed and facts.manifest_batch:
+        programmed += f" with {facts.manifest_batch}"
+    correction, parts = facts.manifest_correction or ("", "")
+    if correction == "corrected":
+        programmed += f"; batch parts corrected this boot: {parts}"
+    elif correction == "unchanged":
+        programmed += f"; batch correction found {parts} already listed"
     if facts.manifest is None:
         checks.append(_check("manifest", "fail", "no manifest boot action printed"))
     elif expect is not None and named and facts.manifest[1] != expect.manifest:
         checks.append(_check("manifest", "fail", f"{facts.manifest[1]}, expected {expect.manifest}"))
+    elif named and correction == "refused":
+        detail = f"{facts.manifest[1]}; batch correction refused: the stored manifest is not a list this image builds"
+        checks.append(_check("manifest", "fail", detail))
     elif named:
         checks.append(_check("manifest", "pass", facts.manifest[1] + (", as expected" if expect else "") + programmed))
     else:
@@ -417,6 +450,16 @@ def evaluate(
             else:
                 result, detail = "pass", verdicts[0]
             checks.append(_check(f"identity:{name}@0x{listed[name]}", result, detail))
+
+    if barometer is not None:
+        named_part = [m.group(1) for v in facts.identities.get("pressure", ()) if (m := _NAMED_PART.search(v))]
+        if not named_part:
+            checks.append(_check("manifest.barometer", "fail", "the firmware did not report which barometer the manifest names"))
+        elif all(part == barometer for part in named_part):
+            checks.append(_check("manifest.barometer", "pass", f"the manifest names the {barometer}"))
+        else:
+            wrong = next(part for part in named_part if part != barometer)
+            checks.append(_check("manifest.barometer", "fail", f"the manifest names the {wrong}, expected the {barometer}"))
 
     if facts.receiver_baud is not None:
         running = facts.receiver_running[0] if facts.receiver_running else facts.receiver_baud
@@ -820,8 +863,14 @@ def main(argv: list[str] | None = None) -> int:
         "--expect", choices=sorted(PROFILES),
         help="pre-enrollment QA: require this board's revision A and every part its manifest lists",
     )  # fmt: skip
+    parser.add_argument(
+        "--barometer", choices=("bmp388", "bmp384"),
+        help="with --expect neo: require the manifest to name this barometer (the two answer alike on the bus)",
+    )  # fmt: skip
     args = parser.parse_args(argv)
     expect = PROFILES[args.expect] if args.expect else None
+    if args.barometer and args.expect != "neo":
+        parser.error("--barometer applies only with --expect neo")
     if not _STATION.fullmatch(args.station):
         parser.error("--station must be 1-64 of A-Z a-z 0-9 . _ - starting with a letter or digit")
     if not 5 <= args.seconds <= 600:
@@ -846,7 +895,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     finished = datetime.now(timezone.utc)
     facts = parse_console(console.decode("utf-8", "replace"))
-    checks = evaluate(facts, elf_sha256=build.elf_sha256, mac=mac, seconds=args.seconds, expect=expect)
+    checks = evaluate(
+        facts, elf_sha256=build.elf_sha256, mac=mac, seconds=args.seconds, expect=expect,
+        barometer=args.barometer.upper() if args.barometer else None,
+    )  # fmt: skip
     report = build_report(
         station=args.station, started=started, finished=finished, facts=facts, mac=mac, build=build,
         checks=checks, console=console,

@@ -332,6 +332,15 @@ unit to that same identity.
    The second is the universal image with `NVF_MANIFEST_FACTORY_INIT`, built in
    `build/s3-manifest-init-zed-x20-hdc2080-layout3`. The wrapper refuses to build
    it without both settings and fails it if the generated configuration differs.
+   A NEO lot names its barometer too, because a BMP388 and a BMP384 answer alike
+   on the bus and the lot's BOM is the only record of which was fitted:
+
+   ```sh
+   NVF_MANIFEST_INIT=neo NVF_MANIFEST_HDC=hdc2080 NVF_MANIFEST_BARO=bmp384 ./build-navfeeder-esp.sh
+   ```
+
+   That one is built in `build/s3-manifest-init-neo-hdc2080-bmp384-layout3`, and the
+   wrapper refuses a NEO build without the setting, or the setting for another board.
 3. A board whose manifest EEPROM is blank: flash the initialization image. Its
    first boot writes the selected board revision's list, reads it back and adopts the
    identity; `manifest` then reports the board, "programmed this boot". Keep this
@@ -387,6 +396,10 @@ What the test does not prove:
 
 - which HDC variant is fitted: the HDC2080 and HDC2022 share their ID registers,
   so the manifest's entry is what the build in step 2 wrote;
+- which barometer a NEO carries: the BMP388 and BMP384 share their chip ID, so
+  that entry too is what the build in step 2 wrote. The report gives the part the
+  manifest names, and `--barometer bmp388|bmp384` with `--expect neo` fails a board
+  whose manifest names the other;
 - the P3's second MCP9808 at `0x1F` and the MAX's thermocouple converter, which
   the firmware does not report at boot;
 - an Ethernet link, Wi-Fi range, RTC accuracy, backup batteries, power rails or
@@ -398,6 +411,34 @@ What the test does not prove:
 When the Factory CA's registration later names the same board, revision and
 humidity sensor, it finds exactly the manifest it would write and leaves it alone,
 reporting it `unchanged`.
+
+### A manifest written with the wrong batch part
+
+The initialization image never writes to a programmed EEPROM, so a board that was
+initialized with the wrong batch setting (the other humidity sensor, or on a NEO the
+other barometer) keeps that entry. Build the image for the parts the board carries
+with `NVF_MANIFEST_CORRECT=1` added, flash it, then flash the ordinary image and run
+the QA test again:
+
+```sh
+NVF_MANIFEST_INIT=neo NVF_MANIFEST_HDC=hdc2080 NVF_MANIFEST_BARO=bmp384 NVF_MANIFEST_CORRECT=1 \
+    ./build-navfeeder-esp.sh
+python tools/bench_check.py --port /dev/cu.usbmodem… --station bench-1 --flash \
+    --build-dir build/s3-manifest-init-neo-hdc2080-bmp384-correct-layout3
+python tools/bench_check.py --port /dev/cu.usbmodem… --station bench-1 --flash \
+    --build-dir build/s3-layout3 --expect neo --barometer bmp384
+```
+
+It is `NVF_MANIFEST_FACTORY_CORRECT`, a second manufacturing-only permission. The
+image rewrites a manifest only when what is stored is, byte for byte, the same board
+revision's list for other batch parts; it reads the result back, and `manifest` in its
+report ends `; batch parts corrected this boot: HDC2080 and BMP388 became HDC2080 and
+BMP384`. A manifest that already lists the selected parts is left alone (`; batch
+correction found … already listed`). One that is anything else, such as another board's
+list, a list with a part's status changed in the field, or a hand-written one, is left
+as it is and fails the report. A blank EEPROM is initialized as by the ordinary
+initialization image. Keep the correcting image for the boards that need it: on any
+other board of that model it would write its own batch parts over correct ones.
 
 ## Bench sequence
 

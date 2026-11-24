@@ -26,9 +26,13 @@ typedef struct {
 
 // Bring up the custom observer's shared I2C bus, inspect its manifest EEPROM,
 // apply the safe first-boot policy, and optionally install the compiled board
-// defaults when allow_factory_init is true. A successful call means the bus
-// and inspection completed; consult result->action before using capabilities.
-esp_err_t hardware_manifest_boot(bool allow_factory_init,
+// defaults when allow_factory_init is true. With allow_batch_correction as well,
+// a programmed manifest that is exactly the compiled board revision's list for
+// other batch parts (the other humidity sensor or barometer) is rewritten with
+// the compiled batch's list and read back; any other manifest is left alone.
+// A successful call means the bus and inspection completed; consult
+// result->action before using capabilities.
+esp_err_t hardware_manifest_boot(bool allow_factory_init, bool allow_batch_correction,
                                  hardware_manifest_result_t *result);
 
 // The shared bus is owned by this component so later RTC/sensor/ATECC drivers
